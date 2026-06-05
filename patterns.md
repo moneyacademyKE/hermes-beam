@@ -248,3 +248,41 @@ let results = gleamdb.query(
 )
 ```
 
+---
+
+## 17. Rule-Based Skill Registration Pattern (Datalog Skills)
+
+### Intent
+Expose complex capabilities (such as hierarchical dependency solving or network routing) to an agent runtime natively without prompt-context pollution or OS subprocess latency.
+
+### Pattern
+Instead of storing skills as text prompt descriptions or script files:
+1. **Model as Rules and Facts**: Represent a skill's functionality as a static definition containing logic rules and base assertions.
+2. **Dynamic Aggregation**: Merge registered rules and facts from all active skills into a single compiled database snapshot.
+3. **Pure Execution**: Run logic queries directly on the aggregated database value to execute skill commands natively.
+
+### Example
+```gleam
+let routing_skill = Skill(
+  name: "network-routing",
+  description: "Finds shortest paths between network nodes",
+  rules: [
+    Rule(
+      head: #("?x", "route/path", "?y"),
+      body: [#("?x", "route/link", "?y")]
+    ),
+    Rule(
+      head: #("?x", "route/path", "?y"),
+      body: [
+        #("?x", "route/path", "?z"),
+        #("?z", "route/link", "?y")
+      ]
+    )
+  ],
+  facts: [
+    Datom("A", "route/link", "B"),
+    Datom("B", "route/link", "C")
+  ]
+)
+```
+

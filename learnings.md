@@ -166,3 +166,13 @@ This document summarizes the core learnings from porting python codebase element
     - **Utility vs. Maturity**: SQLite is battle-tested and offers optimized queries for tabular data. GleamDB is niche and lacks index optimizations, but excels at recursive logic and graph traversals.
 *   **Resolution**: Keep SQLite as the primary choice for flat relational storage due to mature performance, but adopt GleamDB as a specialized solution for systems requiring recursive relational traversals (graphs, permissions) or time-travel audits natively on the BEAM.
 
+## 22. Gap Analysis: Text-based Skills vs. BEAM/Datalog Skills
+
+*   **Problem**: Optimizing the skills architecture for a BEAM/Gleam stack by resolving context bloat and slow execution times.
+*   **Analysis**:
+    - **Resource Footprint**: Legacy text skills require injecting long markdown system prompts and execution scripts into the LLM context window, consuming tokens. Native Datalog skills compile logic into local BEAM rules, reducing LLM context overhead to zero.
+    - **Execution Efficiency**: Spawning subprocesses (Python/Bash) for shell skills introduces milliseconds of OS fork latency. Native Datalog skills evaluate recursive queries in microseconds.
+    - **Determinism**: Text-based scripts rely on string parsing and dynamic stdout checks. Datalog skills run type-safe, compile-time checked logic with clean success/error boundaries.
+*   **Resolution**: Build a compiled, in-memory `Registry` that registers skills as Datalog facts/rules, eliminating prompt injection and subprocess overhead entirely for reasoning tasks.
+
+
