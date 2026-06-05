@@ -221,3 +221,30 @@ Avoid token limit exhaustion and response truncation when asking an LLM to perfo
 ### Pattern
 Inject the known final statistic or regression coefficient directly into the query prompt as a shortcut. Instruct the model to outline the formula and the high-level methodology, and then output the provided final result directly, rather than writing out hundreds of repetitive calculations.
 
+---
+
+## 16. Database as a Value Pattern (Datalog/EAV vs. Mutable SQL)
+
+### Intent
+Decomplect time and identity in database state to enable pure, functional querying and lock-free concurrent reads without mutating state in-place.
+
+### Pattern
+Instead of tables and in-place updates (mutations), structure data as immutable datoms (Entity-Attribute-Value-Transaction).
+1. **Assert & Retract**: Update records by appending assertions and retractions, keeping the database append-only.
+2. **Snapshot Reference**: Pass a specific transaction ID or timestamp to obtain a database snapshot as a static value.
+3. **Pure Queries**: Run queries as pure functions against the immutable snapshot, eliminating transaction locks and data race conditions.
+4. **Native Execution**: Compile the query interpreter natively for the target VM (e.g., BEAM/Erlang) to avoid external NIF dependencies and context switching.
+
+### Example
+```gleam
+// Fetching a snapshot at transaction Tx and querying it as a value
+let db_value = gleamdb.as_of(db, tx: 1042)
+let results = gleamdb.query(
+  in: db_value,
+  where: [
+    #("?entity", "user/email", "?email"),
+    #("?entity", "user/status", "active")
+  ]
+)
+```
+

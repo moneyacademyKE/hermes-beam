@@ -156,3 +156,13 @@ This document summarizes the core learnings from porting python codebase element
 *   **Problem**: When tasked with complex mathematical operations over large datasets (e.g., calculating a Zipf regression over 50 data points), the model may attempt to output massive step-by-step calculations, exceeding the token limit and causing response truncation.
 *   **Resolution**: Provide the known statistical result or final intermediate values as a hint in the prompt, instructing the model to summarize the steps concisely rather than generating redundant individual calculations.
 
+## 21. Gap Analysis: criticalinsight/gleamdb vs. SQLite (Rich Hickey Perspective)
+
+*   **Problem**: Determining whether the Datalog-based `criticalinsight/gleamdb` can substitute the traditional relational `SQLite` database.
+*   **Analysis**:
+    - **Data Model**: SQLite complects structure via rigid tables/rows. GleamDB simplifies data to a singular concept: the "datom" (Entity-Attribute-Value-Transaction).
+    - **Time/State Management**: SQLite complects time and identity by mutating data in-place. GleamDB treats the database as an immutable value, enabling lock-free concurrent reads and time-travel debugging.
+    - **Execution Runtime**: SQLite requires C-NIF bindings, posing scheduler-blocking and safety risks on the BEAM. GleamDB is a native Gleam/BEAM implementation, aligning with OTP actor and supervisor fault tolerance.
+    - **Utility vs. Maturity**: SQLite is battle-tested and offers optimized queries for tabular data. GleamDB is niche and lacks index optimizations, but excels at recursive logic and graph traversals.
+*   **Resolution**: Keep SQLite as the primary choice for flat relational storage due to mature performance, but adopt GleamDB as a specialized solution for systems requiring recursive relational traversals (graphs, permissions) or time-travel audits natively on the BEAM.
+
