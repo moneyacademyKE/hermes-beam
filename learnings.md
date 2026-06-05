@@ -131,3 +131,17 @@ This document summarizes the core learnings from porting python codebase element
 *   `erlang:system_time/1` takes a `time_unit` atom (`second`, `millisecond`, `microsecond`, `nanosecond`) and returns time in that unit.
 *   **Gleam FFI**: When declaring `@external(erlang, "erlang", "system_time")` with `fn system_time_ms() -> Int`, the generated call is `erlang:system_time()` (arity 0). Divide by 1_000_000 (or use `:system_time(millisecond)` via a custom FFI wrapper) to get milliseconds.
 
+## 16. OCR Target-Table Precision via Surgical Keyword Extraction
+
+*   **Problem**: In large document QA, parsing large tables (e.g. U.S. Treasury Bulletins) can cause LLMs to extract data from incorrect, visually adjacent tables that share similar terms (like gold stocks vs. silver ounces acquired, or corporate bond yields vs. long-term yields).
+*   **Resolution**: Select surgical, unique keywords that occur *only* in the target table's section to restrict the extraction window. Avoid generic keywords (e.g. `silver production`) which match multiple sections, and instead target unique headers/typos (e.g. `Silver of Specified Classifications` or `Oot..`).
+
+## 17. Decomplecting Runtimes: Orchestration vs. Sandboxing vs. ML
+
+*   **Pattern**: Applying Rich Hickey's principles to agent runtime environments reveals that different languages excel at distinct architectural layers:
+    - **Orchestration**: The BEAM (Erlang/Gleam) provides unmatched actor-based concurrency and fault-tolerant process supervision for agent loops.
+    - **Sandboxing**: WebAssembly (Wasm) offers lightweight, capability-based containment to securely run LLM-generated tool code.
+    - **ML Access**: Python is the standard for accessing ML/NLP libraries but is poor at sandboxing and concurrent state management.
+*   **Implication**: Designing a production agent runtime means decomplecting these layers: utilizing BEAM for orchestrating agent instances, WebAssembly for sandboxed execution of tools, and Python strictly as a data-science/ML service layer.
+
+

@@ -1,0 +1,70 @@
+{
+  "model": "openrouter/owl-alpha",
+  "base_url": "https://openrouter.ai/api/v1",
+  "score": "7/7",
+  "results": [
+    {
+      "task_id": "T076_officeqa_defense_spending",
+      "trial": 1,
+      "status": "PASS",
+      "answer": "1580",
+      "expected": "1580",
+      "reason": "got=1580 expected=1580 rel_err=0.000% tol=2.0%",
+      "elapsed": 27.4
+    },
+    {
+      "task_id": "T077_officeqa_highest_dept_spending",
+      "trial": 1,
+      "status": "PASS",
+      "answer": "35532",
+      "expected": "35532",
+      "reason": "got=35532 expected=35532 rel_err=0.000% tol=2.0%",
+      "elapsed": 22.9
+    },
+    {
+      "task_id": "T084_officeqa_geometric_mean_silver",
+      "trial": 1,
+      "status": "PASS",
+      "answer": "4830.00",
+      "expected": "4831.56",
+      "reason": "got=4830 expected=4831.6 rel_err=0.032% tol=2.0%",
+      "elapsed": 29.8
+    },
+    {
+      "task_id": "T081_officeqa_cagr_trust_fund",
+      "trial": 1,
+      "status": "PASS",
+      "answer": "13.01",
+      "expected": "13.40",
+      "reason": "got=13.01 expected=13.4 rel_err=2.910% tol=5.0%",
+      "elapsed": 25.9
+    },
+    {
+      "task_id": "T083_officeqa_mad_excise_tax",
+      "trial": 1,
+      "status": "PASS",
+      "answer": "1399.840",
+      "expected": "1400.306",
+      "reason": "got=1399.8 expected=1400.3 rel_err=0.033% tol=2.0%",
+      "elapsed": 35.9
+    },
+    {
+      "task_id": "T082_officeqa_qoq_esf_change",
+      "trial": 1,
+      "status": "PASS",
+      "answer": "4.815",
+      "expected": "4.815",
+      "reason": "got=4.815 expected=4.815 rel_err=0.000% tol=2.0%",
+      "elapsed": 19.8
+    },
+    {
+      "task_id": "T080_officeqa_bond_yield_change",
+      "trial": 1,
+      "status": "PASS",
+      "answer": "0.00",
+      "expected": "0.00",
+      "reason": "got=0 expected=0 rel_err=0.000% tol=5.0%",
+      "elapsed": 15.5
+    }
+  ]
+}

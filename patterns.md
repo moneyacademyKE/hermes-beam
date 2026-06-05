@@ -181,3 +181,16 @@ let tool_calls = case string.trim(response_text) {
 }
 ```
 
+## 12. Voyager-style Dynamic Skill Compilation Pattern
+
+### Intent
+Allow agents to persistently self-improve and increase benchmark pass rates by compiling, testing, and saving successful procedures as code tools dynamically.
+
+### Pattern
+1. **Identify Need**: The agent determines that a complex mathematical or logical procedure is needed to solve a class of problems.
+2. **Draft & Test**: The agent generates candidate code for a new tool alongside validation test cases.
+3. **Sandbox Verification**: The agent executes the test suite in a sandboxed subprocess to verify correctness and safety.
+4. **Register**: On success, the script is saved to the local skills/plugins directory and registered directly in the active runtime registry (e.g., calling `registry.register()` or `ctx.register_tool()`).
+5. **Persistence**: The skill remains in the persistent skill directory so future agent sessions can retrieve and reuse it directly, avoiding repeated LLM prompts.
+
+
