@@ -1,0 +1,946 @@
+Downloading packages
+ Downloaded 7 packages in 0.04s
+  Compiling gleam_stdlib
+  Compiling filepath
+  Compiling gleam_erlang
+  Compiling gleam_json
+  Compiling gleam_otp
+  Compiling gleeunit
+  Compiling simplifile
+  Compiling hermes_beam
+warning: Unused imported item
+  ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:2:22
+  │
+2 │ import gleam/option.{Some, None}
+  │                      ^^^^ This imported constructor is never used
+
+Hint: You can safely remove it.
+
+warning: Unused imported item
+  ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:2:28
+  │
+2 │ import gleam/option.{Some, None}
+  │                            ^^^^ This imported constructor is never used
+
+Hint: You can safely remove it.
+
+warning: Unused variable
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:33:7
+   │
+33 │   let dt = hermes_time.get_server_local_time()
+   │       ^^ This variable is never used
+
+Hint: You can ignore it with an underscore: `_dt`.
+
+warning: Unused variable
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:45:7
+   │
+45 │   let dt = hermes_time.now()
+   │       ^^ This variable is never used
+
+Hint: You can ignore it with an underscore: `_dt`.
+
+error: Unknown module
+  ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:1:1
+  │
+1 │ import hermes_beam/constants
+  │ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+No module has been found with the name `hermes_beam/constants`.
+
+error: Unknown module
+  ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:7:3
+  │
+7 │   constants.is_windows()
+  │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:11:3
+   │
+11 │   constants.is_wsl()
+   │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:15:3
+   │
+15 │   constants.is_container()
+   │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:21:3
+   │
+21 │   constants.set_env("HERMES_TEST_VAR", "gleam_test_val")
+   │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:24:3
+   │
+24 │   constants.get_env("HERMES_TEST_VAR")
+   │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:28:3
+   │
+28 │   constants.get_env("NON_EXISTENT_VAR_XYZ")
+   │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:34:3
+   │
+34 │   constants.get_hermes_home_override()
+   │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:38:15
+   │
+38 │   let token = constants.set_hermes_home_override(Some("/tmp/custom_hermes"))
+   │               ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:39:3
+   │
+39 │   constants.get_hermes_home_override()
+   │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:43:3
+   │
+43 │   constants.reset_hermes_home_override(token)
+   │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:44:3
+   │
+44 │   constants.get_hermes_home_override()
+   │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:49:14
+   │
+49 │   let home = constants.get_user_home()
+   │              ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:51:3
+   │
+51 │   constants.get_platform_default_hermes_home()
+   │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:57:22
+   │
+57 │   let original_env = constants.get_env("HERMES_HOME")
+   │                      ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:60:3
+   │
+60 │   constants.set_env("HERMES_HOME", "")
+   │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:61:22
+   │
+61 │   let default_home = constants.get_platform_default_hermes_home()
+   │                      ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:62:3
+   │
+62 │   constants.get_hermes_home()
+   │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:66:3
+   │
+66 │   constants.set_env("HERMES_HOME", "/custom/path")
+   │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:67:3
+   │
+67 │   constants.get_hermes_home()
+   │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:72:18
+   │
+72 │     Some(val) -> constants.set_env("HERMES_HOME", val)
+   │                  ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:73:13
+   │
+73 │     None -> constants.set_env("HERMES_HOME", "")
+   │             ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:78:3
+   │
+78 │   constants.parse_reasoning_effort("none")
+   │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:79:24
+   │
+79 │   |> should.equal(Some(constants.ReasoningEffort(enabled: False, effort: None)))
+   │                        ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:81:3
+   │
+81 │   constants.parse_reasoning_effort("minimal")
+   │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:82:24
+   │
+82 │   |> should.equal(Some(constants.ReasoningEffort(enabled: True, effort: Some("minimal"))))
+   │                        ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:84:3
+   │
+84 │   constants.parse_reasoning_effort("HIGH")
+   │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:85:24
+   │
+85 │   |> should.equal(Some(constants.ReasoningEffort(enabled: True, effort: Some("high"))))
+   │                        ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:87:3
+   │
+87 │   constants.parse_reasoning_effort("invalid")
+   │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:90:3
+   │
+90 │   constants.parse_reasoning_effort("")
+   │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:96:19
+   │
+96 │   let user_home = constants.get_user_home()
+   │                   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:97:15
+   │
+97 │   let token = constants.set_hermes_home_override(Some(user_home))
+   │               ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:98:3
+   │
+98 │   constants.display_hermes_home()
+   │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+    ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:100:3
+    │
+100 │   constants.reset_hermes_home_override(token)
+    │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+    ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:103:16
+    │
+103 │   let token2 = constants.set_hermes_home_override(Some(user_home <> "/.hermes"))
+    │                ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+    ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:104:3
+    │
+104 │   constants.display_hermes_home()
+    │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+    ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/constants_test.gleam:106:3
+    │
+106 │   constants.reset_hermes_home_override(token2)
+    │   ^^^^^^^^^
+
+No module has been found with the name `constants`.
+
+Hint: Did you mean to import `constants`?
+
+error: Unknown module
+  ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:1:1
+  │
+1 │ import hermes_beam/hermes_time
+  │ ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+No module has been found with the name `hermes_beam/hermes_time`.
+
+error: Unknown module
+  ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:9:35
+  │
+9 │   let assert Ok("Asia/Kolkata") = hermes_time.parse_timezone_from_yaml(content)
+  │                                   ^^^^^^^^^^^
+
+No module has been found with the name `hermes_time`.
+
+Hint: Did you mean to import `hermes_time`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:14:39
+   │
+14 │   let assert Ok("America/New_York") = hermes_time.parse_timezone_from_yaml(content_quoted)
+   │                                       ^^^^^^^^^^^
+
+No module has been found with the name `hermes_time`.
+
+Hint: Did you mean to import `hermes_time`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:19:36
+   │
+19 │   let assert Ok("Europe/London") = hermes_time.parse_timezone_from_yaml(content_single_quoted)
+   │                                    ^^^^^^^^^^^
+
+No module has been found with the name `hermes_time`.
+
+Hint: Did you mean to import `hermes_time`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:24:27
+   │
+24 │   let assert Error(Nil) = hermes_time.parse_timezone_from_yaml(content_commented)
+   │                           ^^^^^^^^^^^
+
+No module has been found with the name `hermes_time`.
+
+Hint: Did you mean to import `hermes_time`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:29:27
+   │
+29 │   let assert Error(Nil) = hermes_time.parse_timezone_from_yaml(content_empty)
+   │                           ^^^^^^^^^^^
+
+No module has been found with the name `hermes_time`.
+
+Hint: Did you mean to import `hermes_time`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:33:12
+   │
+33 │   let dt = hermes_time.get_server_local_time()
+   │            ^^^^^^^^^^^
+
+No module has been found with the name `hermes_time`.
+
+Hint: Did you mean to import `hermes_time`?
+
+error: Unknown type for record access
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:34:21
+   │
+34 │   let assert True = dt.year >= 2026
+   │                     ^^ I don't know what type this is
+
+In order to access a record field we need to know what type it is, but I
+can't tell the type here. Try adding type annotations to your function and
+try again.
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:38:21
+   │
+38 │   let assert True = hermes_time.validate_timezone("Asia/Kolkata")
+   │                     ^^^^^^^^^^^
+
+No module has been found with the name `hermes_time`.
+
+Hint: Did you mean to import `hermes_time`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:39:21
+   │
+39 │   let assert True = hermes_time.validate_timezone("America/New_York")
+   │                     ^^^^^^^^^^^
+
+No module has been found with the name `hermes_time`.
+
+Hint: Did you mean to import `hermes_time`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:40:22
+   │
+40 │   let assert False = hermes_time.validate_timezone("Invalid/Zone")
+   │                      ^^^^^^^^^^^
+
+No module has been found with the name `hermes_time`.
+
+Hint: Did you mean to import `hermes_time`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:41:22
+   │
+41 │   let assert False = hermes_time.validate_timezone("../etc/passwd")
+   │                      ^^^^^^^^^^^
+
+No module has been found with the name `hermes_time`.
+
+Hint: Did you mean to import `hermes_time`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:45:12
+   │
+45 │   let dt = hermes_time.now()
+   │            ^^^^^^^^^^^
+
+No module has been found with the name `hermes_time`.
+
+Hint: Did you mean to import `hermes_time`?
+
+error: Unknown type for record access
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:46:21
+   │
+46 │   let assert True = dt.year >= 2026
+   │                     ^^ I don't know what type this is
+
+In order to access a record field we need to know what type it is, but I
+can't tell the type here. Try adding type annotations to your function and
+try again.
+
+error: Unknown type for record access
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:47:21
+   │
+47 │   let assert True = dt.month >= 1 && dt.month <= 12
+   │                     ^^ I don't know what type this is
+
+In order to access a record field we need to know what type it is, but I
+can't tell the type here. Try adding type annotations to your function and
+try again.
+
+error: Unknown type for record access
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:47:38
+   │
+47 │   let assert True = dt.month >= 1 && dt.month <= 12
+   │                                      ^^ I don't know what type this is
+
+In order to access a record field we need to know what type it is, but I
+can't tell the type here. Try adding type annotations to your function and
+try again.
+
+error: Unknown type for record access
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:48:21
+   │
+48 │   let assert True = dt.day >= 1 && dt.day <= 31
+   │                     ^^ I don't know what type this is
+
+In order to access a record field we need to know what type it is, but I
+can't tell the type here. Try adding type annotations to your function and
+try again.
+
+error: Unknown type for record access
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:48:36
+   │
+48 │   let assert True = dt.day >= 1 && dt.day <= 31
+   │                                    ^^ I don't know what type this is
+
+In order to access a record field we need to know what type it is, but I
+can't tell the type here. Try adding type annotations to your function and
+try again.
+
+error: Unknown type for record access
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:49:21
+   │
+49 │   let assert True = dt.hour >= 0 && dt.hour <= 23
+   │                     ^^ I don't know what type this is
+
+In order to access a record field we need to know what type it is, but I
+can't tell the type here. Try adding type annotations to your function and
+try again.
+
+error: Unknown type for record access
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:49:37
+   │
+49 │   let assert True = dt.hour >= 0 && dt.hour <= 23
+   │                                     ^^ I don't know what type this is
+
+In order to access a record field we need to know what type it is, but I
+can't tell the type here. Try adding type annotations to your function and
+try again.
+
+error: Unknown type for record access
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:50:21
+   │
+50 │   let assert True = dt.minute >= 0 && dt.minute <= 59
+   │                     ^^ I don't know what type this is
+
+In order to access a record field we need to know what type it is, but I
+can't tell the type here. Try adding type annotations to your function and
+try again.
+
+error: Unknown type for record access
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:50:39
+   │
+50 │   let assert True = dt.minute >= 0 && dt.minute <= 59
+   │                                       ^^ I don't know what type this is
+
+In order to access a record field we need to know what type it is, but I
+can't tell the type here. Try adding type annotations to your function and
+try again.
+
+error: Unknown type for record access
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:51:21
+   │
+51 │   let assert True = dt.second >= 0 && dt.second <= 59
+   │                     ^^ I don't know what type this is
+
+In order to access a record field we need to know what type it is, but I
+can't tell the type here. Try adding type annotations to your function and
+try again.
+
+error: Unknown type for record access
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:51:39
+   │
+51 │   let assert True = dt.second >= 0 && dt.second <= 59
+   │                                       ^^ I don't know what type this is
+
+In order to access a record field we need to know what type it is, but I
+can't tell the type here. Try adding type annotations to your function and
+try again.
+
+error: Unknown module
+  ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:6:1
+  │
+6 │ import hermes_beam/utils
+  │ ^^^^^^^^^^^^^^^^^^^^^^^^
+
+No module has been found with the name `hermes_beam/utils`.
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:13:3
+   │
+13 │   utils.is_truthy_value(dynamic_from(True), False)
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:16:3
+   │
+16 │   utils.is_truthy_value(dynamic_from(False), True)
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:19:3
+   │
+19 │   utils.is_truthy_value(dynamic_from("true"), False)
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:22:3
+   │
+22 │   utils.is_truthy_value(dynamic_from("yes"), False)
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:25:3
+   │
+25 │   utils.is_truthy_value(dynamic_from("on"), False)
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:28:3
+   │
+28 │   utils.is_truthy_value(dynamic_from("1"), False)
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:31:3
+   │
+31 │   utils.is_truthy_value(dynamic_from("off"), True)
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:34:3
+   │
+34 │   utils.is_truthy_value(dynamic_from(Nil), True)
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:39:3
+   │
+39 │   utils.normalize_proxy_url(None)
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:42:3
+   │
+42 │   utils.normalize_proxy_url(Some(""))
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:45:3
+   │
+45 │   utils.normalize_proxy_url(Some("socks://127.0.0.1:1080"))
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:48:3
+   │
+48 │   utils.normalize_proxy_url(Some("http://127.0.0.1:8080"))
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:53:3
+   │
+53 │   utils.base_url_hostname("https://api.openai.com/v1")
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:56:3
+   │
+56 │   utils.base_url_hostname("api.openai.com/v1")
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:59:3
+   │
+59 │   utils.base_url_hostname("")
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:64:3
+   │
+64 │   utils.base_url_host_matches("https://api.moonshot.ai/v1", "moonshot.ai")
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:67:3
+   │
+67 │   utils.base_url_host_matches("https://moonshot.ai", "moonshot.ai")
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:70:3
+   │
+70 │   utils.base_url_host_matches("https://evil.com/moonshot.ai/v1", "moonshot.ai")
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:73:3
+   │
+73 │   utils.base_url_host_matches("https://moonshot.ai.evil/v1", "moonshot.ai")
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:83:19
+   │
+83 │   let test_data = utils.YamlMap([
+   │                   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:84:14
+   │
+84 │     #("key", utils.YamlString("value")),
+   │              ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:85:17
+   │
+85 │     #("nested", utils.YamlMap([
+   │                 ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:86:19
+   │
+86 │       #("number", utils.YamlInt(123))
+   │                   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:91:22
+   │
+91 │   let write_result = utils.atomic_json_write(filepath, test_data, Some(420)) // 0o644 is 420 in decimal
+   │                      ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+    ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:109:19
+    │
+109 │   let test_data = utils.YamlMap([
+    │                   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+    ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:110:14
+    │
+110 │     #("key", utils.YamlString("value")),
+    │              ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+    ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:111:17
+    │
+111 │     #("nested", utils.YamlMap([
+    │                 ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+    ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:112:19
+    │
+112 │       #("number", utils.YamlInt(123))
+    │                   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+    ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:117:22
+    │
+117 │   let write_result = utils.atomic_yaml_write(filepath, test_data, Some(420))
+    │                      ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+

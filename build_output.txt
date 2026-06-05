@@ -1,0 +1,6 @@
+error: Project not found
+
+We were unable to find gleam.toml.
+
+We searched in /Users/moe/Desktop/ayncoder and all parent directories.
+

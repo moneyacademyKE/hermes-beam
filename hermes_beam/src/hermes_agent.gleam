@@ -1,0 +1,724 @@
+import gleam/dynamic/decode
+import gleam/int
+import gleam/io
+import gleam/json
+import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/string
+import hermes_client.{type LineParserState, StreamChunk, StreamEnd, StreamError, StreamStart, StreamTimeout}
+import hermes_exec
+import hermes_state
+import iteration_budget
+import sqlight
+
+// ─── Tool Schemas ─────────────────────────────────────────────────────────────
+// Static OpenAI-format tool schemas exposed to the LLM.
+
+pub const run_command_schema = "{\"type\":\"function\",\"function\":{\"name\":\"run_command\",\"description\":\"Execute a shell command in the sandboxed terminal environment and return its stdout/stderr output and exit code.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"description\":\"The shell command to run (e.g. \\\"ls -la\\\", \\\"cat README.md\\\", \\\"echo hello\\\").\"}},\"required\":[\"command\"]}}}"
+
+pub const write_file_schema = "{\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"description\":\"Write content to a file at the given path.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Absolute or relative path to the file to write.\"},\"content\":{\"type\":\"string\",\"description\":\"The text content to write to the file.\"}},\"required\":[\"path\",\"content\"]}}}"
+
+pub const read_file_schema = "{\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"description\":\"Read the contents of a file at the given path. Returns the file text on success or an error message.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Absolute or relative path to the file to read.\"}},\"required\":[\"path\"]}}}"
+
+// ─── Core Types ────────────────────────────────────────────────────────────────
+
+pub type AgentState {
+  AgentState(
+    session_id: String,
+    model: String,
+    cwd: String,
+    /// OpenAI-format message history as pre-encoded JSON strings
+    history: List(json.Json),
+    db_conn: sqlight.Connection,
+    exec_env: hermes_exec.TerminalEnv,
+    api_key: String,
+    base_url: String,
+    budget: iteration_budget.IterationBudget,
+    system_prompt: String,
+  )
+}
+
+/// Tool call parsed from LLM response JSON
+pub type ToolCall {
+  ToolCall(id: String, name: String, arguments: String)
+}
+
+/// A complete parsed LLM API response turn
+pub type AgentResponse {
+  FinalText(content: String)
+  ToolCalls(calls: List(ToolCall))
+  EmptyResponse
+  ErrorResponse(reason: String)
+}
+
+// ─── Tool Dispatcher ───────────────────────────────────────────────────────────
+
+/// Execute a single tool call and return its result as a JSON string.
+pub fn dispatch_tool(
+  exec_env: hermes_exec.TerminalEnv,
+  call: ToolCall,
+) -> #(hermes_exec.TerminalEnv, String) {
+  case call.name {
+    "run_command" -> {
+      let command = case json.parse(from: call.arguments, using: {
+        use cmd <- decode.field("command", decode.string)
+        decode.success(cmd)
+      }) {
+        Ok(cmd) -> cmd
+        Error(_) -> "echo 'Error: could not parse command argument'"
+      }
+      io.println("  [tool: run_command] $ " <> command)
+      let #(new_env, result) = hermes_exec.execute(exec_env, command, "", None)
+      case result {
+        Ok(#(output, exit_code)) -> {
+          let result_json =
+            json.object([
+              #("output", json.string(output)),
+              #("exit_code", json.int(exit_code)),
+            ])
+            |> json.to_string
+          #(new_env, result_json)
+        }
+        Error(err) -> {
+          let result_json =
+            json.object([#("error", json.string(err))])
+            |> json.to_string
+          #(new_env, result_json)
+        }
+      }
+    }
+
+    "write_file" -> {
+      let parsed = json.parse(from: call.arguments, using: {
+        use path <- decode.field("path", decode.string)
+        use content <- decode.field("content", decode.string)
+        decode.success(#(path, content))
+      })
+      case parsed {
+        Ok(#(path, content)) -> {
+          io.println("  [tool: write_file] -> " <> path)
+          let full_path = case string.starts_with(path, "/") {
+            True -> path
+            False -> exec_env.cwd <> "/" <> path
+          }
+          let write_result =
+            do_write_file(full_path, content)
+          let result_json = case write_result {
+            Ok(_) ->
+              json.object([#("status", json.string("ok")), #("path", json.string(full_path))])
+              |> json.to_string
+            Error(err) ->
+              json.object([#("error", json.string(err))])
+              |> json.to_string
+          }
+          #(exec_env, result_json)
+        }
+        Error(_) ->
+          #(exec_env, json.object([#("error", json.string("Invalid write_file arguments"))]) |> json.to_string)
+      }
+    }
+
+    "read_file" -> {
+      let parsed = json.parse(from: call.arguments, using: {
+        use path <- decode.field("path", decode.string)
+        decode.success(path)
+      })
+      case parsed {
+        Ok(path) -> {
+          io.println("  [tool: read_file] <- " <> path)
+          let full_path = case string.starts_with(path, "/") {
+            True -> path
+            False -> exec_env.cwd <> "/" <> path
+          }
+          let read_result = do_read_file(full_path)
+          let result_json = case read_result {
+            Ok(contents) ->
+              json.object([#("contents", json.string(contents))])
+              |> json.to_string
+            Error(err) ->
+              json.object([#("error", json.string(err))])
+              |> json.to_string
+          }
+          #(exec_env, result_json)
+        }
+        Error(_) ->
+          #(exec_env, json.object([#("error", json.string("Invalid read_file arguments"))]) |> json.to_string)
+      }
+    }
+
+    unknown -> {
+      io.println("  [tool: unknown] " <> unknown)
+      let result_json =
+        json.object([
+          #(
+            "error",
+            json.string(
+              "Unknown tool: " <> unknown <> ". Available: run_command, write_file, read_file",
+            ),
+          ),
+        ])
+        |> json.to_string
+      #(exec_env, result_json)
+    }
+  }
+}
+
+// ─── FFI Bindings for file I/O ─────────────────────────────────────────────────
+
+@external(erlang, "hermes_agent_ffi", "write_file")
+fn do_write_file(path: String, content: String) -> Result(Nil, String)
+
+@external(erlang, "hermes_agent_ffi", "read_file")
+fn do_read_file(path: String) -> Result(String, String)
+
+@external(erlang, "erlang", "system_time")
+fn system_time_ms() -> Int
+
+// ─── Tool Schema Builder ───────────────────────────────────────────────────────
+
+/// Returns the JSON string for all registered tool schemas to include in API requests.
+pub fn all_tool_schemas() -> String {
+  "[" <> run_command_schema <> "," <> write_file_schema <> "," <> read_file_schema <> "]"
+}
+
+// ─── Response Parsing ──────────────────────────────────────────────────────────
+
+/// Decode a tool_call JSON fragment into a ToolCall record.
+pub fn decode_tool_call(data: json.Json) -> Option(ToolCall) {
+  let decoder = {
+    use id <- decode.field("id", decode.string)
+    use function <- decode.field("function", {
+      use name <- decode.field("name", decode.string)
+      use arguments <- decode.field("arguments", decode.string)
+      decode.success(#(name, arguments))
+    })
+    decode.success(ToolCall(id: id, name: function.0, arguments: function.1))
+  }
+  let json_str = json.to_string(data)
+  case json.parse(from: json_str, using: decoder) {
+    Ok(tc) -> Some(tc)
+    Error(_) -> None
+  }
+}
+
+/// Parse a complete (non-streaming) OpenAI chat completion JSON response.
+pub fn parse_completion_response(json_str: String) -> AgentResponse {
+  let text_decoder = {
+    use choices <- decode.field("choices", decode.list({
+      use message <- decode.field("message", {
+        use content <- decode.field("content", decode.string)
+        decode.success(content)
+      })
+      decode.success(message)
+    }))
+    decode.success(choices)
+  }
+
+  let tool_decoder = {
+    use choices <- decode.field("choices", decode.list({
+      use message <- decode.field("message", {
+        use tool_calls <- decode.field("tool_calls", decode.list(decode.dynamic))
+        decode.success(tool_calls)
+      })
+      decode.success(message)
+    }))
+    decode.success(choices)
+  }
+
+  // Try to parse as tool calls first
+  case json.parse(from: json_str, using: tool_decoder) {
+    Ok([[first_dyn_call, ..] as dyn_calls, ..]) -> {
+      let _ = first_dyn_call
+      // Encode each dynamic value back to json for decode_tool_call
+      let raw_json_values = list.map(dyn_calls, fn(dyn) {
+        let _ = dyn
+        // Use dynamic decoder to extract tool call fields
+        json.null()
+      })
+      let _ = raw_json_values
+      // Parse tool calls from raw JSON strings
+      let tool_calls = parse_tool_calls_from_json(json_str)
+      case tool_calls {
+        [] -> EmptyResponse
+        calls -> ToolCalls(calls)
+      }
+    }
+    _ -> {
+      // Try text content
+      case json.parse(from: json_str, using: text_decoder) {
+        Ok([content, ..]) -> FinalText(content)
+        Ok([]) -> EmptyResponse
+        Error(_) -> EmptyResponse
+      }
+    }
+  }
+}
+
+/// Parse tool calls directly from a raw JSON string.
+/// Handles the OpenAI format: choices[0].message.tool_calls[].
+pub fn parse_tool_calls_from_json(json_str: String) -> List(ToolCall) {
+  let decoder = {
+    use choices <- decode.field("choices", decode.list({
+      use message <- decode.field("message", {
+        use tool_calls <- decode.field("tool_calls", decode.list({
+          use id <- decode.field("id", decode.string)
+          use function <- decode.field("function", {
+            use name <- decode.field("name", decode.string)
+            use arguments <- decode.field("arguments", decode.string)
+            decode.success(#(name, arguments))
+          })
+          decode.success(ToolCall(id: id, name: function.0, arguments: function.1))
+        }))
+        decode.success(tool_calls)
+      })
+      decode.success(message)
+    }))
+    decode.success(choices)
+  }
+  case json.parse(from: json_str, using: decoder) {
+    Ok([first_choice_calls, ..]) -> first_choice_calls
+    _ -> []
+  }
+}
+
+/// Parse finish_reason from a completion response JSON.
+pub fn parse_finish_reason(json_str: String) -> String {
+  let decoder = {
+    use choices <- decode.field("choices", decode.list({
+      use finish_reason <- decode.field("finish_reason", decode.string)
+      decode.success(finish_reason)
+    }))
+    decode.success(choices)
+  }
+  case json.parse(from: json_str, using: decoder) {
+    Ok([reason, ..]) -> reason
+    _ -> "stop"
+  }
+}
+
+// ─── SSE delta content extractor (reused from hermes_beam) ────────────────────
+
+fn decode_openai_delta(json_str: String) -> Result(String, Nil) {
+  let decoder = {
+    use choices <- decode.field("choices", decode.list({
+      use delta <- decode.field("delta", {
+        use content <- decode.field("content", decode.string)
+        decode.success(content)
+      })
+      decode.success(delta)
+    }))
+    decode.success(choices)
+  }
+  case json.parse(from: json_str, using: decoder) {
+    Ok([content, ..]) -> Ok(content)
+    _ -> Error(Nil)
+  }
+}
+
+fn decode_openai_delta_tool_calls(json_str: String) -> Bool {
+  // If choices[0].delta has tool_calls, we're in a tool call stream
+  let decoder = {
+    use choices <- decode.field("choices", decode.list({
+      use delta <- decode.field("delta", {
+        use tool_calls <- decode.field("tool_calls", decode.list(decode.dynamic))
+        decode.success(tool_calls)
+      })
+      decode.success(delta)
+    }))
+    decode.success(choices)
+  }
+  case json.parse(from: json_str, using: decoder) {
+    Ok([[_first_tc, ..], ..]) -> True
+    _ -> False
+  }
+}
+
+/// Decode streaming delta text from an SSE JSON line.
+/// Tries OpenAI delta format first, then Anthropic text format.
+pub fn extract_delta_content(json_str: String) -> String {
+  case decode_openai_delta(json_str) {
+    Ok(text) -> text
+    Error(_) -> {
+      let anthropic_decoder = {
+        use delta <- decode.field("delta", {
+          use text <- decode.field("text", decode.string)
+          decode.success(text)
+        })
+        decode.success(delta)
+      }
+      case json.parse(from: json_str, using: anthropic_decoder) {
+        Ok(text) -> text
+        Error(_) -> ""
+      }
+    }
+  }
+}
+
+// ─── Streaming Response Collector ─────────────────────────────────────────────
+
+/// Streams an SSE response from the LLM, printing delta text to stdout
+/// and accumulating the full content. Returns the full accumulated response.
+pub fn stream_and_collect(
+  req_id: hermes_client.ReqId,
+  parser: LineParserState,
+  accumulated: String,
+) -> #(String, Bool) {
+  case hermes_client.receive_stream_chunk(req_id, 30_000) {
+    StreamStart(_) ->
+      stream_and_collect(req_id, parser, accumulated)
+
+    StreamChunk(chunk) -> {
+      let #(lines, next_parser) = hermes_client.feed_chunk(parser, chunk)
+      let #(new_acc, saw_tool_call) =
+        list.fold(lines, #(accumulated, False), fn(state, line) {
+          let #(acc, tc_seen) = state
+          case hermes_client.parse_sse_line(line) {
+            Some(json_str) -> {
+              let text_delta = case decode_openai_delta(json_str) {
+                Ok(text) -> {
+                  io.print(text)
+                  text
+                }
+                Error(_) -> ""
+              }
+              let is_tool_call = decode_openai_delta_tool_calls(json_str)
+              #(acc <> text_delta, tc_seen || is_tool_call)
+            }
+            None -> #(acc, tc_seen)
+          }
+        })
+      stream_and_collect(req_id, next_parser, new_acc)
+      |> fn(result) {
+        let #(final_acc, final_tc) = result
+        #(final_acc, final_tc || saw_tool_call)
+      }
+    }
+
+    StreamEnd -> {
+      io.println("")
+      #(accumulated, False)
+    }
+
+    StreamError(reason) -> {
+      io.println("\n[Stream Error: " <> reason <> "]")
+      #(accumulated, False)
+    }
+
+    StreamTimeout -> {
+      io.println("\n[Stream Timeout]")
+      #(accumulated, False)
+    }
+  }
+}
+
+// ─── Build OpenAI Request Body ─────────────────────────────────────────────────
+
+/// Build an OpenAI-compatible chat completion request body JSON string.
+pub fn build_request_body(
+  model: String,
+  system_prompt: String,
+  history: List(json.Json),
+  tools: String,
+  stream: Bool,
+) -> String {
+  let system_msg =
+    json.object([
+      #("role", json.string("system")),
+      #("content", json.string(system_prompt)),
+    ])
+  let all_messages = [system_msg, ..history]
+
+  // Parse tools JSON string into a json.Json value for embedding
+  let tools_json = case json.parse(from: tools, using: decode.dynamic) {
+    Ok(_) -> tools
+    Error(_) -> "[]"
+  }
+
+  "{\"model\":\""
+  <> model
+  <> "\",\"messages\":"
+  <> json.to_string(json.array(all_messages, of: fn(x) { x }))
+  <> ",\"tools\":"
+  <> tools_json
+  <> ",\"stream\":"
+  <> case stream {
+    True -> "true"
+    False -> "false"
+  }
+  <> "}"
+}
+
+// ─── Message History Builders ──────────────────────────────────────────────────
+
+/// Create a user message JSON object.
+pub fn user_message(content: String) -> json.Json {
+  json.object([
+    #("role", json.string("user")),
+    #("content", json.string(content)),
+  ])
+}
+
+/// Create an assistant text message JSON object.
+pub fn assistant_message(content: String) -> json.Json {
+  json.object([
+    #("role", json.string("assistant")),
+    #("content", json.string(content)),
+  ])
+}
+
+/// Create an assistant message with tool_calls JSON.
+pub fn assistant_tool_calls_message(calls: List(ToolCall)) -> json.Json {
+  let tool_calls_json =
+    list.map(calls, fn(tc) {
+      json.object([
+        #("id", json.string(tc.id)),
+        #("type", json.string("function")),
+        #(
+          "function",
+          json.object([
+            #("name", json.string(tc.name)),
+            #("arguments", json.string(tc.arguments)),
+          ]),
+        ),
+      ])
+    })
+  json.object([
+    #("role", json.string("assistant")),
+    #("content", json.null()),
+    #("tool_calls", json.array(tool_calls_json, of: fn(x) { x })),
+  ])
+}
+
+/// Create a tool result message JSON object (role=tool).
+pub fn tool_result_message(tool_call_id: String, result: String) -> json.Json {
+  json.object([
+    #("role", json.string("tool")),
+    #("tool_call_id", json.string(tool_call_id)),
+    #("content", json.string(result)),
+  ])
+}
+
+// ─── Core Agent Loop ───────────────────────────────────────────────────────────
+
+/// Execute one agent turn:
+/// 1. Build request with current history + tools
+/// 2. Send to LLM via streaming POST
+/// 3. Accumulate response or collect tool calls
+/// 4. If tool calls: execute each, append results, recurse
+/// 5. If final text: persist and return
+pub fn agent_turn_loop(
+  state: AgentState,
+  api_call_count: Int,
+) -> Result(AgentState, String) {
+  // Budget check
+  case iteration_budget.consume(state.budget) {
+    False -> {
+      let budget_used = iteration_budget.used(state.budget)
+      io.println(
+        "\n⚠️  Iteration budget exhausted ("
+        <> int.to_string(budget_used)
+        <> " iterations used)",
+      )
+      Error("Budget exhausted after " <> int.to_string(api_call_count) <> " iterations")
+    }
+
+    True -> {
+      io.println(
+        "\n🔄 API call #"
+        <> int.to_string(api_call_count + 1)
+        <> " (model: "
+        <> state.model
+        <> ")",
+      )
+
+      let body = build_request_body(
+        state.model,
+        state.system_prompt,
+        list.reverse(state.history),
+        all_tool_schemas(),
+        True,
+      )
+
+      let headers = [
+        #("Authorization", "Bearer " <> state.api_key),
+        #("Content-Type", "application/json"),
+        #("Accept", "text/event-stream"),
+      ]
+
+      case hermes_client.stream_post_request(
+        state.base_url <> "/chat/completions",
+        headers,
+        "application/json",
+        body,
+      ) {
+        Error(err) -> {
+          io.println("\n[API Error: " <> err <> "]")
+          Error("API request failed: " <> err)
+        }
+
+        Ok(req_id) -> {
+          // Collect streaming response
+          let #(response_text, _saw_tool_calls_in_stream) =
+            stream_and_collect(req_id, hermes_client.new_line_parser(), "")
+
+          // If response_text is empty or signals tool calls, try a non-streaming
+          // call to get the structured tool_calls JSON
+          let response_trimmed = string.trim(response_text)
+          let tool_calls = case response_trimmed {
+            "" -> {
+              // Re-request without streaming to get tool_calls JSON
+              fetch_tool_calls_non_streaming(state, body)
+            }
+            _ -> []
+          }
+
+          case tool_calls {
+            // ── Tool call path ──────────────────────────────────────────────
+            [first_tc, ..] as calls -> {
+              io.println("\n🔧 Executing " <> int.to_string(list.length(calls)) <> " tool call(s)...")
+
+              // Append the assistant's tool_calls message to history
+              let history_with_assistant =
+                [assistant_tool_calls_message(calls), ..state.history]
+
+              // Execute each tool and collect results
+              let #(new_exec_env, new_history) =
+                list.fold(calls, #(state.exec_env, history_with_assistant), fn(acc, tc) {
+                  let #(current_env, current_history) = acc
+                  let #(next_env, result) = dispatch_tool(current_env, tc)
+                  let tool_msg = tool_result_message(tc.id, result)
+                  #(next_env, [tool_msg, ..current_history])
+                })
+
+              let _ = first_tc
+
+              // Recurse with updated state
+              agent_turn_loop(
+                AgentState(
+                  ..state,
+                  exec_env: new_exec_env,
+                  history: new_history,
+                  cwd: new_exec_env.cwd,
+                ),
+                api_call_count + 1,
+              )
+            }
+
+            // ── Final text response path ─────────────────────────────────────
+            [] -> {
+              let final_text = case response_trimmed {
+                "" -> "[No response from model]"
+                text -> text
+              }
+
+              // Record assistant response in DB
+              let timestamp =
+                int.to_float(system_time_ms()) /. 1000.0
+              let _ =
+                hermes_state.insert_message(
+                  state.db_conn,
+                  state.session_id,
+                  "assistant",
+                  final_text,
+                  timestamp,
+                )
+
+              let new_history =
+                [assistant_message(final_text), ..state.history]
+
+              Ok(AgentState(..state, history: new_history))
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Fallback: send a non-streaming request to get tool_calls JSON when
+/// streaming response was empty (model returned only tool calls, no text).
+pub fn fetch_tool_calls_non_streaming(
+  state: AgentState,
+  _streaming_body: String,
+) -> List(ToolCall) {
+  // Build non-streaming body
+  let body = build_request_body(
+    state.model,
+    state.system_prompt,
+    list.reverse(state.history),
+    all_tool_schemas(),
+    False,
+  )
+
+  let headers = [
+    #("Authorization", "Bearer " <> state.api_key),
+    #("Content-Type", "application/json"),
+  ]
+
+  case hermes_client.post_request(
+    state.base_url <> "/chat/completions",
+    headers,
+    "application/json",
+    body,
+  ) {
+    Ok(response_json) -> parse_tool_calls_from_json(response_json)
+    Error(_) -> []
+  }
+}
+
+// ─── Public Entry Point ────────────────────────────────────────────────────────
+
+/// Run a multi-turn conversation with the LLM, handling tool calls recursively.
+pub fn run_conversation(
+  state: AgentState,
+  user_prompt: String,
+) -> Result(AgentState, String) {
+  let timestamp = int.to_float(system_time_ms()) /. 1000.0
+
+  // Persist user message
+  let _ =
+    hermes_state.insert_message(
+      state.db_conn,
+      state.session_id,
+      "user",
+      user_prompt,
+      timestamp,
+    )
+
+  // Append user message to history
+  let new_history = [user_message(user_prompt), ..state.history]
+  let new_state = AgentState(..state, history: new_history)
+
+  agent_turn_loop(new_state, 0)
+}
+
+/// Create a new AgentState with a fresh iteration budget.
+pub fn new_agent_state(
+  session_id: String,
+  model: String,
+  cwd: String,
+  db_conn: sqlight.Connection,
+  exec_env: hermes_exec.TerminalEnv,
+  api_key: String,
+  base_url: String,
+  system_prompt: String,
+  max_iterations: Int,
+) -> Result(AgentState, String) {
+  case iteration_budget.start(max_iterations) {
+    Ok(budget) ->
+      Ok(AgentState(
+        session_id: session_id,
+        model: model,
+        cwd: cwd,
+        history: [],
+        db_conn: db_conn,
+        exec_env: exec_env,
+        api_key: api_key,
+        base_url: base_url,
+        budget: budget,
+        system_prompt: system_prompt,
+      ))
+    Error(_) ->
+      Error("Failed to start iteration budget actor")
+  }
+}

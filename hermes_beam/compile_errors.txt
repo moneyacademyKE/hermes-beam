@@ -1,0 +1,441 @@
+   Checking hermes_beam
+warning: Unused imported item
+  ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:2:22
+  │
+2 │ import gleam/option.{Some, None}
+  │                      ^^^^ This imported constructor is never used
+
+Hint: You can safely remove it.
+
+warning: Unused imported item
+  ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/time_test.gleam:2:28
+  │
+2 │ import gleam/option.{Some, None}
+  │                            ^^^^ This imported constructor is never used
+
+Hint: You can safely remove it.
+
+error: Type mismatch
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/src/utils.gleam:20:21
+   │
+20 │   case dynamic.bool(value) {
+   │                     ^^^^^
+
+Expected type:
+
+    Bool
+
+Found type:
+
+    Dynamic
+
+error: Type mismatch
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/src/utils.gleam:21:5
+   │
+21 │     Ok(b) -> b
+   │     ^^^^^
+
+Expected type:
+
+    Dynamic
+
+Found type:
+
+    Result(Bool, a)
+
+error: Type mismatch
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/src/utils.gleam:22:5
+   │
+22 │     Error(_) -> {
+   │     ^^^^^^^^
+
+Expected type:
+
+    Dynamic
+
+Found type:
+
+    Result(a, b)
+
+error: Type mismatch
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/src/utils.gleam:23:27
+   │
+23 │       case dynamic.string(value) {
+   │                           ^^^^^
+
+Expected type:
+
+    String
+
+Found type:
+
+    Dynamic
+
+error: Type mismatch
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/src/utils.gleam:24:9
+   │
+24 │         Ok(s) -> {
+   │         ^^^^^
+
+Expected type:
+
+    Dynamic
+
+Found type:
+
+    Result(String, a)
+
+error: Type mismatch
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/src/utils.gleam:28:9
+   │
+28 │         Error(_) -> {
+   │         ^^^^^^^^
+
+Expected type:
+
+    Dynamic
+
+Found type:
+
+    Result(a, b)
+
+error: Type mismatch
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/src/utils.gleam:32:32
+   │
+32 │               case dynamic.int(value) {
+   │                                ^^^^^
+
+Expected type:
+
+    Int
+
+Found type:
+
+    Dynamic
+
+error: Type mismatch
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/src/utils.gleam:33:17
+   │
+33 │                 Ok(i) -> i != 0
+   │                 ^^^^^
+
+Expected type:
+
+    Dynamic
+
+Found type:
+
+    Result(Int, a)
+
+error: Type mismatch
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/src/utils.gleam:34:17
+   │
+34 │                 Error(_) -> default
+   │                 ^^^^^^^^
+
+Expected type:
+
+    Dynamic
+
+Found type:
+
+    Result(a, b)
+
+error: Unknown module
+  ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:6:1
+  │
+6 │ import hermes_beam/utils
+  │ ^^^^^^^^^^^^^^^^^^^^^^^^
+
+No module has been found with the name `hermes_beam/utils`.
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:13:3
+   │
+13 │   utils.is_truthy_value(dynamic_from(True), False)
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:16:3
+   │
+16 │   utils.is_truthy_value(dynamic_from(False), True)
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:19:3
+   │
+19 │   utils.is_truthy_value(dynamic_from("true"), False)
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:22:3
+   │
+22 │   utils.is_truthy_value(dynamic_from("yes"), False)
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:25:3
+   │
+25 │   utils.is_truthy_value(dynamic_from("on"), False)
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:28:3
+   │
+28 │   utils.is_truthy_value(dynamic_from("1"), False)
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:31:3
+   │
+31 │   utils.is_truthy_value(dynamic_from("off"), True)
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:34:3
+   │
+34 │   utils.is_truthy_value(dynamic_from(Nil), True)
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:39:3
+   │
+39 │   utils.normalize_proxy_url(None)
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:42:3
+   │
+42 │   utils.normalize_proxy_url(Some(""))
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:45:3
+   │
+45 │   utils.normalize_proxy_url(Some("socks://127.0.0.1:1080"))
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:48:3
+   │
+48 │   utils.normalize_proxy_url(Some("http://127.0.0.1:8080"))
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:53:3
+   │
+53 │   utils.base_url_hostname("https://api.openai.com/v1")
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:56:3
+   │
+56 │   utils.base_url_hostname("api.openai.com/v1")
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:59:3
+   │
+59 │   utils.base_url_hostname("")
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:64:3
+   │
+64 │   utils.base_url_host_matches("https://api.moonshot.ai/v1", "moonshot.ai")
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:67:3
+   │
+67 │   utils.base_url_host_matches("https://moonshot.ai", "moonshot.ai")
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:70:3
+   │
+70 │   utils.base_url_host_matches("https://evil.com/moonshot.ai/v1", "moonshot.ai")
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:73:3
+   │
+73 │   utils.base_url_host_matches("https://moonshot.ai.evil/v1", "moonshot.ai")
+   │   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:83:19
+   │
+83 │   let test_data = utils.YamlMap([
+   │                   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:84:14
+   │
+84 │     #("key", utils.YamlString("value")),
+   │              ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:85:17
+   │
+85 │     #("nested", utils.YamlMap([
+   │                 ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:86:19
+   │
+86 │       #("number", utils.YamlInt(123))
+   │                   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+   ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:91:22
+   │
+91 │   let write_result = utils.atomic_json_write(filepath, test_data, Some(420)) // 0o644 is 420 in decimal
+   │                      ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+    ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:109:19
+    │
+109 │   let test_data = utils.YamlMap([
+    │                   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+    ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:110:14
+    │
+110 │     #("key", utils.YamlString("value")),
+    │              ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+    ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:111:17
+    │
+111 │     #("nested", utils.YamlMap([
+    │                 ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+    ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:112:19
+    │
+112 │       #("number", utils.YamlInt(123))
+    │                   ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
+error: Unknown module
+    ┌─ /Users/moe/Desktop/ayncoder/hermes_beam/test/utils_test.gleam:117:22
+    │
+117 │   let write_result = utils.atomic_yaml_write(filepath, test_data, Some(420))
+    │                      ^^^^^
+
+No module has been found with the name `utils`.
+
+Hint: Did you mean to import `utils`?
+
