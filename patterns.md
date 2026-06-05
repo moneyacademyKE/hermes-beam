@@ -193,4 +193,10 @@ Allow agents to persistently self-improve and increase benchmark pass rates by c
 4. **Register**: On success, the script is saved to the local skills/plugins directory and registered directly in the active runtime registry (e.g., calling `registry.register()` or `ctx.register_tool()`).
 5. **Persistence**: The skill remains in the persistent skill directory so future agent sessions can retrieve and reuse it directly, avoiding repeated LLM prompts.
 
+## 13. Functional Benchmark Runner Pipeline
 
+### Intent
+Execute automated evaluations across a suite of fixtures and queries using purely functional transformations without mutable process states or setup classes.
+
+### Pattern
+Define tasks as a static vector of immutable configuration maps (queries, tolerances, keywords, and expected answers). Thread tasks through a execution reducer, logging intermediate progress to stdout and accumulating outcomes in a stateful atom, producing a final report as JSON.

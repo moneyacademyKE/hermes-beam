@@ -144,4 +144,6 @@ This document summarizes the core learnings from porting python codebase element
     - **ML Access**: Python is the standard for accessing ML/NLP libraries but is poor at sandboxing and concurrent state management.
 *   **Implication**: Designing a production agent runtime means decomplecting these layers: utilizing BEAM for orchestrating agent instances, WebAssembly for sandboxed execution of tools, and Python strictly as a data-science/ML service layer.
 
-
+## 18. Pure Babashka Benchmark Runners
+*   **Pattern**: Replacing Python-based benchmark harnesses (like `claw_eval_runner.py`) with Babashka Clojure scripts (`claw_eval_runner.clj`) eliminates the dependency on the Python interpreter, virtual environments, and external package managers.
+*   **Result**: Sub-millisecond startup times and native access to lightweight HTTP clients (`babashka.http-client`) and JSON parsing (`cheshire`) make it highly suited for automated, containerized benchmark environments.
