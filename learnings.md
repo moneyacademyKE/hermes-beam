@@ -184,5 +184,14 @@ This document summarizes the core learnings from porting python codebase element
     - **SQLite Session Indexer (`hermes_state.py`)**: Python relies on file/thread locks to handle SQLite transactions, resulting in write contention. On BEAM, we can serialize writes inside a dedicated `GenServer` actor while executing read operations concurrently, avoiding locking overhead.
 *   **Resolution**: Prioritize porting the **Parallel Batch Runner** as the next high-utility component to unlock native multi-core task scheduling and isolation, followed by the **Platform Gateway** to leverage OTP fault tolerance.
 
+## 24. Gap Analysis: LLM Prompt-Injected Skills vs. Evolutionary Datalog Skills
+
+*   **Problem**: Designing an optimal skills framework that resolves prompt clutter, subprocess latency, and enables autonomous agent self-improvement.
+*   **Analysis**:
+    - **LLM Prompt-Injected Skills**: Requires feeding descriptions of all available tools/skills in the system prompt. The LLM must reason step-by-step to coordinate relationships, consuming tokens and risking logical breakdown. Self-improvement requires rewriting file assets.
+    - **Evolutionary Datalog Skills**: Decomplects instruction from execution. Skills are registered as EAVT datoms and recursive logic rules. The LLM is only exposed to a single database query interface (`query_facts`), delegating recursive reasoning (routing, access control) entirely to the local in-memory query engine. Self-improvement is modeled as a genetic mutation-test loop where the LLM writes new rules/facts, tests them in a dynamic registry sandbox, and registers them directly to SQLite on success.
+*   **Resolution**: Adopt Evolutionary Datalog Skills to achieve zero token bloat, microsecond local reasoning speeds, and robust, automated, database-persisted self-improvement loops.
+
+
 
 

@@ -312,4 +312,21 @@ Instead of using heavy OS subprocess pools (e.g. Python's `multiprocessing`):
 2. **Actor per Prompt**: Spawn a separate supervised task process (`Task.async` or specialized actor) for each prompt in the batch.
 3. **Robust Isolation**: The supervisor isolates each task process. If a task crashes (due to timeout or API errors), the supervisor handles the cleanup, writes a failure checkpoint, and lets the remaining workers run unimpaired.
 
+---
+
+## 20. Evolutionary Self-Improving Datalog Skill Pattern
+
+### Intent
+Enable agents to autonomously acquire and expand logical skills at runtime through feedback-driven code-logic mutation and persistent database transactions.
+
+### Pattern
+1. **Model Discovery Loop**: When an agent detects a query failure or is given a new domain logic task, it proposes a new Datalog rule set.
+2. **Sandbox Mutation**:
+   - The agent constructs a temporary `Registry` and compiles it with the candidate rules.
+   - It runs mock verification queries representing assertions (e.g. `route/path("X", "Y")` must be true).
+   - If verification fails, it feeds the results back to mutate the Datalog rules (fixing logic variables or clauses).
+3. **Transaction Persist**: On verification success, it transacts the Datalog skill's rules and facts directly to the database via `save_datoms` under a new Transaction ID.
+4. **Active Reload**: The GenServer State Actor reloads the compiled database, making the new capability instantly available for all subsequent queries.
+
+
 
