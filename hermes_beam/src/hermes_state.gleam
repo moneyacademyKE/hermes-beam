@@ -1,10 +1,20 @@
 import gleam/dynamic/decode
+import gleam/list
 import gleam/result
+import gleamdb.{type Database, type Datom, Datom}
 import sqlight
 
 pub const schema_sql = "
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS datoms (
+    entity TEXT NOT NULL,
+    attribute TEXT NOT NULL,
+    value TEXT NOT NULL,
+    tx INTEGER NOT NULL,
+    PRIMARY KEY (entity, attribute, value, tx)
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -301,4 +311,63 @@ pub fn search_messages(
     with: [sqlight.text(search_term)],
     expecting: match_decoder,
   )
+}
+
+pub fn save_datoms(
+  conn: sqlight.Connection,
+  datoms: List(Datom),
+  tx: Int,
+) -> Result(Nil, sqlight.Error) {
+  let _ = sqlight.exec("BEGIN TRANSACTION;", conn)
+  let query = "
+    INSERT OR REPLACE INTO datoms (entity, attribute, value, tx)
+    VALUES (?, ?, ?, ?);
+  "
+  
+  let res = list.try_each(datoms, fn(datom) {
+    sqlight.query(
+      query,
+      on: conn,
+      with: [
+        sqlight.text(datom.entity),
+        sqlight.text(datom.attribute),
+        sqlight.text(datom.value),
+        sqlight.int(tx),
+      ],
+      expecting: decode.dynamic,
+    )
+    |> result.map(fn(_) { Nil })
+  })
+  
+  case res {
+    Ok(_) -> {
+      let _ = sqlight.exec("COMMIT;", conn)
+      Ok(Nil)
+    }
+    Error(err) -> {
+      let _ = sqlight.exec("ROLLBACK;", conn)
+      Error(err)
+    }
+  }
+}
+
+pub fn load_database(conn: sqlight.Connection) -> Result(Database, sqlight.Error) {
+  let query = "SELECT entity, attribute, value FROM datoms ORDER BY tx ASC;"
+  
+  let datom_decoder = {
+    use entity <- decode.field(0, decode.string)
+    use attribute <- decode.field(1, decode.string)
+    use value <- decode.field(2, decode.string)
+    decode.success(Datom(entity: entity, attribute: attribute, value: value))
+  }
+  
+  case sqlight.query(query, on: conn, with: [], expecting: datom_decoder) {
+    Ok(datoms) -> {
+      let db =
+        gleamdb.new()
+        |> gleamdb.transact(datoms)
+      Ok(db)
+    }
+    Error(err) -> Error(err)
+  }
 }
