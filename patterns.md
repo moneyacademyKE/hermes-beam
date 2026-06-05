@@ -328,5 +328,19 @@ Enable agents to autonomously acquire and expand logical skills at runtime throu
 3. **Transaction Persist**: On verification success, it transacts the Datalog skill's rules and facts directly to the database via `save_datoms` under a new Transaction ID.
 4. **Active Reload**: The GenServer State Actor reloads the compiled database, making the new capability instantly available for all subsequent queries.
 
+---
+
+## 21. Acyclic Domain-Persistence Decoupling Pattern
+
+### Intent
+Expose domain operations (like rule persistence or code analysis) that write to databases or coordinate actors, without coupling the domain logic to specific system actor implementations or forming circular dependency loops.
+
+### Pattern
+Instead of importing the actor system directly in domain code:
+1. **Low-level Target**: Define domain helper functions targeting pure parameters (like standard `Connection` objects or simple lists) instead of stateful Actor references.
+2. **Actor Orchestration**: Let the stateful Actor wrapper import the domain modules. The Actor handles mapping its internal mailbox messages to calls against the pure domain functions.
+3. **Acyclic Hierarchy**: The dependency hierarchy flows strictly downward: Stateful Actors -> Domain Logic -> Basic Drivers/Types. The domain logic remains side-effect free and decoupled.
+
+
 
 

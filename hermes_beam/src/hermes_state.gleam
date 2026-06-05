@@ -3,6 +3,7 @@ import gleam/list
 import gleam/result
 import gleamdb.{type Database, type Datom, Datom}
 import sqlight
+import evolutionary
 
 pub const schema_sql = "
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -363,9 +364,11 @@ pub fn load_database(conn: sqlight.Connection) -> Result(Database, sqlight.Error
   
   case sqlight.query(query, on: conn, with: [], expecting: datom_decoder) {
     Ok(datoms) -> {
+      let rules = evolutionary.datoms_to_rules(datoms)
       let db =
         gleamdb.new()
         |> gleamdb.transact(datoms)
+        |> gleamdb.evaluate_rules(rules)
       Ok(db)
     }
     Error(err) -> Error(err)

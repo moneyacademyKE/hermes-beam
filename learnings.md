@@ -192,6 +192,18 @@ This document summarizes the core learnings from porting python codebase element
     - **Evolutionary Datalog Skills**: Decomplects instruction from execution. Skills are registered as EAVT datoms and recursive logic rules. The LLM is only exposed to a single database query interface (`query_facts`), delegating recursive reasoning (routing, access control) entirely to the local in-memory query engine. Self-improvement is modeled as a genetic mutation-test loop where the LLM writes new rules/facts, tests them in a dynamic registry sandbox, and registers them directly to SQLite on success.
 *   **Resolution**: Adopt Evolutionary Datalog Skills to achieve zero token bloat, microsecond local reasoning speeds, and robust, automated, database-persisted self-improvement loops.
 
+## 25. Homoiconic Datalog Rule Serialization as Datoms
+
+*   **Problem**: How to persist dynamic Datalog rules inside a flat, standard relational EAVT database schema without introducing complex multi-entity joins or database locking.
+*   **Resolution**: Deconstruct the logic rule `Rule(head, body)` into a list of standard `Datom` records by using a flat, positional key-encoding scheme for attributes. We store head components under attributes `rule/head_0`, `rule/head_1`, `rule/head_2`, and each body clause `i` under attributes `rule/body_i_0`, `rule/body_i_1`, `rule/body_i_2`.
+*   **Outcome**: Rules are stored as pure data facts, enabling standard Datalog queries to read, inspect, and reason over active rules within the database itself.
+
+## 26. Acyclic Dependency Management in Gleam
+
+*   **Problem**: Gleam does not allow circular imports between modules (e.g. A -> B -> A). In complex architectures involving persistence actors (`state_actor.gleam`), database schema handlers (`hermes_state.gleam`), and serialization domain logic (`evolutionary.gleam`), circular references are easy to introduce if serialization needs to write to actors, and actors need to call serialization.
+*   **Resolution**: Keep domain logic modules completely pure and decoupled from persistence-specific actors. By having `evolutionary.gleam` depend only on raw database connections (`sqlight.Connection`) rather than actor subjects, and allowing the state actor to orchestrate deserialization, we completely break compile-time cycles while maintaining full end-to-end integration.
+
+
 
 
 

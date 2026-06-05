@@ -1,0 +1,185 @@
+import gleam/dict.{type Dict}
+import gleam/list
+import gleam/int
+import gleam/string
+import gleam/result
+import gleamdb.{type Datom, type Rule, Datom, Rule}
+import gleam/dynamic/decode
+import skill.{type Skill}
+import sqlight
+
+pub fn rule_to_datoms(rule_name: String, rule: Rule) -> List(Datom) {
+  let head_datoms = [
+    Datom(rule_name, "rule/head_0", rule.head.0),
+    Datom(rule_name, "rule/head_1", rule.head.1),
+    Datom(rule_name, "rule/head_2", rule.head.2),
+  ]
+
+  let body_datoms =
+    list.index_map(rule.body, fn(clause, idx) {
+      let prefix = "rule/body_" <> int.to_string(idx) <> "_"
+      [
+        Datom(rule_name, prefix <> "0", clause.0),
+        Datom(rule_name, prefix <> "1", clause.1),
+        Datom(rule_name, prefix <> "2", clause.2),
+      ]
+    })
+    |> list.flatten
+
+  list.append(head_datoms, body_datoms)
+}
+
+fn find_value(datoms: List(Datom), attr: String) -> String {
+  case list.find(datoms, fn(d) { d.attribute == attr }) {
+    Ok(d) -> d.value
+    Error(_) -> ""
+  }
+}
+
+fn extract_body(
+  datoms: List(Datom),
+  idx: Int,
+  acc: List(#(String, String, String)),
+) -> List(#(String, String, String)) {
+  let e_attr = "rule/body_" <> int.to_string(idx) <> "_0"
+  let a_attr = "rule/body_" <> int.to_string(idx) <> "_1"
+  let v_attr = "rule/body_" <> int.to_string(idx) <> "_2"
+
+  let has_clause = list.any(datoms, fn(d) { d.attribute == e_attr })
+  case has_clause {
+    True -> {
+      let clause = #(
+        find_value(datoms, e_attr),
+        find_value(datoms, a_attr),
+        find_value(datoms, v_attr),
+      )
+      extract_body(datoms, idx + 1, list.append(acc, [clause]))
+    }
+    False -> acc
+  }
+}
+
+pub fn datoms_to_rules(datoms: List(Datom)) -> List(Rule) {
+  let grouped =
+    list.fold(datoms, dict.new(), fn(acc, datom) {
+      let list_for_entity = dict.get(acc, datom.entity) |> result.unwrap([])
+      dict.insert(acc, datom.entity, [datom, ..list_for_entity])
+    })
+
+  dict.values(grouped)
+  |> list.filter_map(fn(entity_datoms) {
+    let has_head = list.any(entity_datoms, fn(d) { d.attribute == "rule/head_0" })
+    case has_head {
+      True -> {
+        let head_0 = find_value(entity_datoms, "rule/head_0")
+        let head_1 = find_value(entity_datoms, "rule/head_1")
+        let head_2 = find_value(entity_datoms, "rule/head_2")
+        let body = extract_body(entity_datoms, 0, [])
+        Ok(Rule(head: #(head_0, head_1, head_2), body: body))
+      }
+      False -> Error(Nil)
+    }
+  })
+}
+
+pub fn verify_skill(
+  skill: Skill,
+  checks: List(#(List(#(String, String, String)), List(Dict(String, String)))),
+) -> Result(Nil, String) {
+  let db =
+    gleamdb.new()
+    |> gleamdb.transact(skill.facts)
+    |> gleamdb.evaluate_rules(skill.rules)
+
+  list.try_each(checks, fn(check) {
+    let #(query_clauses, expected_bindings) = check
+    let actual_bindings = gleamdb.query(db, query_clauses)
+
+    let len_actual = list.length(actual_bindings)
+    let len_expected = list.length(expected_bindings)
+
+    case len_actual == len_expected {
+      True -> {
+        let all_matched =
+          list.all(expected_bindings, fn(expected) {
+            list.contains(actual_bindings, expected)
+          })
+        case all_matched {
+          True -> Ok(Nil)
+          False -> {
+            let msg =
+              "Verification failed. Query: "
+              <> string.inspect(query_clauses)
+              <> "\nExpected: "
+              <> string.inspect(expected_bindings)
+              <> "\nActual: "
+              <> string.inspect(actual_bindings)
+            Error(msg)
+          }
+        }
+      }
+      False -> {
+        let msg =
+          "Verification failed. Binding count mismatch. Query: "
+          <> string.inspect(query_clauses)
+          <> "\nExpected length: "
+          <> int.to_string(len_expected)
+          <> ", got: "
+          <> int.to_string(len_actual)
+          <> "\nExpected: "
+          <> string.inspect(expected_bindings)
+          <> "\nActual: "
+          <> string.inspect(actual_bindings)
+        Error(msg)
+      }
+    }
+  })
+}
+
+pub fn persist_skill(
+  conn: sqlight.Connection,
+  skill: Skill,
+  tx: Int,
+) -> Result(Nil, sqlight.Error) {
+  let rule_datoms =
+    list.index_map(skill.rules, fn(rule, idx) {
+      let rule_name = "rule/" <> skill.name <> "/" <> int.to_string(idx)
+      rule_to_datoms(rule_name, rule)
+    })
+    |> list.flatten
+
+  let all_datoms = list.append(skill.facts, rule_datoms)
+
+  let _ = sqlight.exec("BEGIN TRANSACTION;", conn)
+  let query = "
+    INSERT OR REPLACE INTO datoms (entity, attribute, value, tx)
+    VALUES (?, ?, ?, ?);
+  "
+
+  let res =
+    list.try_each(all_datoms, fn(datom) {
+      sqlight.query(
+        query,
+        on: conn,
+        with: [
+          sqlight.text(datom.entity),
+          sqlight.text(datom.attribute),
+          sqlight.text(datom.value),
+          sqlight.int(tx),
+        ],
+        expecting: decode.dynamic,
+      )
+      |> result.map(fn(_) { Nil })
+    })
+
+  case res {
+    Ok(_) -> {
+      let _ = sqlight.exec("COMMIT;", conn)
+      Ok(Nil)
+    }
+    Error(err) -> {
+      let _ = sqlight.exec("ROLLBACK;", conn)
+      Error(err)
+    }
+  }
+}
