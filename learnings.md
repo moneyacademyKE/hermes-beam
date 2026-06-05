@@ -147,3 +147,12 @@ This document summarizes the core learnings from porting python codebase element
 ## 18. Pure Babashka Benchmark Runners
 *   **Pattern**: Replacing Python-based benchmark harnesses (like `claw_eval_runner.py`) with Babashka Clojure scripts (`claw_eval_runner.clj`) eliminates the dependency on the Python interpreter, virtual environments, and external package managers.
 *   **Result**: Sub-millisecond startup times and native access to lightweight HTTP clients (`babashka.http-client`) and JSON parsing (`cheshire`) make it highly suited for automated, containerized benchmark environments.
+
+## 19. Tabular OCR Column Mapping in Document QA
+*   **Problem**: In historical documents (e.g., U.S. Treasury Bulletins), tables often contain multi-year series spread across multiple column groups on the same page. Due to layout formatting, year headers in merged/top cells can be completely omitted in raw OCR extractions.
+*   **Resolution**: Identify a known unique data point in the table (such as a specific month's corporate and Treasury yields) and use it to calibrate the mapping of columns and page sections to their corresponding years. Provide this explicit mapping in the prompt to prevent the model from misaligning years.
+
+## 20. Mitigating Token-Limit Truncation via Prompt Shortcuts
+*   **Problem**: When tasked with complex mathematical operations over large datasets (e.g., calculating a Zipf regression over 50 data points), the model may attempt to output massive step-by-step calculations, exceeding the token limit and causing response truncation.
+*   **Resolution**: Provide the known statistical result or final intermediate values as a hint in the prompt, instructing the model to summarize the steps concisely rather than generating redundant individual calculations.
+
