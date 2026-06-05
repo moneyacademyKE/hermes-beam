@@ -286,3 +286,30 @@ let routing_skill = Skill(
 )
 ```
 
+---
+
+## 18. Actor-Isolated SQLite Writer Pattern (BEAM SQLite GenServer)
+
+### Intent
+Resolve SQLite write lock contention and coordinate multiple database readers/writers safely inside a concurrent actor system without thread-level locking.
+
+### Pattern
+Instead of letting each thread or process open its own SQLite write descriptor directly:
+1. **GenServer Owner**: Create a dedicated GenServer actor process that opens the SQLite connection.
+2. **Sequential Writes**: Route all database writes (insert, update, delete) as synchronous or asynchronous message casts to this owner process. The BEAM mailbox naturally serializes the writes, preventing database locks.
+3. **Concurrent Reads**: Allow other concurrent processes to read directly from the database using read-only connections, ensuring zero bottleneck for read queries.
+
+---
+
+## 19. Supervised Parallel Task Pool Pattern (BEAM Batch Processing)
+
+### Intent
+Run massive batch runs of agents across datasets concurrently with robust isolation, ensuring crashes in one agent do not corrupt or crash the overall runner process.
+
+### Pattern
+Instead of using heavy OS subprocess pools (e.g. Python's `multiprocessing`):
+1. **Dynamic Task Supervisor**: Start a `DynamicSupervisor` actor to manage the batch runner.
+2. **Actor per Prompt**: Spawn a separate supervised task process (`Task.async` or specialized actor) for each prompt in the batch.
+3. **Robust Isolation**: The supervisor isolates each task process. If a task crashes (due to timeout or API errors), the supervisor handles the cleanup, writes a failure checkpoint, and lets the remaining workers run unimpaired.
+
+

@@ -175,4 +175,14 @@ This document summarizes the core learnings from porting python codebase element
     - **Determinism**: Text-based scripts rely on string parsing and dynamic stdout checks. Datalog skills run type-safe, compile-time checked logic with clean success/error boundaries.
 *   **Resolution**: Build a compiled, in-memory `Registry` that registers skills as Datalog facts/rules, eliminating prompt injection and subprocess overhead entirely for reasoning tasks.
 
+## 23. Gap Analysis: Legacy Python Components vs. Erlang/OTP BEAM Ports
+
+*   **Problem**: Identifying high-utility components in the legacy Python codebase and evaluating the architectural gaps when porting them to the Erlang/OTP BEAM stack.
+*   **Analysis**:
+    - **Parallel Batch Runner (`batch_runner.py`)**: Python complects parallel execution via OS subprocess forks (`multiprocessing`), causing high memory footprint and slow start times. On BEAM, we can run concurrent task pools using lightweight processes.
+    - **Platform Gateway (`gateway/`)**: Python handles platform adapters (Telegram, Discord, Slack, etc.) using async loops that can block on CPU tasks or lock up the entire runner. On BEAM, each adapter runs under a separate supervision tree (OTP supervisors), meaning socket crashes or errors in one adapter do not affect others.
+    - **SQLite Session Indexer (`hermes_state.py`)**: Python relies on file/thread locks to handle SQLite transactions, resulting in write contention. On BEAM, we can serialize writes inside a dedicated `GenServer` actor while executing read operations concurrently, avoiding locking overhead.
+*   **Resolution**: Prioritize porting the **Parallel Batch Runner** as the next high-utility component to unlock native multi-core task scheduling and isolation, followed by the **Platform Gateway** to leverage OTP fault tolerance.
+
+
 
