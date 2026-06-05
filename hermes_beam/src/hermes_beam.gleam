@@ -8,6 +8,9 @@ import hermes_exec
 import hermes_state
 import sqlight
 import utils
+import evolutionary
+import skill.{Skill}
+import gleamdb.{Datom, Rule}
 
 // ─── REPL State ───────────────────────────────────────────────────────────────
 
@@ -304,6 +307,60 @@ pub fn main() -> Nil {
   let db_path = constants.path_join(constants.get_hermes_home(), "state.db")
   let assert Ok(conn) = hermes_state.connect(db_path)
   let assert Ok(Nil) = hermes_state.init_schema(conn)
+
+  // 1b. Seed/persist local skills
+  let routing_skill =
+    Skill(
+      name: "network-routing",
+      description: "Calculates paths between network nodes",
+      rules: [
+        Rule(
+          head: #("?x", "route/path", "?y"),
+          body: [#("?x", "route/link", "?y")],
+        ),
+        Rule(
+          head: #("?x", "route/path", "?y"),
+          body: [#("?x", "route/path", "?z"), #("?z", "route/link", "?y")],
+        ),
+      ],
+      facts: [
+        Datom("A", "route/link", "B"),
+        Datom("B", "route/link", "C"),
+        Datom("C", "route/link", "D"),
+      ],
+    )
+
+  let permission_skill =
+    Skill(
+      name: "user-permissions",
+      description: "Calculates recursive group permission membership rules",
+      rules: [
+        Rule(
+          head: #("?user", "user/member-of-recursive", "?group"),
+          body: [#("?user", "user/member-of", "?group")],
+        ),
+        Rule(
+          head: #("?user", "user/member-of-recursive", "?group"),
+          body: [
+            #("?user", "user/member-of-recursive", "?subgroup"),
+            #("?subgroup", "group/subgroup-of", "?group"),
+          ],
+        ),
+      ],
+      facts: [
+        Datom("alice", "user/member-of", "engineering"),
+        Datom("bob", "user/member-of", "guests"),
+        Datom("engineering", "group/subgroup-of", "admins"),
+        Datom("admins", "permission/grant", "read:documents"),
+        Datom("admins", "permission/grant", "write:documents"),
+        Datom("engineering", "permission/grant", "read:code"),
+        Datom("guests", "permission/grant", "read:public"),
+      ],
+    )
+
+  let assert Ok(Nil) = evolutionary.persist_skill(conn, routing_skill, 1)
+  let assert Ok(Nil) = evolutionary.persist_skill(conn, permission_skill, 1)
+
 
   // 2. Load credentials
   let #(api_key, base_url) = resolve_api_credentials()
