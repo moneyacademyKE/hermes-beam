@@ -341,6 +341,19 @@ Instead of importing the actor system directly in domain code:
 2. **Actor Orchestration**: Let the stateful Actor wrapper import the domain modules. The Actor handles mapping its internal mailbox messages to calls against the pure domain functions.
 3. **Acyclic Hierarchy**: The dependency hierarchy flows strictly downward: Stateful Actors -> Domain Logic -> Basic Drivers/Types. The domain logic remains side-effect free and decoupled.
 
+---
+
+## 22. SkillOpt Dynamic Patch Optimization Pattern
+
+### Intent
+Systematically optimize dynamic skills (rules and facts) inside an agent logic database without regressing on previously established validation checks.
+
+### Pattern
+1. **Discrete Mutation**: Model edits to logic states using an algebraic data type (`Patch`) carrying parameters for insertion (`AddRule`/`AddFact`), deletion (`DeleteRule`/`DeleteFact`), or replacement (`ReplaceRule`/`ReplaceFact`).
+2. **Evaluative Feedback Loop**: Define a validation gate (`evaluate_candidate`) that executes the modified database snapshot against a held-out set of query checks, returning a numeric success ratio.
+3. **Validation Gate Selection**: Fold over a stream of candidate patches, evaluating each patch state. Accept updates only if their score exceeds the current best baseline, reverting any changes that cause regressions.
+
+
 
 
 

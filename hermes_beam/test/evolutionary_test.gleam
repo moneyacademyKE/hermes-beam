@@ -118,3 +118,148 @@ pub fn persist_and_load_skill_test() {
   let assert True = list.contains(results, dict.from_list([#("?dest", "C")]))
 }
 
+pub fn apply_patch_test() {
+  let initial_skill =
+    Skill(
+      name: "patch-test",
+      description: "Testing skill patches",
+      rules: [
+        Rule(
+          head: #("?x", "route/path", "?y"),
+          body: [#("?x", "route/link", "?y")],
+        ),
+      ],
+      facts: [
+        Datom("A", "route/link", "B"),
+      ],
+    )
+
+  let rule_to_add =
+    Rule(
+      head: #("?x", "route/path", "?y"),
+      body: [#("?x", "route/path", "?z"), #("?z", "route/link", "?y")],
+    )
+
+  // 1. AddRule
+  let s = evolutionary.apply_patch(initial_skill, evolutionary.AddRule(rule_to_add))
+  let assert 2 = list.length(s.rules)
+
+  // 2. DeleteRule
+  let s2 = evolutionary.apply_patch(s, evolutionary.DeleteRule(rule_to_add))
+  let assert 1 = list.length(s2.rules)
+
+  // 3. ReplaceRule
+  let replacement_rule =
+    Rule(
+      head: #("?x", "route/path", "?y"),
+      body: [#("?x", "route/link_two", "?y")],
+    )
+  let s3 =
+    evolutionary.apply_patch(
+      initial_skill,
+      evolutionary.ReplaceRule(
+        old: Rule(
+          head: #("?x", "route/path", "?y"),
+          body: [#("?x", "route/link", "?y")],
+        ),
+        new: replacement_rule,
+      ),
+    )
+  let assert [r] = s3.rules
+  let assert "route/link_two" = list.first(r.body) |> assert_ok |> fn(clause) { clause.1 }
+
+  // 4. AddFact
+  let s4 = evolutionary.apply_patch(initial_skill, evolutionary.AddFact(Datom("B", "route/link", "C")))
+  let assert 2 = list.length(s4.facts)
+
+  // 5. DeleteFact
+  let s5 = evolutionary.apply_patch(s4, evolutionary.DeleteFact(Datom("A", "route/link", "B")))
+  let assert 1 = list.length(s5.facts)
+
+  // 6. ReplaceFact
+  let s6 =
+    evolutionary.apply_patch(
+      initial_skill,
+      evolutionary.ReplaceFact(
+        old: Datom("A", "route/link", "B"),
+        new: Datom("A", "route/link", "Z"),
+      ),
+    )
+  let assert [f] = s6.facts
+  let assert "Z" = f.value
+}
+
+fn assert_ok(res: Result(a, b)) -> a {
+  let assert Ok(val) = res
+  val
+}
+
+pub fn evaluate_candidate_test() {
+  let test_skill =
+    Skill(
+      name: "eval-test",
+      description: "Testing evaluation",
+      rules: [
+        Rule(
+          head: #("?x", "route/path", "?y"),
+          body: [#("?x", "route/link", "?y")],
+        ),
+      ],
+      facts: [
+        Datom("A", "route/link", "B"),
+        Datom("B", "route/link", "C"),
+      ],
+    )
+
+  let checks = [
+    #([#("A", "route/path", "?dest")], [dict.from_list([#("?dest", "B")])]),
+    #([#("B", "route/path", "?dest")], [dict.from_list([#("?dest", "C")])]),
+    #([#("A", "route/path", "?dest")], [dict.from_list([#("?dest", "C")])]), // this fails under the current rules
+  ]
+
+  let score = evolutionary.evaluate_candidate(test_skill, checks)
+  // 2 out of 3 checks should pass
+  let assert True = score >. 0.66 && score <. 0.67
+}
+
+pub fn optimize_skill_test() {
+  let test_skill =
+    Skill(
+      name: "opt-test",
+      description: "Testing optimization",
+      rules: [
+        Rule(
+          head: #("?x", "route/path", "?y"),
+          body: [#("?x", "route/link", "?y")],
+        ),
+      ],
+      facts: [
+        Datom("A", "route/link", "B"),
+        Datom("B", "route/link", "C"),
+      ],
+    )
+
+  let checks = [
+    #([#("A", "route/path", "B")], [dict.new()]),
+    #([#("B", "route/path", "C")], [dict.new()]),
+    #([#("A", "route/path", "C")], [dict.new()]),
+  ]
+
+  let rule_to_add =
+    Rule(
+      head: #("?x", "route/path", "?y"),
+      body: [#("?x", "route/path", "?z"), #("?z", "route/link", "?y")],
+    )
+
+  let patches = [
+    evolutionary.AddRule(rule_to_add),
+    evolutionary.AddFact(Datom("X", "route/link", "Y")), // doesn't improve check score
+  ]
+
+  let #(optimized_skill, score) = evolutionary.optimize_skill(test_skill, patches, checks)
+
+  // Score should be 1.0 (all checks pass)
+  let assert 1.0 = score
+  let assert 2 = list.length(optimized_skill.rules)
+}
+

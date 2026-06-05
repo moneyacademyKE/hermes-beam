@@ -203,6 +203,12 @@ This document summarizes the core learnings from porting python codebase element
 *   **Problem**: Gleam does not allow circular imports between modules (e.g. A -> B -> A). In complex architectures involving persistence actors (`state_actor.gleam`), database schema handlers (`hermes_state.gleam`), and serialization domain logic (`evolutionary.gleam`), circular references are easy to introduce if serialization needs to write to actors, and actors need to call serialization.
 *   **Resolution**: Keep domain logic modules completely pure and decoupled from persistence-specific actors. By having `evolutionary.gleam` depend only on raw database connections (`sqlight.Connection`) rather than actor subjects, and allowing the state actor to orchestrate deserialization, we completely break compile-time cycles while maintaining full end-to-end integration.
 
+## 27. Microsoft SkillOpt Optimization Loops on Datalog Runtimes
+
+*   **Problem**: How to optimize Datalog skills dynamically without breaking existing system behavior or causing regressions on prior validation criteria.
+*   **Resolution**: Adopt the Microsoft SkillOpt paradigm. We represent skill modifications as a union type of discrete edits (`Patch`: `AddRule`, `DeleteRule`, `ReplaceRule`, etc.). We evaluate candidate skill configurations against a suite of held-out validation checks, and optimize by accepting only patches that yield a strict improvement in the check pass-ratio (the validation gate), rejecting score-decreasing modifications.
+
+
 
 
 

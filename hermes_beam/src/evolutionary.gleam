@@ -5,7 +5,7 @@ import gleam/string
 import gleam/result
 import gleamdb.{type Datom, type Rule, Datom, Rule}
 import gleam/dynamic/decode
-import skill.{type Skill}
+import skill.{type Skill, Skill}
 import sqlight
 
 pub fn rule_to_datoms(rule_name: String, rule: Rule) -> List(Datom) {
@@ -183,3 +183,99 @@ pub fn persist_skill(
     }
   }
 }
+
+pub type Check =
+  #(List(#(String, String, String)), List(Dict(String, String)))
+
+pub type Patch {
+  AddRule(Rule)
+  DeleteRule(Rule)
+  ReplaceRule(old: Rule, new: Rule)
+  AddFact(Datom)
+  DeleteFact(Datom)
+  ReplaceFact(old: Datom, new: Datom)
+}
+
+pub fn apply_patch(skill: Skill, patch: Patch) -> Skill {
+  case patch {
+    AddRule(rule) -> {
+      let rules = case list.contains(skill.rules, rule) {
+        True -> skill.rules
+        False -> list.append(skill.rules, [rule])
+      }
+      Skill(..skill, rules: rules)
+    }
+    DeleteRule(rule) -> {
+      let rules = list.filter(skill.rules, fn(r) { r != rule })
+      Skill(..skill, rules: rules)
+    }
+    ReplaceRule(old, new) -> {
+      let rules =
+        list.map(skill.rules, fn(r) {
+          case r == old {
+            True -> new
+            False -> r
+          }
+        })
+      Skill(..skill, rules: rules)
+    }
+    AddFact(fact) -> {
+      let facts = case list.contains(skill.facts, fact) {
+        True -> skill.facts
+        False -> list.append(skill.facts, [fact])
+      }
+      Skill(..skill, facts: facts)
+    }
+    DeleteFact(fact) -> {
+      let facts = list.filter(skill.facts, fn(f) { f != fact })
+      Skill(..skill, facts: facts)
+    }
+    ReplaceFact(old, new) -> {
+      let facts =
+        list.map(skill.facts, fn(f) {
+          case f == old {
+            True -> new
+            False -> f
+          }
+        })
+      Skill(..skill, facts: facts)
+    }
+  }
+}
+
+pub fn evaluate_candidate(skill: Skill, checks: List(Check)) -> Float {
+  let total = list.length(checks)
+  case total == 0 {
+    True -> 1.0
+    False -> {
+      let passed =
+        list.fold(checks, 0, fn(acc, check) {
+          case verify_skill(skill, [check]) {
+            Ok(Nil) -> acc + 1
+            Error(_) -> acc
+          }
+        })
+      int.to_float(passed) /. int.to_float(total)
+    }
+  }
+}
+
+pub fn optimize_skill(
+  skill: Skill,
+  patches: List(Patch),
+  checks: List(Check),
+) -> #(Skill, Float) {
+  let base_score = evaluate_candidate(skill, checks)
+
+  list.fold(patches, #(skill, base_score), fn(acc, patch) {
+    let #(current_best, current_best_score) = acc
+    let candidate = apply_patch(skill, patch)
+    let score = evaluate_candidate(candidate, checks)
+
+    case score >. current_best_score {
+      True -> #(candidate, score)
+      False -> #(current_best, current_best_score)
+    }
+  })
+}
+
