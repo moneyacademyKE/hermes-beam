@@ -14,7 +14,6 @@ import gleamdb.{Datom, Rule}
 import simplifile
 import gleam/list
 import argv
-import portfolio_server
 
 // ─── REPL State ───────────────────────────────────────────────────────────────
 
@@ -408,7 +407,7 @@ pub fn main() -> Nil {
 
   case argv.load().arguments {
     ["--server"] -> {
-      let _ = portfolio_server.start(5174)
+      io.println("Server mode is disabled (website deleted).")
       Nil
     }
     _ -> {
