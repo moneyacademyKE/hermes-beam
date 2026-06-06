@@ -225,3 +225,11 @@ This document summarizes the core learnings from porting python codebase element
     - For components where dynamic elements are required, cast the resolved component directly to `any` (e.g., `const Component = motion[as] as any`) to bypass the compiler's deep union checks.
     - Where possible, avoid dynamic elements entirely by using a concrete `<motion.div>` wrapper, which drastically reduces compiler type checking load.
     - Ensure all unused imports and variables are clean, as strict configurations treat warnings as fatal compiler errors.
+
+## 30. Dual Frontend Asset Pipeline & Dev Port Collision Handling
+
+*   **Problem**: Running multiple concurrent React SPA dashboards and portfolios (e.g. `web/` and `jack-portfolio/`) under local Vite dev servers can lead to port collisions on default port `5173`.
+*   **Resolution**:
+    - Vite handles port collision natively by automatically trying sequential ports (e.g. falling back to `5174` if `5173` is occupied) and printing the active URL to stdout.
+    - For production packaging, Vite builds must compile to the expected target directory (e.g. `hermes_cli/web_dist/` for the Python FastAPI server) so they can be statically served by the backend.
+    - Always run `npm install` in individual workspaces to resolve dependencies (`tsc` compiler, plugins) before executing production builds.
