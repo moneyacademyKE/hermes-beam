@@ -207,4 +207,7 @@ pub fn format_float(val: Float) -> String
 @external(erlang, "utils_ffi", "read_line")
 pub fn read_line(prompt: String) -> Result(String, Dynamic)
 
+@external(erlang, "utils_ffi", "get_cwd")
+pub fn get_cwd() -> Result(String, Dynamic)
+
 

@@ -233,3 +233,26 @@ This document summarizes the core learnings from porting python codebase element
     - Vite handles port collision natively by automatically trying sequential ports (e.g. falling back to `5174` if `5173` is occupied) and printing the active URL to stdout.
     - For production packaging, Vite builds must compile to the expected target directory (e.g. `hermes_cli/web_dist/` for the Python FastAPI server) so they can be statically served by the backend.
     - Always run `npm install` in individual workspaces to resolve dependencies (`tsc` compiler, plugins) before executing production builds.
+
+## 31. Native Web Serving with Mist + Wisp in Gleam/BEAM Stack
+
+*   **Problem**: Relying on Node/npm development servers in production or runtime packages complects the stack with Node.js runtime environments, which increases disk space, execution latency, and dependency auditing overhead.
+*   **Resolution**:
+    - Build/compile the frontend SPA once to static assets (like `/dist`).
+    - Use native Gleam `mist` + `wisp` servers under BEAM supervision.
+    - Serve the static files from the `dist` folder natively via Wisp middleware: `use <- wisp.serve_static(req, under: "/", from: dist_path)`.
+    - If the request path does not exist on disk, fallback gracefully to reading and returning `index.html` to support client-side SPA routing (e.g., `/projects`, `/about`).
+
+## 32. Dynamic Directory Resolution with FFI get_cwd in Erlang/Gleam
+
+*   **Problem**: Hardcoding absolute directory paths in Gleam source code breaks when files are moved or deployed to different machines/environments.
+*   **Resolution**:
+    - Declare a simple zero-dependency Erlang FFI `file:get_cwd()` wrapper:
+      ```erlang
+      get_cwd() ->
+          case file:get_cwd() of
+              {ok, Cwd} -> {ok, list_to_binary(Cwd)};
+              {error, Reason} -> {error, Reason}
+          end.
+      ```
+    - Map this to `utils.get_cwd()` in Gleam, and combine with `constants.path_join` to dynamically resolve static asset paths relative to the starting directory.

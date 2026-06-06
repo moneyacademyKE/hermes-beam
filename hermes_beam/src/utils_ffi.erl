@@ -11,7 +11,8 @@
     unique_integer/0,
     putenv/2,
     format_float/1,
-    read_line/1
+    read_line/1,
+    get_cwd/0
 ]).
 
 identity(X) -> X.
@@ -57,4 +58,10 @@ read_line(PromptBin) ->
         {error, Reason} -> {error, Reason};
         Data when is_binary(Data) -> {ok, Data};
         Data -> {ok, list_to_binary(Data)}
+    end.
+
+get_cwd() ->
+    case file:get_cwd() of
+        {ok, Cwd} -> {ok, list_to_binary(Cwd)};
+        {error, Reason} -> {error, Reason}
     end.

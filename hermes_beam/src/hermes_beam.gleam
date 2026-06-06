@@ -13,6 +13,8 @@ import skill.{Skill}
 import gleamdb.{Datom, Rule}
 import simplifile
 import gleam/list
+import argv
+import portfolio_server
 
 // ─── REPL State ───────────────────────────────────────────────────────────────
 
@@ -404,6 +406,18 @@ pub fn main() -> Nil {
   // Load environment variables from config
   load_env_file()
 
+  case argv.load().arguments {
+    ["--server"] -> {
+      let _ = portfolio_server.start(5174)
+      Nil
+    }
+    _ -> {
+      run_repl()
+    }
+  }
+}
+
+pub fn run_repl() -> Nil {
   io.println("══════════════════════════════════════════════════")
   io.println("  Hermes BEAM — Pure Gleam Agentic Runner v2.0.0")
   io.println("══════════════════════════════════════════════════")
