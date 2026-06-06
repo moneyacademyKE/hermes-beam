@@ -6,7 +6,6 @@ import gleam/string
 import hermes_agent
 import hermes_exec
 import hermes_state
-import sqlight
 import utils
 import evolutionary
 import skill.{Skill}
@@ -14,6 +13,8 @@ import gleamdb.{Datom, Rule}
 import simplifile
 import gleam/list
 import argv
+import state_actor
+import skill_compiler
 
 // ─── REPL State ───────────────────────────────────────────────────────────────
 
@@ -22,7 +23,7 @@ pub type REPLState {
     session_id: String,
     model: String,
     cwd: String,
-    db_conn: sqlight.Connection,
+    db_conn: state_actor.StateActor,
     exec_env: hermes_exec.TerminalEnv,
     api_key: String,
     base_url: String,
@@ -133,13 +134,13 @@ pub fn repl_loop(state: REPLState) -> Nil {
           let _ = hermes_exec.cleanup(state.exec_env)
           let timestamp = 1_700_000_000.0
           let _ =
-            hermes_state.end_session(
+            state_actor.end_session(
               state.db_conn,
               state.session_id,
               "user_quit",
               timestamp,
             )
-          let _ = sqlight.close(state.db_conn)
+          let _ = state_actor.close(state.db_conn)
           io.println("Goodbye!")
           Nil
         }
@@ -177,7 +178,7 @@ pub fn repl_loop(state: REPLState) -> Nil {
         _ if is_model -> {
           let new_model = string.trim(string.drop_start(trimmed, 7))
           let _ =
-            hermes_state.create_session(
+            state_actor.create_session(
               state.db_conn,
               state.session_id,
               "repl",
@@ -216,7 +217,7 @@ pub fn repl_loop(state: REPLState) -> Nil {
           let new_exec_env =
             hermes_exec.TerminalEnv(..state.exec_env, cwd: new_cwd)
           let _ =
-            hermes_state.update_session_cwd(
+            state_actor.update_session_cwd(
               state.db_conn,
               state.session_id,
               new_cwd,
@@ -249,7 +250,7 @@ pub fn repl_loop(state: REPLState) -> Nil {
               io.print(output)
               io.println("[Exit code: " <> int.to_string(status) <> "]")
               let _ =
-                hermes_state.update_session_cwd(
+                state_actor.update_session_cwd(
                   state.db_conn,
                   state.session_id,
                   new_exec_env.cwd,
@@ -285,7 +286,7 @@ pub fn repl_loop(state: REPLState) -> Nil {
                     Ok(new_agent) -> {
                       let new_cwd = new_agent.exec_env.cwd
                       let _ =
-                        hermes_state.update_session_cwd(
+                        state_actor.update_session_cwd(
                           state.db_conn,
                           state.session_id,
                           new_cwd,
@@ -327,7 +328,7 @@ pub fn repl_loop(state: REPLState) -> Nil {
                   // Sync CWD back from agent exec_env in case tools changed it
                   let new_cwd = new_agent.exec_env.cwd
                   let _ =
-                    hermes_state.update_session_cwd(
+                    state_actor.update_session_cwd(
                       state.db_conn,
                       state.session_id,
                       new_cwd,
@@ -426,6 +427,7 @@ pub fn run_repl() -> Nil {
   let db_path = constants.path_join(constants.get_hermes_home(), "state.db")
   let assert Ok(conn) = hermes_state.connect(db_path)
   let assert Ok(Nil) = hermes_state.init_schema(conn)
+  let assert Ok(actor) = state_actor.start(conn)
 
   // 1b. Seed/persist local skills
   let routing_skill =
@@ -477,8 +479,42 @@ pub fn run_repl() -> Nil {
       ],
     )
 
-  let assert Ok(Nil) = evolutionary.persist_skill(conn, routing_skill, 1)
-  let assert Ok(Nil) = evolutionary.persist_skill(conn, permission_skill, 1)
+  let rule_datoms_1 =
+    list.index_map(routing_skill.rules, fn(rule, idx) {
+      let rule_name = "rule/" <> routing_skill.name <> "/" <> int.to_string(idx)
+      evolutionary.rule_to_datoms(rule_name, rule)
+    })
+    |> list.flatten
+  let datoms_1 = list.append(routing_skill.facts, rule_datoms_1)
+  let assert Ok(Nil) = state_actor.transact(actor, datoms_1, 1)
+
+  let rule_datoms_2 =
+    list.index_map(permission_skill.rules, fn(rule, idx) {
+      let rule_name = "rule/" <> permission_skill.name <> "/" <> int.to_string(idx)
+      evolutionary.rule_to_datoms(rule_name, rule)
+    })
+    |> list.flatten
+  let datoms_2 = list.append(permission_skill.facts, rule_datoms_2)
+  let assert Ok(Nil) = state_actor.transact(actor, datoms_2, 1)
+
+  // 1c. Load skills dynamically from hermes_home / skills/
+  let skills_dir = constants.path_join(constants.get_hermes_home(), "skills")
+  case skill_compiler.load_skills_from_dir(skills_dir) {
+    Ok(compiled_skills) -> {
+      list.each(compiled_skills, fn(sk) {
+        let rule_datoms =
+          list.index_map(sk.rules, fn(rule, idx) {
+            let rule_name = "rule/" <> sk.name <> "/" <> int.to_string(idx)
+            evolutionary.rule_to_datoms(rule_name, rule)
+          })
+          |> list.flatten
+        let datoms = list.append(sk.facts, rule_datoms)
+        let _ = state_actor.transact(actor, datoms, 1)
+        io.println("Loaded skill: " <> sk.name)
+      })
+    }
+    Error(_) -> Nil
+  }
 
 
   // 2. Load credentials
@@ -492,8 +528,8 @@ pub fn run_repl() -> Nil {
   // 3. Create session
   let session_id = hermes_exec.generate_uuid()
   let assert Ok(Nil) =
-    hermes_state.create_session(
-      conn,
+    state_actor.create_session(
+      actor,
       session_id,
       "repl",
       model,
@@ -526,7 +562,7 @@ pub fn run_repl() -> Nil {
       session_id,
       model,
       exec_env.cwd,
-      conn,
+      actor,
       exec_env,
       api_key,
       base_url,
@@ -545,7 +581,7 @@ pub fn run_repl() -> Nil {
           session_id: session_id,
           model: model,
           cwd: exec_env.cwd,
-          db_conn: conn,
+          db_conn: actor,
           exec_env: exec_env,
           api_key: api_key,
           base_url: base_url,

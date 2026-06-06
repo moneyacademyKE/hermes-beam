@@ -256,3 +256,29 @@ This document summarizes the core learnings from porting python codebase element
           end.
       ```
     - Map this to `utils.get_cwd()` in Gleam, and combine with `constants.path_join` to dynamically resolve static asset paths relative to the starting directory.
+
+## 33. Comprehensive Rich Hickey Gap Analysis (hermes_beam vs. hermes-agent)
+
+*   **Problem**: Establishing a clear architectural comparison and finding technical parity/trade-offs between the new Gleam/BEAM implementation (`hermes_beam`) and the legacy Python implementation (`hermes-agent`).
+*   **Resolution**: 
+    - **Complecting vs. Decomplecting**: The legacy Python implementation complects session mutation, CLI interfaces, and environment sandboxing. The new Gleam/BEAM implementation decomplects these using isolated functional actors (`iteration_budget`), pure data structures for states, and native FFI boundaries.
+    - **Database as a Value**: Instead of mutating relational tables, `hermes_beam` employs `gleamdb` to represent state as a set of immutable EAV Datoms `(Entity, Attribute, Value, Tx)`. Point-in-time database snapshots are queried as static values, eliminating mutation side effects.
+    - **Execution Robustness**: Using Erlang Ports (`hermes_exec.gleam`) and native PID signal propagation (`pkill -P` / `taskkill /T`) prevents orphaned subprocesses on timeout, resolving a major resource leak vulnerability in the legacy runner.
+    - **Utility vs. Complexity**: While the BEAM runner has a simpler CLI/REPL and lacks complex sandboxes (Docker, Singularity), it provides superior fault-tolerant concurrency (OTP supervisors), static type-safety guarantees, and a low execution footprint.
+
+## 34. Actor-Isolated SQLite Writer Pattern
+
+*   **Problem**: In concurrent environments on the BEAM, direct SQLite connections (`sqlight.Connection`) can experience write contention, resulting in `SQLITE_BUSY` errors. Furthermore, carrying database connection handles inside domain state records complects state with connection lifecycle management.
+*   **Resolution**:
+    - Decouple time and identity by wrapping the SQLite connection in an OTP Actor (`state_actor.gleam`).
+    - The actor serializes all database writes sequentially via its inbox, preventing locking conflicts and contention.
+    - Expose asynchronous/synchronous client APIs (e.g., `create_session`, `insert_message`, `update_session_cwd`, `end_session`) that send message envelopes to the actor process and wait for the response.
+    - Update domain state records (like `AgentState` and `REPLState`) to hold a `StateActor` reference instead of a raw database connection.
+
+## 35. Datalog Skill Compiler & Loader (Rich Hickey Decomplecting)
+
+*   **Problem**: Loading prompt-injected or text-based skill definitions often complects text parsing, file loading, and agent state storage.
+*   **Resolution**: Deconstruct the loading sequence into two isolated layers:
+    - **Pure parsing** (`parse_skill_file`): Takes raw file contents as a `String`, splits it on delimiters, parses key-value metadata, and maps the markdown prompt body to EAV facts (`[Datom(name, "skill/prompt", prompt)]`), with zero side-effects.
+    - **File IO / Persistence** (`load_skills_from_dir`): Scans directories using `simplifile.read_directory` and reads `SKILL.md` inside nested subfolders. The dynamic results are then transacted sequentially to the SQLite database via the `state_actor` GenServer mailbox, resolving all locks and keeping time/identity clean.
+

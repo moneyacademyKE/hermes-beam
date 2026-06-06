@@ -299,6 +299,50 @@ Instead of letting each thread or process open its own SQLite write descriptor d
 2. **Sequential Writes**: Route all database writes (insert, update, delete) as synchronous or asynchronous message casts to this owner process. The BEAM mailbox naturally serializes the writes, preventing database locks.
 3. **Concurrent Reads**: Allow other concurrent processes to read directly from the database using read-only connections, ensuring zero bottleneck for read queries.
 
+### Example
+```gleam
+// Messages represent logical database writes and transaction events
+pub type Message {
+  CreateSession(
+    id: String,
+    source: String,
+    model: String,
+    system_prompt: String,
+    started_at: Float,
+    reply_to: Subject(Result(Nil, sqlight.Error)),
+  )
+  InsertMessage(
+    session_id: String,
+    role: String,
+    content: String,
+    timestamp: Float,
+    reply_to: Subject(Result(Nil, sqlight.Error)),
+  )
+  // ... other messages
+}
+
+// Actor encapsulates connection and serializes execution via handle_message
+fn handle_message(state: ActorState, message: Message) {
+  case message {
+    CreateSession(id, src, model, prompt, started, reply_to) -> {
+      let res = hermes_state.create_session(state.conn, id, src, model, prompt, started)
+      process.send(reply_to, res)
+      actor.continue(state)
+    }
+    InsertMessage(sess_id, role, content, ts, reply_to) -> {
+      let res = hermes_state.insert_message(state.conn, sess_id, role, content, ts)
+      process.send(reply_to, res)
+      actor.continue(state)
+    }
+  }
+}
+
+// Client API wrapper
+pub fn create_session(actor: StateActor, id: String, source: String, model: String, prompt: String, started_at: Float) {
+  actor.call(actor.subject, 5000, CreateSession(id, source, model, prompt, started_at, _))
+}
+```
+
 ---
 
 ## 19. Supervised Parallel Task Pool Pattern (BEAM Batch Processing)
@@ -380,5 +424,40 @@ case agent_resp {
   ToolCalls(calls) -> { /* execute tools and recurse */ }
   FinalText(text) -> { /* save text and exit */ }
   _ -> { /* handle error */ }
+}
+```
+
+---
+
+## 24. Datalog Skill Compiler & Loader Pattern
+
+### Intent
+Parse, compile, and register custom text skills (e.g., `SKILL.md` with YAML frontmatter) dynamically into an EAV Datalog database as queryable facts at startup, with zero manual setup.
+
+### Pattern
+1. **Frontmatter Delimiter Extraction**: Split markdown file contents on the YAML delimiter `---` to isolate metadata and the prompt body.
+2. **Metadata Key-Value Extraction**: Iterate line-by-line over the isolated frontmatter string, split on `:`, trim whitespace, and clean surrounding single or double quotes to extract fields (`name`, `description`).
+3. **EAV Mapping**: Map the compiled fields to a `Skill` struct where `facts` contains: `[Datom(name, "skill/prompt", prompt_body)]` and `rules` is empty.
+4. **Directory Loader**: Scan a skills directory recursively using `simplifile.read_directory` and only load `SKILL.md` nested inside subdirectories, ignoring loose files.
+5. **dynamic transactional persistence**: Transact the generated facts and rules to the database.
+
+### Example
+```gleam
+pub fn parse_skill_file(content: String) -> Result(Skill, String) {
+  let trimmed = string.trim(content)
+  case string.starts_with(trimmed, "---") {
+    True -> {
+      let without_first_dash = string.drop_start(trimmed, 3)
+      case string.split_once(without_first_dash, "---") {
+        Ok(#(frontmatter, body)) -> {
+          // Parse name & description keys from frontmatter
+          // ...
+          Ok(Skill(name, description, rules: [], facts: [Datom(name, "skill/prompt", body)]))
+        }
+        Error(_) -> Error("Missing ending delimiter")
+      }
+    }
+    False -> Error("Missing starting delimiter")
+  }
 }
 ```
