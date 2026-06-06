@@ -50,22 +50,24 @@ const AboutSection: React.FC = () => {
       </FadeIn>
 
       {/* Content */}
-      <div className="relative z-10 flex flex-col items-center text-center gap-10 sm:gap-14 md:gap-16">
-        <FadeIn delay={0} y={40} as="h2">
-          <h2 className="hero-heading font-black uppercase leading-none tracking-tight
-            text-center"
-            style={{ fontSize: 'clamp(3rem, 12vw, 160px)' }}>
-            About me
-          </h2>
-        </FadeIn>
+      <div className="relative z-10 flex flex-col items-center text-center gap-16 sm:gap-20 md:gap-24">
+        <div className="flex flex-col items-center gap-10 sm:gap-14 md:gap-16">
+          <FadeIn delay={0} y={40} as="h2">
+            <h2 className="hero-heading font-black uppercase leading-none tracking-tight
+              text-center"
+              style={{ fontSize: 'clamp(3rem, 12vw, 160px)' }}>
+              About me
+            </h2>
+          </FadeIn>
 
-        <AnimatedText
-          text={aboutText}
-          className="text-light-text font-medium leading-relaxed max-w-[560px]"
-          style={{ fontSize: 'clamp(1rem, 2vw, 1.35rem)' }}
-        />
+          <AnimatedText
+            text={aboutText}
+            className="text-light-text font-medium leading-relaxed max-w-[560px]"
+            style={{ fontSize: 'clamp(1rem, 2vw, 1.35rem)' }}
+          />
+        </div>
 
-        <FadeIn delay={0.7} y={30} className="mt-8 sm:mt-12 md:mt-16">
+        <FadeIn delay={0.7} y={30}>
           <ContactButton />
         </FadeIn>
       </div>

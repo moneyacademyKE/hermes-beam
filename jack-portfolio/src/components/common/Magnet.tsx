@@ -13,7 +13,7 @@ interface MagnetProps {
 const Magnet: React.FC<MagnetProps> = ({
   children,
   padding = 20,
-  strength = 0.5,
+  strength = 3,
   activeTransition = 'transform 0.3s ease-out',
   inactiveTransition = 'transform 0.6s ease-in-out',
   className = '',
@@ -32,7 +32,7 @@ const Magnet: React.FC<MagnetProps> = ({
       if (ref.current) {
         const { left, width } = ref.current.getBoundingClientRect();
         const centerX = left + width / 2;
-        return (mousePosition.x - centerX) * strength;
+        return (mousePosition.x - centerX) / strength;
       }
     }
     return 0;
@@ -43,7 +43,7 @@ const Magnet: React.FC<MagnetProps> = ({
       if (ref.current) {
         const { top, height } = ref.current.getBoundingClientRect();
         const centerY = top + height / 2;
-        return (mousePosition.y - centerY) * strength;
+        return (mousePosition.y - centerY) / strength;
       }
     }
     return 0;

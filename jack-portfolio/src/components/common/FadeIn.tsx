@@ -7,7 +7,7 @@ interface FadeInProps extends HTMLMotionProps<any> {
   duration?: number;
   x?: number;
   y?: number;
-  as?: keyof typeof motion; // Prop to specify the underlying HTML element/component
+  as?: string;
 }
 
 const FadeIn: React.FC<FadeInProps> = ({
@@ -19,7 +19,7 @@ const FadeIn: React.FC<FadeInProps> = ({
   as = 'div', // Default to div
   ...rest
 }) => {
-  const Component = motion[as as keyof typeof motion] as any; // Dynamically pick the motion component
+  const Component = motion.create(as as any); // Uses motion.create() for dynamic element types
 
   const variants: Variants = {
     hidden: { opacity: 0, x, y },
@@ -30,7 +30,7 @@ const FadeIn: React.FC<FadeInProps> = ({
     <Component
       initial="hidden"
       whileInView="visible"
-      viewport={{ once: true, margin: "50px", amount: 0.2 }} // Increased amount to 0.2 for better visibility
+      viewport={{ once: true, margin: "50px", amount: 0 }} // Corrected amount to 0
       variants={variants}
       transition={{
         delay,

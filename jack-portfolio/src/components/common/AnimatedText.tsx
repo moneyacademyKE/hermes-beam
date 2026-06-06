@@ -31,9 +31,12 @@ const AnimatedText: React.FC<AnimatedTextProps> = ({ text, className, style }) =
                 key={`${wordIndex}-${charIndex}`}
                 className="relative inline-block" // Ensure spacing is consistent around letters
               >
-                  <motion.span style={{ opacity }} className="inline-block relative">
-                    {char}
-                  </motion.span>
+                {/* Invisible placeholder for layout and spacing */}
+                <span className="opacity-0 select-none pointer-events-none">{char}</span>
+                {/* Absolute positioned animated span */}
+                <motion.span style={{ opacity }} className="absolute inset-0 inline-block text-center">
+                  {char}
+                </motion.span>
               </span>
             );
           })}

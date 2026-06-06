@@ -161,7 +161,7 @@ const ProjectsSection: React.FC = () => {
         <FadeIn delay={0} y={40} as="h2">
           <h2 className="hero-heading font-black uppercase text-center mb-16 sm:mb-20 md:mb-28"
             style={{ fontSize: 'clamp(3rem, 12vw, 160px)' }}>
-            Projects
+            Project
           </h2>
         </FadeIn>
 
