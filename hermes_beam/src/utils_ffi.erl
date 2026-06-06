@@ -55,5 +55,6 @@ read_line(PromptBin) ->
     case io:get_line(Prompt) of
         eof -> {error, eof};
         {error, Reason} -> {error, Reason};
+        Data when is_binary(Data) -> {ok, Data};
         Data -> {ok, list_to_binary(Data)}
     end.

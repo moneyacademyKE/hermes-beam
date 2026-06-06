@@ -11,6 +11,8 @@ import utils
 import evolutionary
 import skill.{Skill}
 import gleamdb.{Datom, Rule}
+import simplifile
+import gleam/list
 
 // ─── REPL State ───────────────────────────────────────────────────────────────
 
@@ -69,6 +71,7 @@ pub fn print_help() -> Nil {
   io.println("  /model <model> - Switch the current model (resets agent history)")
   io.println("  /cwd <path>    - Switch the working directory")
   io.println("  /run <cmd>     - Execute a terminal command directly (bypasses LLM)")
+  io.println("  /file <path>   - Load a prompt from a file and send to LLM agent")
   io.println("  /clear         - Clear the conversation history")
   io.println("  <message>      - Chat with the LLM agent (tools available)")
 }
@@ -116,6 +119,7 @@ pub fn repl_loop(state: REPLState) -> Nil {
       let is_model = string.starts_with(trimmed, "/model ")
       let is_cwd = string.starts_with(trimmed, "/cwd ")
       let is_run = string.starts_with(trimmed, "/run ")
+      let is_file = string.starts_with(trimmed, "/file ")
       let is_clear = trimmed == "/clear"
 
       case trimmed {
@@ -216,9 +220,20 @@ pub fn repl_loop(state: REPLState) -> Nil {
               state.session_id,
               new_cwd,
             )
+          let new_agent_state =
+            hermes_agent.AgentState(
+              ..state.agent_state,
+              cwd: new_cwd,
+              exec_env: new_exec_env,
+            )
           io.println("Switched directory to: " <> new_cwd)
           repl_loop(
-            REPLState(..state, cwd: new_cwd, exec_env: new_exec_env),
+            REPLState(
+              ..state,
+              cwd: new_cwd,
+              exec_env: new_exec_env,
+              agent_state: new_agent_state,
+            ),
           )
         }
 
@@ -249,6 +264,51 @@ pub fn repl_loop(state: REPLState) -> Nil {
             Error(err) -> {
               io.println("Execution Error: " <> err)
               repl_loop(REPLState(..state, exec_env: new_exec_env))
+            }
+          }
+        }
+
+        // ── /file <path> ─────────────────────────────────────────────────────
+        _ if is_file -> {
+          let path = string.trim(string.drop_start(trimmed, 6))
+          case simplifile.read(path) {
+            Ok(content) -> {
+              io.println("[Loaded prompt from file: " <> path <> "]")
+              case state.api_key == "" {
+                True -> {
+                  let _response = run_mock_completion(content)
+                  repl_loop(state)
+                }
+                False -> {
+                  case hermes_agent.run_conversation(state.agent_state, content) {
+                    Ok(new_agent) -> {
+                      let new_cwd = new_agent.exec_env.cwd
+                      let _ =
+                        hermes_state.update_session_cwd(
+                          state.db_conn,
+                          state.session_id,
+                          new_cwd,
+                        )
+                      repl_loop(
+                        REPLState(
+                          ..state,
+                          cwd: new_cwd,
+                          exec_env: new_agent.exec_env,
+                          agent_state: new_agent,
+                        ),
+                      )
+                    }
+                    Error(err) -> {
+                      io.println("\n[Agent Error: " <> err <> "]")
+                      repl_loop(state)
+                    }
+                  }
+                }
+              }
+            }
+            Error(err) -> {
+              io.println("Error reading file: " <> string.inspect(err))
+              repl_loop(state)
             }
           }
         }
@@ -298,10 +358,56 @@ pub fn repl_loop(state: REPLState) -> Nil {
 
 // ─── Entry Point ──────────────────────────────────────────────────────────────
 
+pub fn load_env_file() -> Nil {
+  let path = constants.get_env_path()
+  case simplifile.read(path) {
+    Ok(content) -> {
+      let lines = string.split(content, "\n")
+      list.each(lines, fn(line) {
+        let trimmed = string.trim(line)
+        case trimmed == "" || string.starts_with(trimmed, "#") {
+          True -> Nil
+          False -> {
+            case string.split_once(trimmed, "=") {
+              Ok(#(key, val)) -> {
+                let clean_key = string.trim(key)
+                let clean_val = string.trim(val)
+                let clean_val = case
+                  string.starts_with(clean_val, "\"")
+                  && string.ends_with(clean_val, "\"")
+                {
+                  True ->
+                    string.drop_start(clean_val, 1) |> string.drop_end(1)
+                  False ->
+                    case
+                      string.starts_with(clean_val, "'")
+                      && string.ends_with(clean_val, "'")
+                    {
+                      True ->
+                        string.drop_start(clean_val, 1) |> string.drop_end(1)
+                      False -> clean_val
+                    }
+                }
+                constants.set_env(clean_key, clean_val)
+              }
+              Error(_) -> Nil
+            }
+          }
+        }
+      })
+    }
+    Error(_) -> Nil
+  }
+}
+
 pub fn main() -> Nil {
+  // Load environment variables from config
+  load_env_file()
+
   io.println("══════════════════════════════════════════════════")
   io.println("  Hermes BEAM — Pure Gleam Agentic Runner v2.0.0")
   io.println("══════════════════════════════════════════════════")
+
 
   // 1. Initialize database
   let db_path = constants.path_join(constants.get_hermes_home(), "state.db")

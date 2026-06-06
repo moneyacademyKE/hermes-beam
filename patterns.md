@@ -356,4 +356,29 @@ Systematically optimize dynamic skills (rules and facts) inside an agent logic d
 
 
 
+## 23. Double-Ended Response Fallback Pattern (Streaming-to-Non-Streaming Fallback with Full Type Preservation)
 
+### Intent
+Safeguard LLM communication from stream buffering or connection dropouts by falling back to non-streaming requests without losing text content or tool calls.
+
+### Pattern
+1. **Define Comprehensive Return Union**: Ensure the fallback function returns a comprehensive result type (`AgentResponse`) that can represent either a list of tool calls (`ToolCalls`) or final text (`FinalText`).
+2. **Execute Stream**: Make a streaming SSE call. If it completes successfully, return `FinalText` of the accumulated buffer.
+3. **Trigger Fallback on Timeout/Empty**: If the stream times out or returns an empty text output, execute a synchronous non-streaming call to the same endpoint.
+4. **Decode and Map Response**: Parse the non-streaming response JSON into the comprehensive return union.
+5. **Handle Union Variants**: In the agent loop case matching, route `ToolCalls` to execution and `FinalText` to response persistence.
+
+### Example
+```gleam
+let response_trimmed = string.trim(response_text)
+let agent_resp = case response_trimmed {
+  "" -> fetch_fallback_non_streaming(state, body)
+  text -> FinalText(text)
+}
+
+case agent_resp {
+  ToolCalls(calls) -> { /* execute tools and recurse */ }
+  FinalText(text) -> { /* save text and exit */ }
+  _ -> { /* handle error */ }
+}
+```

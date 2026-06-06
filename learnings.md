@@ -212,4 +212,16 @@ This document summarizes the core learnings from porting python codebase element
 
 
 
+## 28. Robust Non-Streaming Fallbacks on SSE Stream Timeouts
 
+*   **Problem**: In Gleam (`hermes_beam`), Erlang's `inets` HTTP client, when streaming LLM responses via SSE over SSL, can buffer the chunks in certain network environments instead of emitting them progressively. This causes the stream collector `stream_and_collect` to block and eventually trigger a `StreamTimeout`, leaving the accumulated streaming text buffer empty (`""`).
+*   **Bug**: If the agent's non-streaming fallback only parses and returns tool calls (expecting text to have been fully collected by the stream), any text content returned by the fallback is completely discarded, resulting in a false-negative `[No response from model]` failure.
+*   **Resolution**: Refactor the fallback system to return a union `AgentResponse` (representing either `ToolCalls` or `FinalText`), and update the agent loop (`agent_turn_loop`) to handle both cases on fallback. This ensures that even when streaming fails due to networking buffer/latency issues, the agent falls back and captures the complete, valid text response.
+
+## 29. Vite React TypeScript strict checks on Framer Motion
+
+*   **Problem**: In strict React/TypeScript project configurations (specifically with `verbatimModuleSyntax` and strict unused checks), dynamic resolution of motion components (e.g. `motion[as as keyof typeof motion]`) causes compilation errors: `Type instantiation is excessively deep and possibly infinite.` and `Expression produces a union type that is too complex to represent.`.
+*   **Resolution**:
+    - For components where dynamic elements are required, cast the resolved component directly to `any` (e.g., `const Component = motion[as] as any`) to bypass the compiler's deep union checks.
+    - Where possible, avoid dynamic elements entirely by using a concrete `<motion.div>` wrapper, which drastically reduces compiler type checking load.
+    - Ensure all unused imports and variables are clean, as strict configurations treat warnings as fatal compiler errors.

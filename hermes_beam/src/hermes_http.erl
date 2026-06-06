@@ -35,7 +35,7 @@ post(UrlBin, HeadersList, ContentTypeBin, BodyBin) ->
     Body = binary_to_list(BodyBin),
     _ = ssl:start(),
     _ = inets:start(),
-    case httpc:request(post, {Url, Headers, ContentType, Body}, [{timeout, 10000}], []) of
+    case httpc:request(post, {Url, Headers, ContentType, Body}, [{timeout, 120000}], []) of
         {ok, {{_, 200, _}, _Headers, RespBody}} ->
             {ok, list_to_binary(RespBody)};
         {ok, {{_, Status, _}, _, _}} ->

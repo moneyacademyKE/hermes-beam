@@ -363,7 +363,7 @@ pub fn stream_and_collect(
   parser: LineParserState,
   accumulated: String,
 ) -> #(String, Bool) {
-  case hermes_client.receive_stream_chunk(req_id, 30_000) {
+  case hermes_client.receive_stream_chunk(req_id, 120_000) {
     StreamStart(_) ->
       stream_and_collect(req_id, parser, accumulated)
 
@@ -562,19 +562,19 @@ pub fn agent_turn_loop(
             stream_and_collect(req_id, hermes_client.new_line_parser(), "")
 
           // If response_text is empty or signals tool calls, try a non-streaming
-          // call to get the structured tool_calls JSON
+          // call to get the structured tool_calls JSON or final text
           let response_trimmed = string.trim(response_text)
-          let tool_calls = case response_trimmed {
+          let agent_resp = case response_trimmed {
             "" -> {
-              // Re-request without streaming to get tool_calls JSON
-              fetch_tool_calls_non_streaming(state, body)
+              // Re-request without streaming to get tool_calls JSON or final text
+              fetch_fallback_non_streaming(state, body)
             }
-            _ -> []
+            text -> FinalText(text)
           }
 
-          case tool_calls {
+          case agent_resp {
             // ── Tool call path ──────────────────────────────────────────────
-            [first_tc, ..] as calls -> {
+            ToolCalls(calls) -> {
               io.println("\n🔧 Executing " <> int.to_string(list.length(calls)) <> " tool call(s)...")
 
               // Append the assistant's tool_calls message to history
@@ -590,8 +590,6 @@ pub fn agent_turn_loop(
                   #(next_env, [tool_msg, ..current_history])
                 })
 
-              let _ = first_tc
-
               // Recurse with updated state
               agent_turn_loop(
                 AgentState(
@@ -605,13 +603,27 @@ pub fn agent_turn_loop(
             }
 
             // ── Final text response path ─────────────────────────────────────
-            [] -> {
-              let final_text = case response_trimmed {
-                "" -> "[No response from model]"
-                text -> text
-              }
-
+            FinalText(final_text) -> {
               // Record assistant response in DB
+              let timestamp =
+                int.to_float(system_time_ms()) /. 1000.0
+              let _ =
+                hermes_state.insert_message(
+                  state.db_conn,
+                  state.session_id,
+                  "assistant",
+                  final_text,
+                  timestamp,
+                )
+
+              let new_history =
+                [assistant_message(final_text), ..state.history]
+
+              Ok(AgentState(..state, history: new_history))
+            }
+
+            _ -> {
+              let final_text = "[No response from model]"
               let timestamp =
                 int.to_float(system_time_ms()) /. 1000.0
               let _ =
@@ -635,12 +647,12 @@ pub fn agent_turn_loop(
   }
 }
 
-/// Fallback: send a non-streaming request to get tool_calls JSON when
-/// streaming response was empty (model returned only tool calls, no text).
-pub fn fetch_tool_calls_non_streaming(
+/// Fallback: send a non-streaming request to get the response (text or tool calls)
+/// when streaming response was empty or timed out.
+pub fn fetch_fallback_non_streaming(
   state: AgentState,
   _streaming_body: String,
-) -> List(ToolCall) {
+) -> AgentResponse {
   // Build non-streaming body
   let body = build_request_body(
     state.model,
@@ -661,8 +673,8 @@ pub fn fetch_tool_calls_non_streaming(
     "application/json",
     body,
   ) {
-    Ok(response_json) -> parse_tool_calls_from_json(response_json)
-    Error(_) -> []
+    Ok(response_json) -> parse_completion_response(response_json)
+    Error(err) -> ErrorResponse(err)
   }
 }
 
