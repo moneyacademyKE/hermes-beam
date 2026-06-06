@@ -15,6 +15,7 @@ import gleam/list
 import argv
 import state_actor
 import skill_compiler
+import tui_gateway
 
 // ─── REPL State ───────────────────────────────────────────────────────────────
 
@@ -525,70 +526,84 @@ pub fn run_repl() -> Nil {
       None -> "meta-llama/llama-3-8b-instruct:free"
     }
 
-  // 3. Create session
-  let session_id = hermes_exec.generate_uuid()
-  let assert Ok(Nil) =
-    state_actor.create_session(
-      actor,
-      session_id,
-      "repl",
-      model,
-      "You are a helpful assistant with access to shell tools.",
-      1_700_000_000.0,
-    )
+  let args = argv.load().arguments
+  let is_tui_flag = list.contains(args, "--tui")
+  let is_tui_env = case constants.get_env("HERMES_TUI") {
+    Some(val) -> val == "1" || val == "true"
+    None -> False
+  }
 
-  // 4. Initialize sandbox exec environment
-  let initial_cwd = hermes_exec.get_temp_dir()
-  let exec_env = hermes_exec.new_terminal_env(initial_cwd, 120_000, [])
-  let exec_env = hermes_exec.init_session(exec_env)
-
-  io.println("Session ID : " <> session_id)
-  io.println("Database   : " <> db_path)
-  io.println("Model      : " <> model)
-  io.println("Base URL   : " <> base_url)
-  io.println(
-    "API Key    : "
-    <> case api_key == "" {
-      True -> "(none — mock mode)"
-      False -> "[configured]"
-    },
-  )
-  io.println("CWD        : " <> exec_env.cwd)
-  io.println("\nType /help to see commands. Press Ctrl+D or /quit to exit.")
-
-  // 5. Build initial AgentState (max 90 iterations per conversation turn)
-  let agent_result =
-    hermes_agent.new_agent_state(
-      session_id,
-      model,
-      exec_env.cwd,
-      actor,
-      exec_env,
-      api_key,
-      base_url,
-      "You are a helpful assistant with access to shell tools. When you need to run a command, use the run_command tool. When you need to read a file, use read_file. When you need to write a file, use write_file.",
-      90,
-    )
-
-  case agent_result {
-    Error(err) -> {
-      io.println("Failed to initialise agent: " <> err)
-      Nil
+  case is_tui_flag || is_tui_env {
+    True -> {
+      tui_gateway.start_tui_server(actor, api_key, base_url, model)
     }
-    Ok(agent_state) -> {
-      let state =
-        REPLState(
-          session_id: session_id,
-          model: model,
-          cwd: exec_env.cwd,
-          db_conn: actor,
-          exec_env: exec_env,
-          api_key: api_key,
-          base_url: base_url,
-          agent_state: agent_state,
+    False -> {
+      // 3. Create session
+      let session_id = hermes_exec.generate_uuid()
+      let assert Ok(Nil) =
+        state_actor.create_session(
+          actor,
+          session_id,
+          "repl",
+          model,
+          "You are a helpful assistant with access to shell tools.",
+          1_700_000_000.0,
         )
 
-      repl_loop(state)
+      // 4. Initialize sandbox exec environment
+      let initial_cwd = hermes_exec.get_temp_dir()
+      let exec_env = hermes_exec.new_terminal_env(initial_cwd, 120_000, [])
+      let exec_env = hermes_exec.init_session(exec_env)
+
+      io.println("Session ID : " <> session_id)
+      io.println("Database   : " <> db_path)
+      io.println("Model      : " <> model)
+      io.println("Base URL   : " <> base_url)
+      io.println(
+        "API Key    : "
+        <> case api_key == "" {
+          True -> "(none — mock mode)"
+          False -> "[configured]"
+        },
+      )
+      io.println("CWD        : " <> exec_env.cwd)
+      io.println("\nType /help to see commands. Press Ctrl+D or /quit to exit.")
+
+      // 5. Build initial AgentState (max 90 iterations per conversation turn)
+      let agent_result =
+        hermes_agent.new_agent_state(
+          session_id,
+          model,
+          exec_env.cwd,
+          actor,
+          exec_env,
+          api_key,
+          base_url,
+          "You are a helpful assistant with access to shell tools. When you need to run a command, use the run_command tool. When you need to read a file, use read_file. When you need to write a file, use write_file.",
+          90,
+        )
+
+      case agent_result {
+        Error(err) -> {
+          io.println("Failed to initialise agent: " <> err)
+          Nil
+        }
+        Ok(agent_state) -> {
+          let state =
+            REPLState(
+              session_id: session_id,
+              model: model,
+              cwd: exec_env.cwd,
+              db_conn: actor,
+              exec_env: exec_env,
+              api_key: api_key,
+              base_url: base_url,
+              agent_state: agent_state,
+            )
+
+          repl_loop(state)
+        }
+      }
     }
   }
 }

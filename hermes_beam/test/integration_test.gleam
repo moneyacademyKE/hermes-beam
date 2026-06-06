@@ -42,6 +42,49 @@ pub fn state_actor_integration_test() {
   let assert Ok(Nil) = state_actor.close(actor)
 }
 
+pub fn state_actor_session_integration_test() {
+  // 1. Open an in-memory SQLite connection
+  let assert Ok(conn) = sqlight.open(":memory:")
+  
+  // 2. Initialize schema
+  let assert Ok(Nil) = hermes_state.init_schema(conn)
+  
+  // 3. Start the StateActor process wrapping the connection
+  let assert Ok(actor) = state_actor.start(conn)
+  
+  // 4. Create a session via the actor
+  let assert Ok(Nil) =
+    state_actor.create_session(
+      actor,
+      "session-test",
+      "integration-test",
+      "mock-model",
+      "System prompt here.",
+      1_700_000_000.0,
+    )
+  
+  // 5. Update CWD via the actor
+  let assert Ok(Nil) =
+    state_actor.update_session_cwd(actor, "session-test", "/new/cwd")
+  
+  // 6. Insert message via the actor
+  let assert Ok(Nil) =
+    state_actor.insert_message(
+      actor,
+      "session-test",
+      "user",
+      "Hello via actor!",
+      1_700_000_100.0,
+    )
+  
+  // 7. End session via the actor
+  let assert Ok(Nil) =
+    state_actor.end_session(actor, "session-test", "finished", 1_700_000_200.0)
+    
+  // 8. Close the actor safely
+  let assert Ok(Nil) = state_actor.close(actor)
+}
+
 pub fn batch_runner_integration_test() {
   let prompts = ["prompt_1", "prompt_2", "prompt_3", "prompt_4"]
   

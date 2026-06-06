@@ -374,3 +374,27 @@ pub fn load_database(conn: sqlight.Connection) -> Result(Database, sqlight.Error
     Error(err) -> Error(err)
   }
 }
+
+pub fn list_sessions(conn: sqlight.Connection) -> Result(List(String), sqlight.Error) {
+  let query = "SELECT id FROM sessions ORDER BY started_at DESC;"
+  sqlight.query(
+    query,
+    on: conn,
+    with: [],
+    expecting: decode.string,
+  )
+}
+
+pub fn get_session_cwd(conn: sqlight.Connection, id: String) -> Result(String, sqlight.Error) {
+  let query = "SELECT COALESCE(cwd, '') FROM sessions WHERE id = ?;"
+  case sqlight.query(
+    query,
+    on: conn,
+    with: [sqlight.text(id)],
+    expecting: decode.string,
+  ) {
+    Ok([cwd, ..]) -> Ok(cwd)
+    Ok([]) -> Error(sqlight.SqlightError(code: sqlight.Notfound, message: "Session not found", offset: -1))
+    Error(err) -> Error(err)
+  }
+}

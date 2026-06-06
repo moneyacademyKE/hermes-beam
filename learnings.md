@@ -282,3 +282,12 @@ This document summarizes the core learnings from porting python codebase element
     - **Pure parsing** (`parse_skill_file`): Takes raw file contents as a `String`, splits it on delimiters, parses key-value metadata, and maps the markdown prompt body to EAV facts (`[Datom(name, "skill/prompt", prompt)]`), with zero side-effects.
     - **File IO / Persistence** (`load_skills_from_dir`): Scans directories using `simplifile.read_directory` and reads `SKILL.md` inside nested subfolders. The dynamic results are then transacted sequentially to the SQLite database via the `state_actor` GenServer mailbox, resolving all locks and keeping time/identity clean.
 
+## 36. JSON-RPC TUI Gateway in Gleam
+
+*   **Problem**: Establishing a standard JSON-RPC gateway to interact with TUIs/dashboards while working with Gleam's strict decoding structure.
+*   **Resolution**:
+    - **Optional Fields Decoding**: Gleam's `gleam/dynamic/decode` requires explicit arity/default parameters. When decoding optional fields (like `id` or `params` in JSON-RPC envelopes), use `decode.optional_field("key", None, decode.optional(decode.dynamic))` to handle both absent fields and `null` values cleanly.
+    - **Interactive Session Gateway**: Ingest JSON-RPC request envelopes from `stdin` via recursive reading (`utils.read_line`). Keep agent instances thread-safe and isolated in `GatewayState` by mapping `session_id` to their respective `AgentState`.
+    - **Streaming Event Push**: Intercept and push agent event callbacks (`message.delta`, `tool.start`, etc.) onto `stdout` as JSON-RPC notifications while executing `run_conversation` synchronously.
+
+

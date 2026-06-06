@@ -13,6 +13,37 @@ pub type Message {
   )
   LoadDatabase(reply_to: Subject(Result(Database, sqlight.Error)))
   Close(reply_to: Subject(Result(Nil, sqlight.Error)))
+  CreateSession(
+    id: String,
+    source: String,
+    model: String,
+    system_prompt: String,
+    started_at: Float,
+    reply_to: Subject(Result(Nil, sqlight.Error)),
+  )
+  EndSession(
+    id: String,
+    end_reason: String,
+    ended_at: Float,
+    reply_to: Subject(Result(Nil, sqlight.Error)),
+  )
+  UpdateSessionCwd(
+    id: String,
+    cwd: String,
+    reply_to: Subject(Result(Nil, sqlight.Error)),
+  )
+  InsertMessage(
+    session_id: String,
+    role: String,
+    content: String,
+    timestamp: Float,
+    reply_to: Subject(Result(Nil, sqlight.Error)),
+  )
+  ListSessions(reply_to: Subject(Result(List(String), sqlight.Error)))
+  GetSessionCwd(
+    id: String,
+    reply_to: Subject(Result(String, sqlight.Error)),
+  )
 }
 
 pub type ActorState {
@@ -65,6 +96,52 @@ fn handle_message(
       process.send(reply_to, res)
       actor.stop()
     }
+    CreateSession(id, source, model, system_prompt, started_at, reply_to) -> {
+      let res =
+        hermes_state.create_session(
+          state.conn,
+          id,
+          source,
+          model,
+          system_prompt,
+          started_at,
+        )
+      process.send(reply_to, res)
+      actor.continue(state)
+    }
+    EndSession(id, end_reason, ended_at, reply_to) -> {
+      let res =
+        hermes_state.end_session(state.conn, id, end_reason, ended_at)
+      process.send(reply_to, res)
+      actor.continue(state)
+    }
+    UpdateSessionCwd(id, cwd, reply_to) -> {
+      let res = hermes_state.update_session_cwd(state.conn, id, cwd)
+      process.send(reply_to, res)
+      actor.continue(state)
+    }
+    InsertMessage(session_id, role, content, timestamp, reply_to) -> {
+      let res =
+        hermes_state.insert_message(
+          state.conn,
+          session_id,
+          role,
+          content,
+          timestamp,
+        )
+      process.send(reply_to, res)
+      actor.continue(state)
+    }
+    ListSessions(reply_to) -> {
+      let res = hermes_state.list_sessions(state.conn)
+      process.send(reply_to, res)
+      actor.continue(state)
+    }
+    GetSessionCwd(id, reply_to) -> {
+      let res = hermes_state.get_session_cwd(state.conn, id)
+      process.send(reply_to, res)
+      actor.continue(state)
+    }
   }
 }
 
@@ -82,4 +159,58 @@ pub fn load(actor: StateActor) -> Result(Database, sqlight.Error) {
 
 pub fn close(actor: StateActor) -> Result(Nil, sqlight.Error) {
   actor.call(actor.subject, 5000, Close)
+}
+
+pub fn create_session(
+  actor: StateActor,
+  id: String,
+  source: String,
+  model: String,
+  system_prompt: String,
+  started_at: Float,
+) -> Result(Nil, sqlight.Error) {
+  actor.call(
+    actor.subject,
+    5000,
+    CreateSession(id, source, model, system_prompt, started_at, _),
+  )
+}
+
+pub fn end_session(
+  actor: StateActor,
+  id: String,
+  end_reason: String,
+  ended_at: Float,
+) -> Result(Nil, sqlight.Error) {
+  actor.call(actor.subject, 5000, EndSession(id, end_reason, ended_at, _))
+}
+
+pub fn update_session_cwd(
+  actor: StateActor,
+  id: String,
+  cwd: String,
+) -> Result(Nil, sqlight.Error) {
+  actor.call(actor.subject, 5000, UpdateSessionCwd(id, cwd, _))
+}
+
+pub fn insert_message(
+  actor: StateActor,
+  session_id: String,
+  role: String,
+  content: String,
+  timestamp: Float,
+) -> Result(Nil, sqlight.Error) {
+  actor.call(
+    actor.subject,
+    5000,
+    InsertMessage(session_id, role, content, timestamp, _),
+  )
+}
+
+pub fn list_sessions(actor: StateActor) -> Result(List(String), sqlight.Error) {
+  actor.call(actor.subject, 5000, ListSessions)
+}
+
+pub fn get_session_cwd(actor: StateActor, id: String) -> Result(String, sqlight.Error) {
+  actor.call(actor.subject, 5000, GetSessionCwd(id, _))
 }

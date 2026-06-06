@@ -461,3 +461,31 @@ pub fn parse_skill_file(content: String) -> Result(Skill, String) {
   }
 }
 ```
+
+---
+
+## 25. JSON-RPC Stream and Dispatch Gateway Pattern
+
+### Intent
+Interface a backend agent orchestrator (Gleam/BEAM) with a modern frontend TUI/dashboard over stdin/stdout, preserving event streaming structure and thread-safe multi-session isolation.
+
+### Pattern
+1. **Thread-Safe Session Map**: Store ongoing agent states in an immutable dictionary inside a `GatewayState` record. Look up or initialize the agent session dynamically based on the incoming `session_id`.
+2. **Optional Envelope Decoder**: Implement the envelope decoder using `decode.optional_field` and `decode.optional` to handle presence/absence/null variants of `id` and `params` safely.
+3. **Piped Event Subscriptions**: Wrap the resolved `AgentState` using `with_event_handler` before calling the conversation loop. The handler intercepts streaming deltas and tool execution updates and immediately prints them as JSON-RPC notifications to stdout.
+
+### Example
+```gleam
+// Intercepting agent events and writing JSON-RPC notifications to stdout
+let state_with_handler = hermes_agent.with_event_handler(agent_state, fn(event) {
+  emit_event(params.session_id, event)
+})
+case hermes_agent.run_conversation(state_with_handler, params.text) {
+  Ok(final_state) -> {
+    // Strip handler from stored state and save
+    let stored_state = hermes_agent.AgentState(..final_state, on_event: None)
+    // ...
+  }
+}
+```
+

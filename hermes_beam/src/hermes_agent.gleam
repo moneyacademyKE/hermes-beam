@@ -7,9 +7,8 @@ import gleam/option.{type Option, None, Some}
 import gleam/string
 import hermes_client.{type LineParserState, StreamChunk, StreamEnd, StreamError, StreamStart, StreamTimeout}
 import hermes_exec
-import hermes_state
 import iteration_budget
-import sqlight
+import state_actor.{type StateActor}
 
 // ─── Tool Schemas ─────────────────────────────────────────────────────────────
 // Static OpenAI-format tool schemas exposed to the LLM.
@@ -22,6 +21,13 @@ pub const read_file_schema = "{\"type\":\"function\",\"function\":{\"name\":\"re
 
 // ─── Core Types ────────────────────────────────────────────────────────────────
 
+pub type AgentEvent {
+  MessageDelta(content: String)
+  ToolStart(name: String, arguments: String)
+  ToolComplete(name: String, result: String)
+  MessageComplete(content: String)
+}
+
 pub type AgentState {
   AgentState(
     session_id: String,
@@ -29,13 +35,18 @@ pub type AgentState {
     cwd: String,
     /// OpenAI-format message history as pre-encoded JSON strings
     history: List(json.Json),
-    db_conn: sqlight.Connection,
+    db_conn: StateActor,
     exec_env: hermes_exec.TerminalEnv,
     api_key: String,
     base_url: String,
     budget: iteration_budget.IterationBudget,
     system_prompt: String,
+    on_event: Option(fn(AgentEvent) -> Nil),
   )
+}
+
+pub fn with_event_handler(state: AgentState, handler: fn(AgentEvent) -> Nil) -> AgentState {
+  AgentState(..state, on_event: Some(handler))
 }
 
 /// Tool call parsed from LLM response JSON
@@ -57,6 +68,7 @@ pub type AgentResponse {
 pub fn dispatch_tool(
   exec_env: hermes_exec.TerminalEnv,
   call: ToolCall,
+  quiet: Bool,
 ) -> #(hermes_exec.TerminalEnv, String) {
   case call.name {
     "run_command" -> {
@@ -67,7 +79,10 @@ pub fn dispatch_tool(
         Ok(cmd) -> cmd
         Error(_) -> "echo 'Error: could not parse command argument'"
       }
-      io.println("  [tool: run_command] $ " <> command)
+      case quiet {
+        False -> io.println("  [tool: run_command] $ " <> command)
+        True -> Nil
+      }
       let #(new_env, result) = hermes_exec.execute(exec_env, command, "", None)
       case result {
         Ok(#(output, exit_code)) -> {
@@ -96,7 +111,10 @@ pub fn dispatch_tool(
       })
       case parsed {
         Ok(#(path, content)) -> {
-          io.println("  [tool: write_file] -> " <> path)
+          case quiet {
+            False -> io.println("  [tool: write_file] -> " <> path)
+            True -> Nil
+          }
           let full_path = case string.starts_with(path, "/") {
             True -> path
             False -> exec_env.cwd <> "/" <> path
@@ -125,7 +143,10 @@ pub fn dispatch_tool(
       })
       case parsed {
         Ok(path) -> {
-          io.println("  [tool: read_file] <- " <> path)
+          case quiet {
+            False -> io.println("  [tool: read_file] <- " <> path)
+            True -> Nil
+          }
           let full_path = case string.starts_with(path, "/") {
             True -> path
             False -> exec_env.cwd <> "/" <> path
@@ -147,7 +168,10 @@ pub fn dispatch_tool(
     }
 
     unknown -> {
-      io.println("  [tool: unknown] " <> unknown)
+      case quiet {
+        False -> io.println("  [tool: unknown] " <> unknown)
+        True -> Nil
+      }
       let result_json =
         json.object([
           #(
@@ -362,10 +386,11 @@ pub fn stream_and_collect(
   req_id: hermes_client.ReqId,
   parser: LineParserState,
   accumulated: String,
+  on_delta: Option(fn(String) -> Nil),
 ) -> #(String, Bool) {
   case hermes_client.receive_stream_chunk(req_id, 120_000) {
     StreamStart(_) ->
-      stream_and_collect(req_id, parser, accumulated)
+      stream_and_collect(req_id, parser, accumulated, on_delta)
 
     StreamChunk(chunk) -> {
       let #(lines, next_parser) = hermes_client.feed_chunk(parser, chunk)
@@ -376,7 +401,10 @@ pub fn stream_and_collect(
             Some(json_str) -> {
               let text_delta = case decode_openai_delta(json_str) {
                 Ok(text) -> {
-                  io.print(text)
+                  case on_delta {
+                    Some(handler) -> handler(text)
+                    None -> io.print(text)
+                  }
                   text
                 }
                 Error(_) -> ""
@@ -387,7 +415,7 @@ pub fn stream_and_collect(
             None -> #(acc, tc_seen)
           }
         })
-      stream_and_collect(req_id, next_parser, new_acc)
+      stream_and_collect(req_id, next_parser, new_acc, on_delta)
       |> fn(result) {
         let #(final_acc, final_tc) = result
         #(final_acc, final_tc || saw_tool_call)
@@ -395,17 +423,26 @@ pub fn stream_and_collect(
     }
 
     StreamEnd -> {
-      io.println("")
+      case on_delta {
+        None -> io.println("")
+        Some(_) -> Nil
+      }
       #(accumulated, False)
     }
 
     StreamError(reason) -> {
-      io.println("\n[Stream Error: " <> reason <> "]")
+      case on_delta {
+        None -> io.println("\n[Stream Error: " <> reason <> "]")
+        Some(_) -> Nil
+      }
       #(accumulated, False)
     }
 
     StreamTimeout -> {
-      io.println("\n[Stream Timeout]")
+      case on_delta {
+        None -> io.println("\n[Stream Timeout]")
+        Some(_) -> Nil
+      }
       #(accumulated, False)
     }
   }
@@ -510,26 +547,37 @@ pub fn agent_turn_loop(
   state: AgentState,
   api_call_count: Int,
 ) -> Result(AgentState, String) {
+  let quiet = option.is_some(state.on_event)
   // Budget check
   case iteration_budget.consume(state.budget) {
     False -> {
       let budget_used = iteration_budget.used(state.budget)
-      io.println(
-        "\n⚠️  Iteration budget exhausted ("
-        <> int.to_string(budget_used)
-        <> " iterations used)",
-      )
+      case quiet {
+        False -> {
+          io.println(
+            "\n⚠️  Iteration budget exhausted ("
+            <> int.to_string(budget_used)
+            <> " iterations used)",
+          )
+        }
+        True -> Nil
+      }
       Error("Budget exhausted after " <> int.to_string(api_call_count) <> " iterations")
     }
 
     True -> {
-      io.println(
-        "\n🔄 API call #"
-        <> int.to_string(api_call_count + 1)
-        <> " (model: "
-        <> state.model
-        <> ")",
-      )
+      case quiet {
+        False -> {
+          io.println(
+            "\n🔄 API call #"
+            <> int.to_string(api_call_count + 1)
+            <> " (model: "
+            <> state.model
+            <> ")",
+          )
+        }
+        True -> Nil
+      }
 
       let body = build_request_body(
         state.model,
@@ -552,14 +600,21 @@ pub fn agent_turn_loop(
         body,
       ) {
         Error(err) -> {
-          io.println("\n[API Error: " <> err <> "]")
+          case quiet {
+            False -> io.println("\n[API Error: " <> err <> "]")
+            True -> Nil
+          }
           Error("API request failed: " <> err)
         }
 
         Ok(req_id) -> {
           // Collect streaming response
+          let on_delta = case state.on_event {
+            Some(handler) -> Some(fn(delta) { handler(MessageDelta(delta)) })
+            None -> None
+          }
           let #(response_text, _saw_tool_calls_in_stream) =
-            stream_and_collect(req_id, hermes_client.new_line_parser(), "")
+            stream_and_collect(req_id, hermes_client.new_line_parser(), "", on_delta)
 
           // If response_text is empty or signals tool calls, try a non-streaming
           // call to get the structured tool_calls JSON or final text
@@ -575,7 +630,16 @@ pub fn agent_turn_loop(
           case agent_resp {
             // ── Tool call path ──────────────────────────────────────────────
             ToolCalls(calls) -> {
-              io.println("\n🔧 Executing " <> int.to_string(list.length(calls)) <> " tool call(s)...")
+              case state.on_event {
+                Some(handler) -> {
+                  list.each(calls, fn(tc) {
+                    handler(ToolStart(tc.name, tc.arguments))
+                  })
+                }
+                None -> {
+                  io.println("\n🔧 Executing " <> int.to_string(list.length(calls)) <> " tool call(s)...")
+                }
+              }
 
               // Append the assistant's tool_calls message to history
               let history_with_assistant =
@@ -585,7 +649,11 @@ pub fn agent_turn_loop(
               let #(new_exec_env, new_history) =
                 list.fold(calls, #(state.exec_env, history_with_assistant), fn(acc, tc) {
                   let #(current_env, current_history) = acc
-                  let #(next_env, result) = dispatch_tool(current_env, tc)
+                  let #(next_env, result) = dispatch_tool(current_env, tc, quiet)
+                  case state.on_event {
+                    Some(handler) -> handler(ToolComplete(tc.name, result))
+                    None -> Nil
+                  }
                   let tool_msg = tool_result_message(tc.id, result)
                   #(next_env, [tool_msg, ..current_history])
                 })
@@ -608,13 +676,18 @@ pub fn agent_turn_loop(
               let timestamp =
                 int.to_float(system_time_ms()) /. 1000.0
               let _ =
-                hermes_state.insert_message(
+                state_actor.insert_message(
                   state.db_conn,
                   state.session_id,
                   "assistant",
                   final_text,
                   timestamp,
                 )
+
+              case state.on_event {
+                Some(handler) -> handler(MessageComplete(final_text))
+                None -> Nil
+              }
 
               let new_history =
                 [assistant_message(final_text), ..state.history]
@@ -627,13 +700,18 @@ pub fn agent_turn_loop(
               let timestamp =
                 int.to_float(system_time_ms()) /. 1000.0
               let _ =
-                hermes_state.insert_message(
+                state_actor.insert_message(
                   state.db_conn,
                   state.session_id,
                   "assistant",
                   final_text,
                   timestamp,
                 )
+
+              case state.on_event {
+                Some(handler) -> handler(MessageComplete(final_text))
+                None -> Nil
+              }
 
               let new_history =
                 [assistant_message(final_text), ..state.history]
@@ -689,7 +767,7 @@ pub fn run_conversation(
 
   // Persist user message
   let _ =
-    hermes_state.insert_message(
+    state_actor.insert_message(
       state.db_conn,
       state.session_id,
       "user",
@@ -709,7 +787,7 @@ pub fn new_agent_state(
   session_id: String,
   model: String,
   cwd: String,
-  db_conn: sqlight.Connection,
+  db_conn: StateActor,
   exec_env: hermes_exec.TerminalEnv,
   api_key: String,
   base_url: String,
@@ -729,6 +807,7 @@ pub fn new_agent_state(
         base_url: base_url,
         budget: budget,
         system_prompt: system_prompt,
+        on_event: None,
       ))
     Error(_) ->
       Error("Failed to start iteration budget actor")
