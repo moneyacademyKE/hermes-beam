@@ -489,3 +489,116 @@ case hermes_agent.run_conversation(state_with_handler, params.text) {
 }
 ```
 
+---
+
+## 26. Asynchronous Subprocess Line Reader Loop Pattern (Clojure core.async / charm.clj)
+
+### Intent
+Read from a standard input/output stream of a child process (such as a JSON-RPC gateway subprocess) in a non-blocking way, pushing lines directly into the Elm-style loop message channel without blocking UI rendering or input events.
+
+### Pattern
+1. **Represent Read as a Command**: Define a command function that performs a blocking read (`.readLine`) from the child process's stdout stream.
+2. **Wrap in core.async `go` Block**: Wrap the command in `charm/cmd`, which spawns the blocking read inside a core.async thread-pool thread.
+3. **Recursive read chain**: When a line message is received in the update function (`:backend-line`), return the updated model alongside a new `read-line-cmd` to schedule the next read.
+4. **EOF / Error termination**: Return `charm/quit-cmd` if EOF or a stream error occurs, allowing the Elm loop to exit cleanly and destruct the subprocess.
+
+### Example
+```clojure
+(defn read-line-cmd [reader]
+  (charm/cmd
+    (fn []
+      (try
+        (if-let [line (.readLine reader)]
+          {:type :backend-line :line line}
+          {:type :backend-eof})
+        (catch Exception e
+          {:type :backend-error :error e})))))
+
+(defn update-fn [state msg]
+  (case (:type msg)
+    :backend-line
+    (let [next-state (handle-line state (:line msg))]
+      [next-state (read-line-cmd (:stdout-reader next-state))])
+    :backend-eof
+    [state charm/quit-cmd]
+    ...))
+```
+
+---
+
+## 27. Directory-Isolated Subprocess Execution Pattern (Babashka Wrapper)
+
+### Intent
+Launch nested project scripts or pipelines from a root CLI launcher wrapper without classpath or dependency resolution failures.
+
+### Pattern
+Instead of running sub-scripts directly (which inherits the root working directory and causes classpath tools to ignore local configuration files like `bb.edn`):
+1. **Determine Absolute Paths**: Compute the absolute directory path of the target project using directory resolvers (e.g. `babashka.fs/parent` or absolute path helpers).
+2. **Isolate Working Directory**: Set the `:dir` option in the process builder map (e.g. `babashka.process/process` or similar process execution methods) to the target sub-project directory.
+3. **Execute Subprogram**: Execute the script inside the isolated directory so the subprocess naturally loads the correct local configuration, fetches dependencies, and executes cleanly.
+
+### Example
+```clojure
+(defn run-tui []
+  (let [root-dir (fs/parent *file*)
+        ui-clj-dir (str (fs/path root-dir "ui-clj"))
+        tui-script (fs/path ui-clj-dir "src" "hermes_tui.clj")]
+    (if (fs/exists? tui-script)
+      (let [res (proc/process {:dir ui-clj-dir :inherit true} "bb" "src/hermes_tui.clj")]
+        (System/exit (:exit @res)))
+      (do
+        (binding [*out* *err*]
+          (println "Error: Clojure TUI client script not found at" (str tui-script)))
+        (System/exit 1)))))
+```
+
+```
+
+## 28. Standard IO MCP Client State Machine
+
+### Context
+When integrating side effects and system capabilities (like file manipulation, external commands, or specialized web browsers) into a strictly functional BEAM actor hierarchy (Gleam/Erlang), writing custom wrappers for every tool violates Rich Hickey's principles of simplicity. We need a way to integrate existing capabilities via standard JSON-RPC (Model Context Protocol) without blocking or mutating state.
+
+### Description
+Implement the Model Context Protocol (MCP) as an asynchronous stream handler over standard input/output.
+1. **Launch**: Spawn the MCP server binary as a background port using `erlang:open_port`.
+2. **Buffer & Decode**: Use a recursive `loop` passing immutable state (holding a buffer and pending requests map) to aggregate incoming chunked binary payloads until newlines are detected, then decode as JSON.
+3. **Dispatch**: Map response `id` fields back to callers using OTP Subjects (`process.send`), allowing the rest of the functional app to request tool invocations synchronously or asynchronously via Gleam process messaging.
+4. **Tool Mapping**: Abstract the external tools so that their `tools/list` schema can be transparently injected directly into the LLM's `tools` array.
+
+### Example
+```gleam
+fn loop(state: State, subj: Subject(Message)) -> Nil {
+  let selector = process.new_selector()
+    |> process.select(subj)
+    
+  case process.selector_receive(selector, 600_000) {
+    Ok(UserRequest(CallTool(name, args_str, reply))) -> {
+      let id = state.next_id
+      let msg = "{\"jsonrpc\":\"2.0\",\"id\":" <> int.to_string(id) <> ",\"method\":\"tools/call\",\"params\":{\"name\":\"" <> name <> "\",\"arguments\":" <> args_str <> "}}\n"
+      let _ = hermes_exec.send_input(state.port, msg)
+      
+      let wrap_subj = process.new_subject()
+      let next_state = State(..state, next_id: id + 1, pending: dict.insert(state.pending, id, wrap_subj))
+      // Caller waits on reply subject while this loop keeps running
+      loop(next_state, subj)
+    }
+    Ok(PortData(data)) -> {
+      // Decode buffered JSON and reply to waiting subjects
+      let next_state = process_buffer(State(..state, buffer: state.buffer <> data))
+      loop(next_state, subj)
+    }
+    _ -> loop(state, subj)
+  }
+}
+```
+
+## Reactive Actor Broadcast (Erlang/Gleam)
+**Pattern**: Decomplecting state transitions from side effects by transacting immutable facts (`Datom`s) and broadcasting them to an observer loop.
+**Implementation**: `state_actor.gleam` maintains SQLite state but publishes side-effects (intents like `call_tool`) to `intent_subj`. `hermes_beam.gleam` spawns an `intent_loop` listening purely to these broadcasts and forwarding them to `mcp_client.gleam` or `tui_gateway.gleam`.
+**Benefit**: The core state actor remains pure from external I/O or JSON-RPC tool calling, preventing deadlocks or blocking behavior inside `sqlight` transactions.
+
+## Pure Stream Buffer Reconstitution
+**Pattern**: Reassembling fragmented stream data using a purely functional accumulator rather than a mutable string buffer.
+**Implementation**: `pure_process_buffer` takes a `String` and a `List(String)`, splits it at boundaries recursively, and returns the unused suffix with the extracted segments. Tested using property-based testing (`qcheck` / QuickCheck) to prove that `fragments |> pure_process_buffer |> verify` holds for all possible random fractionations of the stream.
+**Benefit**: Guarantees zero data loss or partial execution of JSON-RPC messages even if a slow terminal or TCP port splits a valid JSON blob in half.

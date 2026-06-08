@@ -9,6 +9,7 @@ import hermes_client.{type LineParserState, StreamChunk, StreamEnd, StreamError,
 import hermes_exec
 import iteration_budget
 import state_actor.{type StateActor}
+import mcp_client
 
 // ─── Tool Schemas ─────────────────────────────────────────────────────────────
 // Static OpenAI-format tool schemas exposed to the LLM.
@@ -42,6 +43,7 @@ pub type AgentState {
     budget: iteration_budget.IterationBudget,
     system_prompt: String,
     on_event: Option(fn(AgentEvent) -> Nil),
+    mcp_client: Option(mcp_client.McpClient),
   )
 }
 
@@ -66,10 +68,11 @@ pub type AgentResponse {
 
 /// Execute a single tool call and return its result as a JSON string.
 pub fn dispatch_tool(
-  exec_env: hermes_exec.TerminalEnv,
+  state: AgentState,
   call: ToolCall,
   quiet: Bool,
 ) -> #(hermes_exec.TerminalEnv, String) {
+  let exec_env = state.exec_env
   case call.name {
     "run_command" -> {
       let command = case json.parse(from: call.arguments, using: {
@@ -169,19 +172,28 @@ pub fn dispatch_tool(
 
     unknown -> {
       case quiet {
-        False -> io.println("  [tool: unknown] " <> unknown)
+        False -> io.println("  [tool: mcp call] " <> unknown)
         True -> Nil
       }
-      let result_json =
-        json.object([
-          #(
-            "error",
-            json.string(
-              "Unknown tool: " <> unknown <> ". Available: run_command, write_file, read_file",
+      let result_json = case state.mcp_client {
+        Some(client) -> {
+          case mcp_client.call_tool(client, unknown, call.arguments) {
+            Ok(res) -> res
+            Error(err) -> json.object([#("error", json.string(err))]) |> json.to_string
+          }
+        }
+        None -> {
+          json.object([
+            #(
+              "error",
+              json.string(
+                "Unknown tool: " <> unknown <> ". Available statically: run_command, write_file, read_file",
+              ),
             ),
-          ),
-        ])
-        |> json.to_string
+          ])
+          |> json.to_string
+        }
+      }
       #(exec_env, result_json)
     }
   }
@@ -201,8 +213,25 @@ fn system_time_ms() -> Int
 // ─── Tool Schema Builder ───────────────────────────────────────────────────────
 
 /// Returns the JSON string for all registered tool schemas to include in API requests.
-pub fn all_tool_schemas() -> String {
-  "[" <> run_command_schema <> "," <> write_file_schema <> "," <> read_file_schema <> "]"
+pub fn all_tool_schemas(mcp_client: Option(mcp_client.McpClient)) -> String {
+  let base_schemas = run_command_schema <> "," <> write_file_schema <> "," <> read_file_schema
+  case mcp_client {
+    Some(client) -> {
+      case mcp_client.list_tools(client) {
+        Ok(tools) -> {
+          let mcp_schemas = list.map(tools, fn(t) {
+            "{\"type\":\"function\",\"function\":{\"name\":\"" <> t.name <> "\",\"description\":\"" <> t.description <> "\",\"parameters\":" <> t.input_schema <> "}}"
+          }) |> string.join(",")
+          case mcp_schemas == "" {
+            True -> "[" <> base_schemas <> "]"
+            False -> "[" <> base_schemas <> "," <> mcp_schemas <> "]"
+          }
+        }
+        Error(_) -> "[" <> base_schemas <> "]"
+      }
+    }
+    None -> "[" <> base_schemas <> "]"
+  }
 }
 
 // ─── Response Parsing ──────────────────────────────────────────────────────────
@@ -583,7 +612,7 @@ pub fn agent_turn_loop(
         state.model,
         state.system_prompt,
         list.reverse(state.history),
-        all_tool_schemas(),
+        all_tool_schemas(state.mcp_client),
         True,
       )
 
@@ -649,7 +678,7 @@ pub fn agent_turn_loop(
               let #(new_exec_env, new_history) =
                 list.fold(calls, #(state.exec_env, history_with_assistant), fn(acc, tc) {
                   let #(current_env, current_history) = acc
-                  let #(next_env, result) = dispatch_tool(current_env, tc, quiet)
+                  let #(next_env, result) = dispatch_tool(AgentState(..state, exec_env: current_env), tc, quiet)
                   case state.on_event {
                     Some(handler) -> handler(ToolComplete(tc.name, result))
                     None -> Nil
@@ -736,7 +765,7 @@ pub fn fetch_fallback_non_streaming(
     state.model,
     state.system_prompt,
     list.reverse(state.history),
-    all_tool_schemas(),
+    all_tool_schemas(state.mcp_client),
     False,
   )
 
@@ -793,6 +822,7 @@ pub fn new_agent_state(
   base_url: String,
   system_prompt: String,
   max_iterations: Int,
+  mcp_client: Option(mcp_client.McpClient),
 ) -> Result(AgentState, String) {
   case iteration_budget.start(max_iterations) {
     Ok(budget) ->
@@ -808,6 +838,7 @@ pub fn new_agent_state(
         budget: budget,
         system_prompt: system_prompt,
         on_event: None,
+        mcp_client: mcp_client,
       ))
     Error(_) ->
       Error("Failed to start iteration budget actor")

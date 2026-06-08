@@ -1,11 +1,53 @@
-#!/usr/bin/env python3
-"""
-Hermes Agent CLI launcher.
+#!/usr/bin/env bb
 
-This wrapper should behave like the installed `hermes` command, including
-subcommands such as `gateway`, `cron`, and `doctor`.
-"""
+(require '[babashka.process :as proc]
+         '[babashka.fs :as fs]
+         '[clojure.string :as str])
 
-if __name__ == "__main__":
-    from hermes_cli.main import main
-    main()
+(defn print-help []
+  (println "Hermes CLI Launcher (Babashka Wrapper)")
+  (println "Usage:")
+  (println "  ./hermes              - Start the interactive TUI chat interface (default)")
+  (println "  ./hermes --tui, -t    - Start the interactive TUI chat interface")
+  (println "  ./hermes repl         - Start the Gleam REPL agent interface")
+  (println "  ./hermes --help, -h   - Show this help message"))
+
+(defn run-tui []
+  (let [root-dir (fs/parent *file*)
+        ui-clj-dir (str (fs/path root-dir "ui-clj"))
+        tui-script (fs/path ui-clj-dir "src" "hermes_tui.clj")]
+    (if (fs/exists? tui-script)
+      (let [res (proc/process {:dir ui-clj-dir :inherit true} "bb" "src/hermes_tui.clj")]
+        (System/exit (:exit @res)))
+      (do
+        (binding [*out* *err*]
+          (println "Error: Clojure TUI client script not found at" (str tui-script)))
+        (System/exit 1)))))
+
+(defn run-repl [args]
+  (let [root-dir (fs/parent *file*)
+        beam-dir (str (fs/path root-dir "hermes_beam"))]
+    (if (fs/exists? (fs/path beam-dir "gleam.toml"))
+      (let [res (apply proc/process {:dir beam-dir :inherit true} "gleam" "run" "--" args)]
+        (System/exit (:exit @res)))
+      (do
+        (binding [*out* *err*]
+          (println "Error: Gleam project directory not found at" beam-dir))
+        (System/exit 1)))))
+
+(defn -main [args]
+  (let [first-arg (first args)]
+    (cond
+      (or (= first-arg "--help") (= first-arg "-h") (= first-arg "help"))
+      (print-help)
+
+      (or (nil? first-arg) (= first-arg "--tui") (= first-arg "-t") (= first-arg "--clj") (= first-arg "-c"))
+      (run-tui)
+
+      (= first-arg "repl")
+      (run-repl (rest args))
+
+      :else
+      (run-repl args))))
+
+(-main *command-line-args*)

@@ -4,6 +4,7 @@ import gleam/io
 import gleam/option.{None, Some}
 import gleam/string
 import hermes_agent
+import mcp_client
 import hermes_exec
 import hermes_state
 import utils
@@ -12,6 +13,7 @@ import skill.{Skill}
 import gleamdb.{Datom, Rule}
 import simplifile
 import gleam/list
+import gleam/erlang/process
 import argv
 import state_actor
 import skill_compiler
@@ -167,6 +169,7 @@ pub fn repl_loop(state: REPLState) -> Nil {
               state.base_url,
               "You are a helpful assistant with access to shell tools.",
               90,
+              option.None,
             )
           case new_agent_state {
             Ok(new_agent) ->
@@ -200,6 +203,7 @@ pub fn repl_loop(state: REPLState) -> Nil {
               state.base_url,
               "You are a helpful assistant with access to shell tools.",
               90,
+              option.None,
             )
           case new_agent_state {
             Ok(new_agent) ->
@@ -428,7 +432,8 @@ pub fn run_repl() -> Nil {
   let db_path = constants.path_join(constants.get_hermes_home(), "state.db")
   let assert Ok(conn) = hermes_state.connect(db_path)
   let assert Ok(Nil) = hermes_state.init_schema(conn)
-  let assert Ok(actor) = state_actor.start(conn)
+  let intent_subj: process.Subject(gleamdb.Datom) = process.new_subject()
+  let assert Ok(actor) = state_actor.start(conn, Some(intent_subj))
 
   // 1b. Seed/persist local skills
   let routing_skill =
@@ -535,7 +540,7 @@ pub fn run_repl() -> Nil {
 
   case is_tui_flag || is_tui_env {
     True -> {
-      tui_gateway.start_tui_server(actor, api_key, base_url, model)
+      tui_gateway.start_tui_server(actor, api_key, base_url, model, option.Some(intent_subj))
     }
     False -> {
       // 3. Create session
@@ -569,6 +574,38 @@ pub fn run_repl() -> Nil {
       io.println("CWD        : " <> exec_env.cwd)
       io.println("\nType /help to see commands. Press Ctrl+D or /quit to exit.")
 
+      // Start MCP Client if HERMES_MCP_CMD is set
+      let mcp_client_opt = case constants.get_env("HERMES_MCP_CMD") {
+        Some(cmd) -> {
+          let notif_subj: process.Subject(mcp_client.JsonRpcNotification) = process.new_subject()
+          let _ = process.spawn(fn() {
+            let selector = process.new_selector()
+              |> process.select(notif_subj)
+            notification_loop(selector, actor)
+          })
+          
+          case mcp_client.start(cmd, Some(notif_subj)) {
+            Ok(client) -> {
+              let _ = mcp_client.initialize(client)
+              io.println("MCP Client started.")
+              Some(client)
+            }
+            Error(e) -> {
+              io.println("Failed to start MCP client: " <> e)
+              None
+            }
+          }
+        }
+        None -> None
+      }
+
+      // Start Intent Evaluation Loop for Reactive Side-Effects
+      let _intent_eval_pid = process.spawn(fn() {
+        let selector = process.new_selector()
+          |> process.select(intent_subj)
+        intent_loop(selector, mcp_client_opt)
+      })
+
       // 5. Build initial AgentState (max 90 iterations per conversation turn)
       let agent_result =
         hermes_agent.new_agent_state(
@@ -581,6 +618,7 @@ pub fn run_repl() -> Nil {
           base_url,
           "You are a helpful assistant with access to shell tools. When you need to run a command, use the run_command tool. When you need to read a file, use read_file. When you need to write a file, use write_file.",
           90,
+          mcp_client_opt,
         )
 
       case agent_result {
@@ -605,5 +643,47 @@ pub fn run_repl() -> Nil {
         }
       }
     }
+  }
+}
+
+fn notification_loop(
+  selector: process.Selector(mcp_client.JsonRpcNotification),
+  actor: state_actor.StateActor,
+) -> Nil {
+  case process.selector_receive(selector, 600_000) {
+    Ok(notif) -> {
+      let params_str = case notif.params {
+        Some(p) -> string.inspect(p)
+        None -> "{}"
+      }
+      let _ = state_actor.handle_mcp_notification(actor, notif.method, params_str)
+      notification_loop(selector, actor)
+    }
+    Error(_) -> notification_loop(selector, actor)
+  }
+}
+
+fn intent_loop(
+  selector: process.Selector(gleamdb.Datom),
+  mcp_client_opt: option.Option(mcp_client.McpClient)
+) -> Nil {
+  case process.selector_receive(selector, 600_000) {
+    Ok(datom) -> {
+      case datom.attribute {
+        "call_tool" -> {
+          io.println("[Side Effect] Reactive gleamdb intent to call tool: " <> datom.value)
+          case mcp_client_opt {
+            option.Some(client) -> {
+              let _ = mcp_client.call_tool(client, "reactive_task", datom.value)
+              Nil
+            }
+            option.None -> Nil
+          }
+        }
+        _ -> Nil
+      }
+      intent_loop(selector, mcp_client_opt)
+    }
+    Error(_) -> intent_loop(selector, mcp_client_opt)
   }
 }

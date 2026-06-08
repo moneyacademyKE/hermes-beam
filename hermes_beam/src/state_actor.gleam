@@ -2,6 +2,8 @@ import gleam/erlang/process.{type Subject}
 import gleam/otp/actor
 import gleam/result
 import gleamdb.{type Database, type Datom}
+import gleam/option.{type Option, Some, None}
+import gleam/list
 import hermes_state
 import sqlight
 
@@ -44,17 +46,28 @@ pub type Message {
     id: String,
     reply_to: Subject(Result(String, sqlight.Error)),
   )
+  HandleMcpNotification(
+    method: String,
+    params: String,
+    reply_to: Subject(Result(Nil, sqlight.Error)),
+  )
 }
 
 pub type ActorState {
-  ActorState(conn: sqlight.Connection)
+  ActorState(
+    conn: sqlight.Connection,
+    broadcast: Option(Subject(Datom))
+  )
 }
 
 pub opaque type StateActor {
   StateActor(subject: Subject(Message))
 }
 
-pub fn start(conn: sqlight.Connection) -> Result(StateActor, actor.StartError) {
+pub fn start(
+  conn: sqlight.Connection,
+  broadcast: Option(Subject(Datom))
+) -> Result(StateActor, actor.StartError) {
   // Ensure datoms schema is initialized
   let _ =
     sqlight.exec(
@@ -70,7 +83,7 @@ pub fn start(conn: sqlight.Connection) -> Result(StateActor, actor.StartError) {
       conn,
     )
 
-  actor.new(ActorState(conn))
+  actor.new(ActorState(conn, broadcast))
   |> actor.on_message(handle_message)
   |> actor.start
   |> result.map(fn(started) { StateActor(started.data) })
@@ -80,9 +93,13 @@ fn handle_message(
   state: ActorState,
   message: Message,
 ) -> actor.Next(ActorState, Message) {
-  case message {
+    case message {
     TransactDatoms(datoms, tx, reply_to) -> {
       let res = hermes_state.save_datoms(state.conn, datoms, tx)
+      case state.broadcast {
+        Some(subj) -> list.each(datoms, process.send(subj, _))
+        None -> Nil
+      }
       process.send(reply_to, res)
       actor.continue(state)
     }
@@ -95,6 +112,16 @@ fn handle_message(
       let res = sqlight.close(state.conn)
       process.send(reply_to, res)
       actor.stop()
+    }
+    HandleMcpNotification(method, params, reply_to) -> {
+      let datoms = [gleamdb.Datom(entity: "mcp_client", attribute: method, value: params)]
+      let res = hermes_state.save_datoms(state.conn, datoms, 0)
+      case state.broadcast {
+        Some(subj) -> list.each(datoms, process.send(subj, _))
+        None -> Nil
+      }
+      process.send(reply_to, res)
+      actor.continue(state)
     }
     CreateSession(id, source, model, system_prompt, started_at, reply_to) -> {
       let res =
@@ -211,6 +238,17 @@ pub fn list_sessions(actor: StateActor) -> Result(List(String), sqlight.Error) {
   actor.call(actor.subject, 5000, ListSessions)
 }
 
-pub fn get_session_cwd(actor: StateActor, id: String) -> Result(String, sqlight.Error) {
-  actor.call(actor.subject, 5000, GetSessionCwd(id, _))
+pub fn get_session_cwd(
+  actor: StateActor,
+  id: String,
+) -> Result(String, sqlight.Error) {
+  actor.call(actor.subject, 1000, fn(subject) { GetSessionCwd(id, subject) })
+}
+
+pub fn handle_mcp_notification(
+  actor: StateActor,
+  method: String,
+  params: String,
+) -> Result(Nil, sqlight.Error) {
+  actor.call(actor.subject, 1000, fn(subject) { HandleMcpNotification(method, params, subject) })
 }

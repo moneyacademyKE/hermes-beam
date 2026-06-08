@@ -107,7 +107,7 @@ pub fn tool_result_message_test() {
 // ─── Tool Schemas ──────────────────────────────────────────────────────────────
 
 pub fn all_tool_schemas_valid_json_test() {
-  let schemas = all_tool_schemas()
+  let schemas = all_tool_schemas(option.None)
   // Should parse as a JSON array without error
   let result = json.parse(from: schemas, using: decode.list(decode.dynamic))
   let assert Ok(items) = result
@@ -116,7 +116,7 @@ pub fn all_tool_schemas_valid_json_test() {
 }
 
 pub fn tool_schemas_contain_required_names_test() {
-  let schemas = all_tool_schemas()
+  let schemas = all_tool_schemas(option.None)
   let assert True = string.contains(schemas, "\"run_command\"")
   let assert True = string.contains(schemas, "\"write_file\"")
   let assert True = string.contains(schemas, "\"read_file\"")

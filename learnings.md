@@ -290,4 +290,45 @@ This document summarizes the core learnings from porting python codebase element
     - **Interactive Session Gateway**: Ingest JSON-RPC request envelopes from `stdin` via recursive reading (`utils.read_line`). Keep agent instances thread-safe and isolated in `GatewayState` by mapping `session_id` to their respective `AgentState`.
     - **Streaming Event Push**: Intercept and push agent event callbacks (`message.delta`, `tool.start`, etc.) onto `stdout` as JSON-RPC notifications while executing `run_conversation` synchronously.
 
+## 37. Terminal TUI Frontend Architectures (React/Ink vs. Clojure/charm.clj vs. BEAM/ex_ratatui)
 
+*   **Problem**: Selecting the optimal terminal frontend architecture to minimize accidental complexity and optimize cross-platform code reuse.
+*   **Resolution**:
+    - **Ecosystem & Layout Parity**: React/TypeScript/Ink leveraging Yoga (CSS Flexbox) provides a far simpler, declaratively scalable styling boundary than manual Clojure box math or constraint-based layout splits in Ratatui.
+    - **Platform Independence vs. Reuse**: Stdio-based JSON-RPC messaging isolates UI concerns (client) from execution (server), allowing JS-based frontends (Ink, Electron, browser xterm.js) to share autocomplete logic, syntax highlighting, and UI themes directly, maximizing reuse.
+    - **Supervision & Safety**: In BEAM environments, calling Rust Ratatui bindings via Rustler NIFs (`ex_ratatui`) complects the UI rendering process with the Erlang scheduler, risking VM crashes on panic/segmentation faults, whereas stdio-based clients are cleanly isolated.
+
+## 38. Babashka/Clojure Elm-Style TUI Client Implementation
+
+*   **Problem**: Implementing a lightweight, fast-booting, deterministic terminal TUI client that replaces heavy Node/npm JS dependencies while maintaining Elm-style (Model-Update-View) loop parity and robust asynchronous subprocess communication.
+*   **Resolution**:
+    - **Fast-Booting Babashka Runtime**: Using Babashka `bb` resolves the slow JVM startup time, booting the TUI instantly (<50ms).
+    - **Elm-style Loop with `charm.clj`**: By employing Timo Kramer's `charm.clj`, we implement clean model updates and render functional views with curated colors and borders.
+    - **Non-blocking Process IO in Go Blocks**: To prevent blocking the UI event loop during synchronous reads from the subprocess stdin/stdout, we create a recursive read command `read-line-cmd` wrapped in a `charm/cmd`. Since `charm.clj` executes `cmd` functions inside core.async `go` block thread pool threads, the blocking read runs in a background thread and deposits the parsed JSON-RPC events directly onto the UI message channel, avoiding rendering lag.
+    - **Process Lifecycle Guarding**: To avoid leaving zombie subprocesses (e.g. `tui_gateway`), we wrap the main program `run` in a `try ... finally` block, calling `proc/destroy` on the subprocess when the UI exits or throws an exception.
+    - **Testing Isolation**: To prevent top-level execution triggers from launching the main TUI loop during namespace loading (e.g., when requiring files inside `clojure.test` suites), we guard the `-main` execution entrypoint with a check against the system property: `(when (= *file* (System/getProperty "babashka.file")) (apply -main *command-line-args*))`.
+
+## 39. Python Code Retirement & Babashka-Based CLI Launcher
+
+*   **Problem**: Retaining a hybrid system that relies on a Python-based CLI wrapper (`cli.py`, `hermes_cli/main.py`) alongside a Gleam backend (`hermes_beam`) and a Clojure TUI client (`ui-clj`) introduces accidental complexity, slow startup latency, and dual package configurations (both Erlang/Gleam and Python packaging pipelines).
+*   **Resolution**:
+    - **Full Codebase Retirement**: Delete the legacy Python codebase entirely, including the 100+ packaging and command-definition modules.
+    - **Unified Babashka Entrypoint**: Implement the root launcher executable `hermes` as a lightweight Clojure script running on Babashka (`#!/usr/bin/env bb`).
+    - **Process Context and Working Directory Isolation**: When executing downstream Babashka sub-scripts (like `ui-clj/src/hermes_tui.clj`) that depend on local `bb.edn` dependency configurations, the launcher must spawn them with their process working directory explicitly set to the sub-project directory (e.g. `ui-clj/`). This allows Babashka to resolve relative path dependencies and compile the classpath cleanly, avoiding `FileNotFoundException` or class-loading errors when launched from other root directories.
+    - **Arguments Pass-Through**: Subcommands like `repl` are resolved dynamically and forwarded to the Gleam backend (`gleam run --`) via `babashka.process/process`, preserving stdout/stderr inheritance and raw exit codes.
+
+## 40. Extensibility through Model Context Protocol (MCP) in pure BEAM/Gleam
+
+*   **Problem**: While the core Datalog engine (`gleamdb`) allows for clean logical reasoning inside the agent, executing side-effects (e.g., executing scripts, managing files) directly in the BEAM virtual machine violates isolation, complects state, and demands writing many custom Erlang/Gleam wrappers for standard APIs.
+*   **Resolution**: 
+    - **Delegation to MCP**: Instead of rewriting all agent capabilities in Gleam, we implement a lightweight Model Context Protocol (MCP) Client over standard IO pipes. The agent core remains strictly functional, delegating side effects to decoupled MCP server binaries.
+    - **Erlang Ports for Async Communication**: By wrapping `erlang:open_port` using `{spawn, Cmd}` with standard IO piping, we construct a fully asynchronous streaming `mcp_client`. 
+    - **JSON-RPC State Machine**: The MCP client uses Gleam's OTP `process.selecting` to asynchronously handle stream responses and dispatch JSON-RPC message IDs back to awaiting callers, fully avoiding blocking operations in the core Agent loop.
+    - **Dynamic Schema Stitching**: At runtime, the client resolves available capabilities (`tools/list`), mapping them into OpenAI's `tools` JSON schema, effectively stitching dynamic external capabilities back into the stateless LLM query cycle.
+
+
+### Decomplecting I/O and Core Logic (Rich Hickey Style)
+* **Date**: 2026-06-08
+* **Context**: Migrating `tui_gateway.gleam` and `hermes_tui.clj` to asynchronous models.
+* **Learning**: Blocking I/O (like `utils.read_line` or `.readLine` in a main loop) fundamentally complects time with execution. By pushing I/O to the edges (spawned reader processes or `core.async` threads) and feeding channels/subjects, we restore the ability to evaluate intents purely and reactively. 
+* **Impact**: `hermes_tui.clj` now uses `clojure.core.async` to asynchronously fold over incoming lines and broadcast intents without blocking the main event loop, dramatically improving UI responsiveness and system stability. `tui_gateway` uses Erlang/Gleam `process.receive` rather than `select` blocks when transforming streams, providing immutable message handling.

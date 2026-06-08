@@ -12,6 +12,8 @@ import hermes_exec
 import state_actor.{type StateActor}
 import utils
 import sqlight
+import gleam/erlang/process
+import gleamdb
 
 @external(erlang, "erlang", "system_time")
 fn system_time_ms() -> Int
@@ -330,6 +332,7 @@ fn dispatch_method(
                     state.base_url,
                     sys_prompt,
                     90,
+                    option.None,
                   ) {
                     Ok(new_agent) -> {
                       let new_sessions = dict.insert(state.sessions, params.session_id, new_agent)
@@ -408,11 +411,18 @@ fn handle_line(state: GatewayState, line: String) -> GatewayState {
   }
 }
 
+pub type TuiMessage {
+  StdinLine(String)
+  StdinClosed
+  StateBroadcast(gleamdb.Datom)
+}
+
 pub fn start_tui_server(
   state_actor: StateActor,
   api_key: String,
   base_url: String,
   default_model: String,
+  broadcast_subj: Option(process.Subject(gleamdb.Datom)),
 ) -> Nil {
   let config = dict.from_list([
     #("model", default_model),
@@ -426,22 +436,77 @@ pub fn start_tui_server(
     sessions: dict.new(),
     config: config,
   )
-  server_loop(initial_state)
+
+  let subj: process.Subject(TuiMessage) = process.new_subject()
+  
+  // Stdin reader process
+  let _ = process.spawn(fn() {
+    stdin_loop(subj)
+  })
+
+  // Hook up state broadcast if available
+  case broadcast_subj {
+    Some(bsubj) -> {
+      let _ = process.spawn(fn() {
+        broadcast_loop(bsubj, subj)
+      })
+      Nil
+    }
+    None -> Nil
+  }
+
+  server_loop(initial_state, subj)
 }
 
-fn server_loop(state: GatewayState) -> Nil {
-  case utils.read_line("") {
-    Ok(line) -> {
+fn broadcast_loop(bsubj: process.Subject(gleamdb.Datom), main_subj: process.Subject(TuiMessage)) -> Nil {
+  case process.receive(bsubj, 600_000) {
+    Ok(datom) -> {
+      process.send(main_subj, StateBroadcast(datom))
+      broadcast_loop(bsubj, main_subj)
+    }
+    Error(_) -> broadcast_loop(bsubj, main_subj)
+  }
+}
+
+fn server_loop(state: GatewayState, subj: process.Subject(TuiMessage)) -> Nil {
+  case process.receive(subj, 600_000) {
+    Ok(StdinLine(line)) -> {
       let trimmed = string.trim(line)
       case trimmed {
-        "" -> server_loop(state)
+        "" -> server_loop(state, subj)
         _ -> {
           let next_state = handle_line(state, trimmed)
-          server_loop(next_state)
+          server_loop(next_state, subj)
         }
       }
     }
+    Ok(StateBroadcast(datom)) -> {
+      // Forward side effects or intents to the frontend via JSON-RPC Notification
+      let notif = json.object([
+        #("jsonrpc", json.string("2.0")),
+        #("method", json.string("hermes.broadcast")),
+        #("params", json.object([
+          #("entity", json.string(datom.entity)),
+          #("attribute", json.string(datom.attribute)),
+          #("value", json.string(datom.value)),
+        ]))
+      ])
+      write_stdout(json.to_string(notif))
+      server_loop(state, subj)
+    }
+    Ok(StdinClosed) -> Nil
+    Error(_) -> server_loop(state, subj)
+  }
+}
+
+fn stdin_loop(subj: process.Subject(TuiMessage)) -> Nil {
+  case utils.read_line("") {
+    Ok(line) -> {
+      process.send(subj, StdinLine(line))
+      stdin_loop(subj)
+    }
     Error(_) -> {
+      process.send(subj, StdinClosed)
       Nil
     }
   }
