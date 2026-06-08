@@ -1,5 +1,41 @@
 -module(hermes_http).
--export([fetch/1, fetch_with_headers/2, post/4, stream_post/4, decode_http_message/2]).
+-export([fetch/1, fetch_with_headers/2, post/4, post_with_retry/4, stream_post/4, decode_http_message/2]).
+
+%% ─── Retry helper ────────────────────────────────────────────────────────────
+%% Retries the given fun up to MaxRetries times with exponential backoff
+%% starting at InitDelayMs. Only retries on transient errors (429, 503, 502, connection errors).
+
+retry(_, 0, _InitDelayMs, LastResult) ->
+    LastResult;
+retry(Fun, RetriesLeft, DelayMs, _) ->
+    Result = Fun(),
+    case Result of
+        {error, Bin} when is_binary(Bin) ->
+            %% Check if this is a retryable status code
+            IsRetryable = is_retryable_error(Bin),
+            if
+                IsRetryable andalso RetriesLeft > 0 ->
+                    timer:sleep(DelayMs),
+                    retry(Fun, RetriesLeft - 1, DelayMs * 2, Result);
+                true ->
+                    Result
+            end;
+        {error, _} ->
+            %% Connection error — always retry
+            timer:sleep(DelayMs),
+            retry(Fun, RetriesLeft - 1, DelayMs * 2, Result);
+        _ ->
+            Result
+    end.
+
+is_retryable_error(Bin) ->
+    B = binary_to_list(Bin),
+    lists:prefix("HTTP 429", B) orelse
+    lists:prefix("HTTP 502", B) orelse
+    lists:prefix("HTTP 503", B) orelse
+    lists:prefix("Connection Error", B).
+
+%% ─── Fetch (GET, no retry) ───────────────────────────────────────────────────
 
 fetch(UrlBin) ->
     Url = binary_to_list(UrlBin),
@@ -9,9 +45,9 @@ fetch(UrlBin) ->
         {ok, {{_, 200, _}, _Headers, Body}} ->
             {ok, list_to_binary(Body)};
         {ok, {{_, Status, _}, _, _}} ->
-            {error, Status};
+            {error, list_to_binary(io_lib:format("HTTP ~p", [Status]))};
         {error, Reason} ->
-            {error, {conn_error, Reason}}
+            {error, list_to_binary(io_lib:format("Connection Error: ~p", [Reason]))}
     end.
 
 fetch_with_headers(UrlBin, HeadersList) ->
@@ -23,10 +59,12 @@ fetch_with_headers(UrlBin, HeadersList) ->
         {ok, {{_, 200, _}, _Headers, Body}} ->
             {ok, list_to_binary(Body)};
         {ok, {{_, Status, _}, _, _}} ->
-            {error, Status};
+            {error, list_to_binary(io_lib:format("HTTP ~p", [Status]))};
         {error, Reason} ->
-            {error, {conn_error, Reason}}
+            {error, list_to_binary(io_lib:format("Connection Error: ~p", [Reason]))}
     end.
+
+%% ─── POST (sync, no retry) ───────────────────────────────────────────────────
 
 post(UrlBin, HeadersList, ContentTypeBin, BodyBin) ->
     Url = binary_to_list(UrlBin),
@@ -44,6 +82,17 @@ post(UrlBin, HeadersList, ContentTypeBin, BodyBin) ->
             {error, list_to_binary(io_lib:format("Connection Error: ~p", [Reason]))}
     end.
 
+%% ─── POST with exponential backoff retry (sync) ──────────────────────────────
+%% Used for non-streaming fallback calls. Retries up to 3 times on 429/502/503.
+
+post_with_retry(UrlBin, HeadersList, ContentTypeBin, BodyBin) ->
+    _ = ssl:start(),
+    _ = inets:start(),
+    Fun = fun() -> post(UrlBin, HeadersList, ContentTypeBin, BodyBin) end,
+    retry(Fun, 3, 1000, {error, <<"Not started">>}).
+
+%% ─── Stream POST (async) ─────────────────────────────────────────────────────
+
 stream_post(UrlBin, HeadersList, ContentTypeBin, BodyBin) ->
     Url = binary_to_list(UrlBin),
     Headers = [{binary_to_list(K), binary_to_list(V)} || {K, V} <- HeadersList],
@@ -55,6 +104,8 @@ stream_post(UrlBin, HeadersList, ContentTypeBin, BodyBin) ->
         {ok, RequestId} -> {ok, RequestId};
         {error, Reason} -> {error, list_to_binary(io_lib:format("Connection Error: ~p", [Reason]))}
     end.
+
+%% ─── Stream message decoder ───────────────────────────────────────────────────
 
 decode_http_message(Payload, TargetReqId) ->
     case Payload of
@@ -71,5 +122,3 @@ decode_http_message(Payload, TargetReqId) ->
         _ ->
             decoded_ignored
     end.
-
-

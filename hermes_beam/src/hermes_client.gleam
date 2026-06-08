@@ -77,6 +77,16 @@ pub fn post_request(
   body: String,
 ) -> Result(String, String)
 
+/// Like post_request but with exponential backoff retry on 429/502/503.
+/// Use this for non-streaming fallback calls to avoid failing on transient quota limits.
+@external(erlang, "hermes_http", "post_with_retry")
+pub fn post_request_with_retry(
+  url: String,
+  headers: List(#(String, String)),
+  content_type: String,
+  body: String,
+) -> Result(String, String)
+
 @external(erlang, "hermes_http", "stream_post")
 pub fn stream_post_request(
   url: String,

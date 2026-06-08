@@ -558,13 +558,88 @@ pub fn main() -> Nil {
       io.println("Server mode is disabled (website deleted).")
       Nil
     }
+    ["--resume", session_id] -> {
+      run_repl_resuming(session_id)
+    }
     _ -> {
       run_repl()
     }
   }
 }
 
+/// Resume an existing session by ID — for crash recovery.
+/// Boots the full REPL stack, then restores history + CWD from DB.
+pub fn run_repl_resuming(target_session_id: String) -> Nil {
+  io.println("══════════════════════════════════════════════════")
+  io.println("  Hermes BEAM — Pure Gleam Agentic Runner v2.0.0")
+  io.println("  🔄 RESUMING SESSION: " <> target_session_id)
+  io.println("══════════════════════════════════════════════════")
+
+  let db_path = constants.path_join(constants.get_hermes_home(), "state.db")
+  let assert Ok(conn) = hermes_state.connect(db_path)
+  let assert Ok(Nil) = hermes_state.init_schema(conn)
+  let intent_subj: process.Subject(gleamdb.Datom) = process.new_subject()
+  let assert Ok(actor) = state_actor.start(conn, [intent_subj])
+
+  let #(api_key, base_url) = resolve_api_credentials()
+  let model =
+    case constants.get_env("HERMES_MODEL") {
+      Some(val) -> val
+      None -> "meta-llama/llama-3-8b-instruct:free"
+    }
+
+  let socket_path = "/tmp/hermes_agent_supervisor_resume.sock"
+  let assert Ok(supervisor_subj) = subagent_supervisor.start_supervisor(socket_path, intent_subj)
+  let _ = process.spawn(fn() {
+    let selector = process.new_selector() |> process.select(intent_subj)
+    intent_loop(selector, None, supervisor_subj)
+  })
+
+  // Restore session history and CWD from DB
+  let restored_history = case state_actor.get_session_history(actor, target_session_id) {
+    Ok(msgs) -> msgs
+    Error(_) -> []
+  }
+  let restored_cwd = case state_actor.get_session_cwd(actor, target_session_id) {
+    Ok(cwd) if cwd != "" -> cwd
+    _ -> hermes_exec.get_temp_dir()
+  }
+
+  let exec_env = hermes_exec.new_terminal_env(restored_cwd, 120_000, [])
+  let exec_env = hermes_exec.init_session(exec_env)
+
+  io.println("Session ID : " <> target_session_id <> " (resumed)")
+  io.println("Database   : " <> db_path)
+  io.println("Model      : " <> model)
+  io.println("Restored   : " <> int.to_string(list.length(restored_history)) <> " messages from history")
+  io.println("CWD        : " <> restored_cwd)
+  io.println("\nType /help to see commands. Press Ctrl+D or /quit to exit.")
+
+  case hermes_agent.new_agent_state(
+    target_session_id, model, restored_cwd, actor, exec_env,
+    api_key, base_url, get_tools_prompt(), 90, None,
+  ) {
+    Error(err) -> io.println("Failed to initialise agent: " <> err)
+    Ok(base_agent) -> {
+      // Restore message history into agent state
+      let resumed_agent = hermes_agent.AgentState(..base_agent, history: list.reverse(restored_history))
+      let state = REPLState(
+        session_id: target_session_id,
+        model: model,
+        cwd: restored_cwd,
+        db_conn: actor,
+        exec_env: exec_env,
+        api_key: api_key,
+        base_url: base_url,
+        agent_state: resumed_agent,
+      )
+      repl_loop(state)
+    }
+  }
+}
+
 pub fn run_repl() -> Nil {
+
   io.println("══════════════════════════════════════════════════")
   io.println("  Hermes BEAM — Pure Gleam Agentic Runner v2.0.0")
   io.println("══════════════════════════════════════════════════")

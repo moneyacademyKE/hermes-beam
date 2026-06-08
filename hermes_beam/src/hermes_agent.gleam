@@ -484,6 +484,8 @@ pub fn stream_and_collect(
 // ─── Build OpenAI Request Body ─────────────────────────────────────────────────
 
 /// Build an OpenAI-compatible chat completion request body JSON string.
+/// Applies a sliding window: keeps newest 60 messages when history > 80
+/// to prevent context window overflow on long /goal runs.
 pub fn build_request_body(
   model: String,
   system_prompt: String,
@@ -496,8 +498,16 @@ pub fn build_request_body(
       #("role", json.string("system")),
       #("content", json.string(system_prompt)),
     ]) |> json.to_string
-  
-  let all_messages = [system_msg, ..history]
+
+  // Sliding window: trim to newest 60 messages when history exceeds 80
+  let window_size = 60
+  let max_history = 80
+  let trimmed_history = case list.length(history) > max_history {
+    True -> list.take(history, window_size)
+    False -> history
+  }
+
+  let all_messages = [system_msg, ..trimmed_history]
 
   // Parse tools JSON string into a json.Json value for embedding
   let tools_json = case json.parse(from: tools, using: decode.dynamic) {
@@ -815,7 +825,7 @@ pub fn fetch_fallback_non_streaming(
     #("Content-Type", "application/json"),
   ]
 
-  case hermes_client.post_request(
+  case hermes_client.post_request_with_retry(
     state.base_url <> "/chat/completions",
     headers,
     "application/json",
