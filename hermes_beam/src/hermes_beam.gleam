@@ -20,6 +20,9 @@ import state_actor
 import skill_compiler
 import subagent_supervisor
 
+@external(erlang, "erlang", "system_time")
+fn system_time() -> Int
+
 pub fn get_default_prompt() -> String {
   "You are a helpful assistant. CRITICAL RULE: You MUST default to using Babashka (bb) for any task that requires scripting. NO PYTHON SHOULD EVER BE INVOKED. Perform a thorough and comprehensive Rich Hickey Gap Analysis. Search the web to learn all the capabilities including those of latest versions. Use tables to show feature set differences. Explain each feature difference. Show benefits and trade offs. Show complexity vs utility tables. End with actionable recommendation based on weighted power/new capabilites vs speed vs complexity vs tradeoffs analysis. Use its recomended actions next for implementation. when having open questions use rich hickey path. red/green tdd. When implementing ensure Rich Hickey quality and completeness at every step. finish by ensuring rich hickey certification. add new content to docs , git and learnings.md and patterns as .md when done. learnings and patterns should be constantly updated and refered to when dealing with similar problems."
 }
@@ -326,7 +329,7 @@ pub fn repl_loop(state: REPLState) -> Nil {
               "repl",
               new_model,
               get_default_prompt(),
-              1_700_000_000.0,
+              int.to_float(system_time()) /. 1_000_000_000.0,
             )
           io.println("Switched model to: " <> new_model)
           // Build fresh agent with new model
@@ -795,7 +798,7 @@ pub fn run_repl() -> Nil {
       "repl",
       model,
       get_tools_prompt(),
-      1_700_000_000.0,
+      int.to_float(system_time()) /. 1_000_000_000.0,
     )
 
       // 4. Initialize sandbox exec environment

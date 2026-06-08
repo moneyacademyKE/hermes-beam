@@ -12,6 +12,9 @@ pub type McpTool {
   McpTool(name: String, description: String, input_schema: String)
 }
 
+@external(erlang, "json", "encode")
+fn encode_json(data: Dynamic) -> String
+
 pub type JsonRpcResponse {
   JsonRpcResponse(id: Int, result: Option(Dynamic), error: Option(Dynamic))
 }
@@ -194,7 +197,7 @@ fn loop(state: State, subj: Subject(Message)) -> Nil {
               use desc <- decode.optional_field("description", "", decode.string)
               use schema_dyn <- decode.field("inputSchema", decode.dynamic)
               // We just stringify the schema since we pass it to the agent
-              let schema_str = string.inspect(schema_dyn)
+              let schema_str = encode_json(schema_dyn)
               decode.success(McpTool(name, desc, schema_str))
             }
             let list_decoder = {

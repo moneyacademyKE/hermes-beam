@@ -1,3 +1,4 @@
+import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/int
 import gleam/io
@@ -11,6 +12,8 @@ import iteration_budget
 import state_actor.{type StateActor}
 import mcp_client
 import constants
+import model_router.{type ModelRouter}
+import error_classifier
 
 // ─── Tool Schemas ─────────────────────────────────────────────────────────────
 // Static OpenAI-format tool schemas exposed to the LLM.
@@ -36,7 +39,6 @@ pub type AgentState {
     model: String,
     cwd: String,
     /// OpenAI-format message history as pre-encoded JSON strings
-    /// OpenAI-format message history as pre-encoded JSON strings
     history: List(String),
     db_conn: StateActor,
     exec_env: hermes_exec.TerminalEnv,
@@ -46,6 +48,8 @@ pub type AgentState {
     system_prompt: String,
     on_event: Option(fn(AgentEvent) -> Nil),
     mcp_client: Option(mcp_client.McpClient),
+    /// Model router: primary + fallback chain, inspired by lm-eval-harness TemplateAPI
+    router: Option(ModelRouter),
   )
 }
 
@@ -388,6 +392,52 @@ fn decode_openai_delta_tool_calls(json_str: String) -> Bool {
   }
 }
 
+pub type PartialToolCall {
+  PartialToolCall(
+    id: String,
+    name: String,
+    arguments_acc: String,
+  )
+}
+
+pub type StreamAccumulator {
+  StreamAccumulator(
+    text: String,
+    tool_calls: Dict(Int, PartialToolCall),
+  )
+}
+
+fn decode_delta_tool_calls(json_str: String) -> List(#(Int, PartialToolCall)) {
+  let tc_decoder = {
+    use index <- decode.field("index", decode.int)
+    use id <- decode.optional_field("id", "", decode.string)
+    use function <- decode.optional_field("function", None, {
+      use name <- decode.optional_field("name", "", decode.string)
+      use arguments <- decode.optional_field("arguments", "", decode.string)
+      decode.success(Some(#(name, arguments)))
+    })
+    let #(name, arguments) = case function {
+      Some(#(n, a)) -> #(n, a)
+      None -> #("", "")
+    }
+    decode.success(#(index, PartialToolCall(id: id, name: name, arguments_acc: arguments)))
+  }
+  let decoder = {
+    use choices <- decode.field("choices", decode.list({
+      use delta <- decode.field("delta", {
+        use tool_calls <- decode.field("tool_calls", decode.list(tc_decoder))
+        decode.success(tool_calls)
+      })
+      decode.success(delta)
+    }))
+    decode.success(choices)
+  }
+  case json.parse(from: json_str, using: decoder) {
+    Ok([tcs, ..]) -> tcs
+    _ -> []
+  }
+}
+
 /// Decode streaming delta text from an SSE JSON line.
 /// Tries OpenAI delta format first, then Anthropic text format.
 pub fn extract_delta_content(json_str: String) -> String {
@@ -416,9 +466,9 @@ pub fn extract_delta_content(json_str: String) -> String {
 pub fn stream_and_collect(
   req_id: hermes_client.ReqId,
   parser: LineParserState,
-  accumulated: String,
+  accumulated: StreamAccumulator,
   on_delta: Option(fn(String) -> Nil),
-) -> #(String, Bool) {
+) -> #(StreamAccumulator, Bool) {
   // Allow configuring timeout via env var for slow free-tier models (default: 300s)
   let timeout_ms = case constants.get_env("HERMES_STREAM_TIMEOUT_MS") {
     Some(val) -> case int.parse(val) { Ok(n) -> n  Error(_) -> 300_000 }
@@ -445,8 +495,36 @@ pub fn stream_and_collect(
                 }
                 Error(_) -> ""
               }
+              
+              let tcs = decode_delta_tool_calls(json_str)
+              let new_tcs = list.fold(tcs, acc.tool_calls, fn(tc_dict, tc_tuple) {
+                let #(index, ptc) = tc_tuple
+                case dict.get(tc_dict, index) {
+                  Ok(existing) -> {
+                    let new_id = case ptc.id {
+                      "" -> existing.id
+                      id -> id
+                    }
+                    let new_name = case ptc.name {
+                      "" -> existing.name
+                      name -> name
+                    }
+                    let new_args = existing.arguments_acc <> ptc.arguments_acc
+                    dict.insert(tc_dict, index, PartialToolCall(new_id, new_name, new_args))
+                  }
+                  Error(_) -> {
+                    dict.insert(tc_dict, index, ptc)
+                  }
+                }
+              })
+              let tc_seen_now = tcs != []
               let is_tool_call = decode_openai_delta_tool_calls(json_str)
-              #(acc <> text_delta, tc_seen || is_tool_call)
+              
+              let updated_acc = StreamAccumulator(
+                text: acc.text <> text_delta,
+                tool_calls: new_tcs,
+              )
+              #(updated_acc, tc_seen || is_tool_call || tc_seen_now)
             }
             None -> #(acc, tc_seen)
           }
@@ -473,7 +551,7 @@ pub fn stream_and_collect(
         Some(_) -> Nil
       }
       // Return error marker so agent_turn_loop knows it's an API failure
-      #("__STREAM_ERROR__:" <> reason, False)
+      #(StreamAccumulator(text: "__STREAM_ERROR__:" <> reason, tool_calls: dict.new()), False)
     }
 
     StreamTimeout -> {
@@ -482,7 +560,7 @@ pub fn stream_and_collect(
         None -> io.println(msg)
         Some(_) -> Nil
       }
-      #("__STREAM_ERROR__:timeout", False)
+      #(StreamAccumulator(text: "__STREAM_ERROR__:timeout", tool_calls: dict.new()), False)
     }
   }
 }
@@ -612,21 +690,30 @@ pub fn agent_turn_loop(
     }
 
     True -> {
+      // Resolve active model from router (if present) or fall back to state.model
+      let active_model = case state.router {
+        Some(router) -> model_router.current_model(router)
+        None -> state.model
+      }
       case quiet {
         False -> {
           io.println(
             "\n🔄 API call #"
             <> int.to_string(api_call_count + 1)
             <> " (model: "
-            <> state.model
+            <> active_model
             <> ")",
           )
         }
         True -> Nil
       }
 
+      let active_model2 = case state.router {
+        Some(router) -> model_router.current_model(router)
+        None -> state.model
+      }
       let body = build_request_body(
-        state.model,
+        active_model2,
         state.system_prompt,
         list.reverse(state.history),
         all_tool_schemas(state.mcp_client),
@@ -659,26 +746,31 @@ pub fn agent_turn_loop(
             Some(handler) -> Some(fn(delta) { handler(MessageDelta(delta)) })
             None -> None
           }
-          let #(response_text, _saw_tool_calls_in_stream) =
-            stream_and_collect(req_id, hermes_client.new_line_parser(), "", on_delta)
+          let initial_acc = StreamAccumulator("", dict.new())
+          let #(final_acc, _saw_tool_calls_in_stream) =
+            stream_and_collect(req_id, hermes_client.new_line_parser(), initial_acc, on_delta)
 
-          // If response_text is empty or signals tool calls, try a non-streaming
-          // call to get the structured tool_calls JSON or final text.
-          // But if the stream returned an error sentinel, propagate it immediately.
-          let response_trimmed = string.trim(response_text)
-          let agent_resp = case response_trimmed {
-            "" -> {
-              // Re-request without streaming to get tool_calls JSON or final text.
-              // But if the stream returned an error sentinel, propagate it immediately.
-              fetch_fallback_non_streaming(state, body)
+          let response_trimmed = string.trim(final_acc.text)
+          let agent_resp = case dict.size(final_acc.tool_calls) > 0 {
+            True -> {
+              let calls = dict.values(final_acc.tool_calls)
+                |> list.map(fn(ptc) {
+                  ToolCall(id: ptc.id, name: ptc.name, arguments: ptc.arguments_acc)
+                })
+              ToolCalls(calls)
             }
-            text -> {
-              case string.starts_with(text, "__STREAM_ERROR__:") {
-                True -> {
-                  let reason = string.drop_start(text, 17)
-                  ErrorResponse("Stream failed: " <> reason)
+            False -> {
+              case response_trimmed {
+                "" -> fetch_fallback_non_streaming(state, body)
+                text -> {
+                  case string.starts_with(text, "__STREAM_ERROR__:") {
+                    True -> {
+                      let reason = string.drop_start(text, 17)
+                      ErrorResponse("Stream failed: " <> reason)
+                    }
+                    False -> FinalText(text)
+                  }
                 }
-                False -> FinalText(text)
               }
             }
           }
@@ -770,13 +862,55 @@ pub fn agent_turn_loop(
               Ok(AgentState(..state, history: new_history))
             }
 
-            // ── Error response path ──────────────────────────────────────────
+            // ── Error response path — classify and attempt model fallback ────
+            // Inspired by lm-eval-harness per-error-type retry config:
+            // auth errors advance immediately, timeouts retry then advance.
             ErrorResponse(reason) -> {
+              let classified = error_classifier.classify(reason)
               case quiet {
-                False -> io.println("\n❌ API Error: " <> reason)
+                False ->
+                  io.println(
+                    "\n"
+                    <> classified.emoji
+                    <> " "
+                    <> error_classifier.label(classified)
+                    <> " Error: "
+                    <> reason,
+                  )
                 True -> Nil
               }
-              Error("API error: " <> reason)
+              case state.router {
+                Some(router) -> {
+                  case model_router.mark_failure(router, classified.kind) {
+                    Ok(next_router) -> {
+                      let next_model = model_router.current_model(next_router)
+                      case quiet {
+                        False ->
+                          io.println(
+                            "⚡ Switching model: "
+                            <> model_router.current_model(router)
+                            <> " → "
+                            <> next_model,
+                          )
+                        True -> Nil
+                      }
+                      // Retry the turn with the next model in the chain
+                      agent_turn_loop(
+                        AgentState(..state, router: Some(next_router)),
+                        api_call_count + 1,
+                      )
+                    }
+                    Error(exhausted_msg) -> {
+                      case quiet {
+                        False -> io.println("❌ " <> exhausted_msg)
+                        True -> Nil
+                      }
+                      Error("API error: " <> reason)
+                    }
+                  }
+                }
+                None -> Error("API error: " <> reason)
+              }
             }
 
             _ -> {
@@ -898,6 +1032,7 @@ pub fn new_agent_state(
         system_prompt: system_prompt,
         on_event: None,
         mcp_client: mcp_client,
+        router: None,
       ))
     Error(_) ->
       Error("Failed to start iteration budget actor")

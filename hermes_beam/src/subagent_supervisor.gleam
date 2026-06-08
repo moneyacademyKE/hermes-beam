@@ -7,6 +7,7 @@ import gleam/string
 import gleam/bit_array
 import gleam/list
 import hermes_exec
+import constants
 
 pub type SupervisorMessage {
   StartSubagent(id: String, path: String)
@@ -22,16 +23,22 @@ pub type SupervisorState {
     socket_path: String,
     listen_sock: uds_ffi.ListenSocket,
     active_workers: List(#(String, uds_ffi.Socket)),
-    datom_subj: Subject(Datom)
+    datom_subj: Subject(Datom),
+    self: Subject(SupervisorMessage)
   )
 }
 
 pub fn start_supervisor(socket_path: String, datom_subj: Subject(Datom)) -> Result(Subject(SupervisorMessage), String) {
   case uds_ffi.listen_uds(socket_path) {
     Ok(lsock) -> {
-      let state = SupervisorState(socket_path, lsock, [], datom_subj)
-      
-      let res = actor.new(state)
+      let res = actor.new_with_initialiser(1000, fn(subj) {
+        let state = SupervisorState(socket_path, lsock, [], datom_subj, subj)
+        let selector = process.new_selector() |> process.select(subj)
+        actor.initialised(state)
+        |> actor.selecting(selector)
+        |> actor.returning(subj)
+        |> Ok
+      })
       |> actor.on_message(handle_message)
       |> actor.start()
 
@@ -55,7 +62,8 @@ fn handle_message(state: SupervisorState, msg: SupervisorMessage) -> actor.Next(
   case msg {
     StartSubagent(id, path) -> {
       io.println("Supervisor starting subagent: " <> id <> " with path " <> path)
-      let cmd = "cd /Users/moe/Desktop/ayncoder/babashka_workers && bb -m worker " <> state.socket_path
+      let workers_dir = constants.path_join(constants.get_hermes_home(), "babashka_workers")
+      let cmd = "cd " <> hermes_exec.quote_shell_arg(workers_dir) <> " && bb -m worker " <> state.socket_path
       let _ = hermes_exec.spawn_port(cmd)
       actor.continue(state)
     }
@@ -67,12 +75,12 @@ fn handle_message(state: SupervisorState, msg: SupervisorMessage) -> actor.Next(
       io.println("Supervisor broadcasting datom: " <> datom.attribute)
       actor.continue(state)
     }
-    AcceptConnection(_sock) -> {
+    AcceptConnection(sock) -> {
       io.println("Actor registered new subagent socket")
-      // We don't have state.self, but worker_read_loop needs the Subject.
-      // Wait, we need the Subject here to pass to worker_read_loop!
-      // But we can't easily get it inside handle_message unless we store it.
-      actor.continue(state) // WAIT! This won't work, worker_read_loop won't spawn!
+      let _ = process.spawn(fn() {
+        worker_read_loop(sock, state.self)
+      })
+      actor.continue(state)
     }
     SubagentMsg(_sock, msg) -> {
       io.println("Actor received subagent msg: " <> msg)
