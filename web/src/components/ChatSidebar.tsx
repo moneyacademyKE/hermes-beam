@@ -87,6 +87,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [info, setInfo] = useState<SessionInfo>({});
   const [tools, setTools] = useState<ToolEntry[]>([]);
+  const [subagents, setSubagents] = useState<Record<string, { memory?: number; status?: string }>>({});
   const [modelOpen, setModelOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -272,8 +273,26 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
               : t,
           ),
         );
+      } else if (type === "hermes.broadcast") {
+        const p = payload as { entity?: string; attribute?: string; value?: string } | undefined;
+        if (p?.attribute === "telemetry" && p.entity) {
+          try {
+            const parsed = JSON.parse(p.value || "{}");
+            if (parsed.method === "telemetry" && parsed.params) {
+              setSubagents(prev => ({
+                ...prev,
+                [p.entity!]: {
+                  ...prev[p.entity!],
+                  status: parsed.params.status,
+                  memory: parsed.params.memory
+                }
+              }));
+            }
+          } catch {
+            // ignore JSON parse errors
+          }
+        }
       }
-      });
     })();
 
     return () => {
@@ -380,6 +399,25 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
           )}
         </div>
       </Card>
+
+      {Object.keys(subagents).length > 0 && (
+        <Card className="flex flex-col px-2 py-2 mt-3">
+          <div className="text-display px-1 pb-2 text-xs tracking-wider text-text-tertiary">
+            subagents
+          </div>
+          <div className="flex flex-col gap-1.5 px-1">
+            {Object.entries(subagents).map(([id, info]) => (
+              <div key={id} className="flex justify-between items-center text-xs">
+                <span className="font-medium">{id}</span>
+                <span className="text-text-secondary flex gap-2">
+                  <span>{info.status ?? "unknown"}</span>
+                  {info.memory && <span>{(info.memory / 1024 / 1024).toFixed(1)}MB free</span>}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
 
       {modelOpen && canPickModel && sessionId && (
         <ModelPickerDialog

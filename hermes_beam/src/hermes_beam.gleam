@@ -18,6 +18,7 @@ import argv
 import state_actor
 import skill_compiler
 import tui_gateway
+import subagent_supervisor
 
 // ─── REPL State ───────────────────────────────────────────────────────────────
 
@@ -432,8 +433,23 @@ pub fn run_repl() -> Nil {
   let db_path = constants.path_join(constants.get_hermes_home(), "state.db")
   let assert Ok(conn) = hermes_state.connect(db_path)
   let assert Ok(Nil) = hermes_state.init_schema(conn)
+  let args = argv.load().arguments
+  let is_tui_flag = list.contains(args, "--tui")
+  let is_tui_env = case constants.get_env("HERMES_TUI") {
+    Some(val) -> val == "1" || val == "true"
+    None -> False
+  }
+  let is_tui = is_tui_flag || is_tui_env
+
   let intent_subj: process.Subject(gleamdb.Datom) = process.new_subject()
-  let assert Ok(actor) = state_actor.start(conn, Some(intent_subj))
+  let tui_subj: process.Subject(gleamdb.Datom) = process.new_subject()
+  
+  let subjects = case is_tui {
+    True -> [intent_subj, tui_subj]
+    False -> [intent_subj]
+  }
+
+  let assert Ok(actor) = state_actor.start(conn, subjects)
 
   // 1b. Seed/persist local skills
   let routing_skill =
@@ -531,16 +547,44 @@ pub fn run_repl() -> Nil {
       None -> "meta-llama/llama-3-8b-instruct:free"
     }
 
-  let args = argv.load().arguments
-  let is_tui_flag = list.contains(args, "--tui")
-  let is_tui_env = case constants.get_env("HERMES_TUI") {
-    Some(val) -> val == "1" || val == "true"
-    None -> False
+  // Start MCP Client if HERMES_MCP_CMD is set
+  let mcp_client_opt = case constants.get_env("HERMES_MCP_CMD") {
+    Some(cmd) -> {
+      let notif_subj: process.Subject(mcp_client.JsonRpcNotification) = process.new_subject()
+      let _ = process.spawn(fn() {
+        let selector = process.new_selector()
+          |> process.select(notif_subj)
+        notification_loop(selector, actor)
+      })
+      
+      case mcp_client.start(cmd, Some(notif_subj)) {
+        Ok(client) -> {
+          let _ = mcp_client.initialize(client)
+          io.println("MCP Client started.")
+          Some(client)
+        }
+        Error(e) -> {
+          io.println("Failed to start MCP client: " <> e)
+          None
+        }
+      }
+    }
+    None -> None
   }
 
-  case is_tui_flag || is_tui_env {
+  let socket_path = "/tmp/hermes_agent_supervisor.sock"
+  let assert Ok(supervisor_subj) = subagent_supervisor.start_supervisor(socket_path, intent_subj)
+
+  // Always spawn intent_loop to process side effects (e.g. running tools)
+  let _ = process.spawn(fn() {
+    let selector = process.new_selector()
+      |> process.select(intent_subj)
+    intent_loop(selector, mcp_client_opt, supervisor_subj)
+  })
+
+  case is_tui {
     True -> {
-      tui_gateway.start_tui_server(actor, api_key, base_url, model, option.Some(intent_subj))
+      tui_gateway.start_tui_server(actor, api_key, base_url, model, option.Some(tui_subj))
     }
     False -> {
       // 3. Create session
@@ -599,12 +643,6 @@ pub fn run_repl() -> Nil {
         None -> None
       }
 
-      // Start Intent Evaluation Loop for Reactive Side-Effects
-      let _intent_eval_pid = process.spawn(fn() {
-        let selector = process.new_selector()
-          |> process.select(intent_subj)
-        intent_loop(selector, mcp_client_opt)
-      })
 
       // 5. Build initial AgentState (max 90 iterations per conversation turn)
       let agent_result =
@@ -665,7 +703,7 @@ fn notification_loop(
 
 fn intent_loop(
   selector: process.Selector(gleamdb.Datom),
-  mcp_client_opt: option.Option(mcp_client.McpClient)
+  mcp_client_opt: option.Option(mcp_client.McpClient), supervisor_subj: process.Subject(subagent_supervisor.SupervisorMessage)
 ) -> Nil {
   case process.selector_receive(selector, 600_000) {
     Ok(datom) -> {
@@ -680,10 +718,21 @@ fn intent_loop(
             option.None -> Nil
           }
         }
+        "spawn_worker" -> {
+          io.println("[Side Effect] Spawning babashka worker: " <> datom.entity)
+          process.send(supervisor_subj, subagent_supervisor.StartSubagent(datom.entity, datom.value))
+          Nil
+        }
+        "llm_request" -> {
+          io.println("[Side Effect] Sending LLM request to babashka worker: " <> datom.entity)
+          let msg = "{\"jsonrpc\":\"2.0\",\"method\":\"execute_task\",\"params\":" <> datom.value <> "}"
+          process.send(supervisor_subj, subagent_supervisor.SendSubagentMsg(datom.entity, msg))
+          Nil
+        }
         _ -> Nil
       }
-      intent_loop(selector, mcp_client_opt)
+      intent_loop(selector, mcp_client_opt, supervisor_subj)
     }
-    Error(_) -> intent_loop(selector, mcp_client_opt)
+    Error(_) -> intent_loop(selector, mcp_client_opt, supervisor_subj)
   }
 }

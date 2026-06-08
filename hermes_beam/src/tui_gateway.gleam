@@ -444,39 +444,26 @@ pub fn start_tui_server(
     stdin_loop(subj)
   })
 
-  // Hook up state broadcast if available
-  case broadcast_subj {
-    Some(bsubj) -> {
-      let _ = process.spawn(fn() {
-        broadcast_loop(bsubj, subj)
-      })
-      Nil
-    }
-    None -> Nil
+  let selector = process.new_selector()
+    |> process.select(subj)
+
+  let selector = case broadcast_subj {
+    Some(bsubj) -> process.select_map(selector, bsubj, fn(datom) { StateBroadcast(datom) })
+    None -> selector
   }
 
-  server_loop(initial_state, subj)
+  server_loop(initial_state, selector)
 }
 
-fn broadcast_loop(bsubj: process.Subject(gleamdb.Datom), main_subj: process.Subject(TuiMessage)) -> Nil {
-  case process.receive(bsubj, 600_000) {
-    Ok(datom) -> {
-      process.send(main_subj, StateBroadcast(datom))
-      broadcast_loop(bsubj, main_subj)
-    }
-    Error(_) -> broadcast_loop(bsubj, main_subj)
-  }
-}
-
-fn server_loop(state: GatewayState, subj: process.Subject(TuiMessage)) -> Nil {
-  case process.receive(subj, 600_000) {
+fn server_loop(state: GatewayState, selector: process.Selector(TuiMessage)) -> Nil {
+  case process.selector_receive(selector, 600_000) {
     Ok(StdinLine(line)) -> {
       let trimmed = string.trim(line)
       case trimmed {
-        "" -> server_loop(state, subj)
+        "" -> server_loop(state, selector)
         _ -> {
           let next_state = handle_line(state, trimmed)
-          server_loop(next_state, subj)
+          server_loop(next_state, selector)
         }
       }
     }
@@ -484,18 +471,19 @@ fn server_loop(state: GatewayState, subj: process.Subject(TuiMessage)) -> Nil {
       // Forward side effects or intents to the frontend via JSON-RPC Notification
       let notif = json.object([
         #("jsonrpc", json.string("2.0")),
-        #("method", json.string("hermes.broadcast")),
+        #("method", json.string("event")),
         #("params", json.object([
+          #("type", json.string("hermes.broadcast")),
           #("entity", json.string(datom.entity)),
           #("attribute", json.string(datom.attribute)),
           #("value", json.string(datom.value)),
         ]))
       ])
       write_stdout(json.to_string(notif))
-      server_loop(state, subj)
+      server_loop(state, selector)
     }
     Ok(StdinClosed) -> Nil
-    Error(_) -> server_loop(state, subj)
+    Error(_) -> server_loop(state, selector)
   }
 }
 

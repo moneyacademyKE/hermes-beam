@@ -332,3 +332,9 @@ This document summarizes the core learnings from porting python codebase element
 * **Context**: Migrating `tui_gateway.gleam` and `hermes_tui.clj` to asynchronous models.
 * **Learning**: Blocking I/O (like `utils.read_line` or `.readLine` in a main loop) fundamentally complects time with execution. By pushing I/O to the edges (spawned reader processes or `core.async` threads) and feeding channels/subjects, we restore the ability to evaluate intents purely and reactively. 
 * **Impact**: `hermes_tui.clj` now uses `clojure.core.async` to asynchronously fold over incoming lines and broadcast intents without blocking the main event loop, dramatically improving UI responsiveness and system stability. `tui_gateway` uses Erlang/Gleam `process.receive` rather than `select` blocks when transforming streams, providing immutable message handling.
+
+### Rich Hickey Gap Analysis & Implementation (Phase 1-4)
+- When architecting scalable multi-agent systems, strictly separating state/time from heavy asynchronous I/O execution is mandatory.
+- Utilizing local Unix Domain Sockets (`.sock`) natively in Erlang via NIFs provides order-of-magnitude improvements in throughput compared to legacy standard-io multiplexing.
+- Offloading LLM Network generation directly to a Clojure/Babashka worker avoids the lack of native HTTP/streaming robustness in `gleam_http` and fully decomplects the core logic from network delays.
+- A functional `intent_loop` can effectively map string intents (`llm_request`) to physical Subagent process execution and JSON-RPC multiplexing, maintaining a pure core (`state_actor.gleam`) while supporting rich dynamic TUI telemetry.

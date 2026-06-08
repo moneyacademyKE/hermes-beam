@@ -51,10 +51,10 @@
             "python3")))))
 
 (defn resolve-gateway-command [project-root]
-  (let [gleam-path (and (fs/exists? (fs/path project-root "gleam.toml"))
+  (let [gleam-path (and (fs/exists? (fs/path project-root "hermes_beam" "gleam.toml"))
                         (find-in-path "gleam"))]
     (if gleam-path
-      ["gleam" "run" "--" "--tui"]
+      [(str gleam-path) "run" "--" "--tui"]
       (let [python (resolve-python project-root)]
         [python "-m" "tui_gateway.entry"]))))
 
@@ -515,8 +515,9 @@
    (fn []
      (let [project-root (fs/canonicalize (fs/path "." ".."))
            cmd-args (resolve-gateway-command project-root)
-           _ (log-debug "Spawning gateway process with command:" cmd-args)
-           gateway-proc (apply proc/process {:dir (str project-root) :out :stream :in :stream :err :stream} cmd-args)
+           gateway-dir (if (= (first cmd-args) (find-in-path "gleam")) (str (fs/path project-root "hermes_beam")) (str project-root))
+           _ (log-debug "Spawning gateway process with command:" cmd-args "in dir:" gateway-dir)
+           gateway-proc (apply proc/process {:dir gateway-dir :out :stream :in :stream :err :stream} cmd-args)
            stdin-writer (io/writer (:in gateway-proc))
            stdout-reader (io/reader (:out gateway-proc))
            input-state (-> (text-input/text-input :prompt "> ")

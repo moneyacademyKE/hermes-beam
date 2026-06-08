@@ -16,7 +16,7 @@ pub fn state_actor_integration_test() {
   let assert Ok(Nil) = hermes_state.init_schema(conn)
   
   // 3. Start the StateActor process wrapping the connection
-  let assert Ok(actor) = state_actor.start(conn, option.None)
+  let assert Ok(actor) = state_actor.start(conn, [])
   
   // 4. Transact some datoms to SQLite via the actor
   let datoms = [
@@ -50,7 +50,7 @@ pub fn state_actor_session_integration_test() {
   let assert Ok(Nil) = hermes_state.init_schema(conn)
   
   // 3. Start the StateActor process wrapping the connection
-  let assert Ok(actor) = state_actor.start(conn, option.None)
+  let assert Ok(actor) = state_actor.start(conn, [])
   
   // 4. Create a session via the actor
   let assert Ok(Nil) =

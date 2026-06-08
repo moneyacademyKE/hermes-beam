@@ -602,3 +602,17 @@ fn loop(state: State, subj: Subject(Message)) -> Nil {
 **Pattern**: Reassembling fragmented stream data using a purely functional accumulator rather than a mutable string buffer.
 **Implementation**: `pure_process_buffer` takes a `String` and a `List(String)`, splits it at boundaries recursively, and returns the unused suffix with the extracted segments. Tested using property-based testing (`qcheck` / QuickCheck) to prove that `fragments |> pure_process_buffer |> verify` holds for all possible random fractionations of the stream.
 **Benefit**: Guarantees zero data loss or partial execution of JSON-RPC messages even if a slow terminal or TCP port splits a valid JSON blob in half.
+
+## 29. Rich Hickey Decoupled Subagent Architecture (UDS multiplexing)
+
+### Context
+When building a complex orchestration engine, tying the lifecycle of compute tasks (LLM generation) to the UI thread leads to complected blocking, unresponsiveness, and poor error handling.
+
+### Description
+Adopt a Strict Dataflow Supervisor architecture driven by Unix Domain Sockets (UDS):
+1. **Supervisor Actor**: An OTP Actor (e.g. `subagent_supervisor.gleam`) acts as a multiplexer `cmux`. It listens on an ephemeral UDS socket (`/tmp/hermes_agent_supervisor.sock`) and dynamically spawns subagent worker binaries on-demand.
+2. **Headless Subagents**: The worker processes (`worker.clj` running via `babashka`) execute independently. They communicate over UDS streams natively parsing JSON-RPC tasks.
+3. **Reactive Telemetry Datoms**: Instead of synchronous replies, the workers emit out-of-band `telemetry` JSON-RPC streams. The supervisor intercepts these and converts them to purely functional `Datom` facts, injecting them into the Gleamdb observability pipeline to be dynamically streamed into the React TUI websocket.
+
+### Benefit
+Isolates network boundaries across robust process borders. LLM IO happens outside the Erlang BEAM, leaving the state engine infinitely fast and purely functional.

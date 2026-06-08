@@ -2,7 +2,7 @@ import gleam/erlang/process.{type Subject}
 import gleam/otp/actor
 import gleam/result
 import gleamdb.{type Database, type Datom}
-import gleam/option.{type Option, Some, None}
+import gleam/option.{type Option}
 import gleam/list
 import hermes_state
 import sqlight
@@ -56,7 +56,7 @@ pub type Message {
 pub type ActorState {
   ActorState(
     conn: sqlight.Connection,
-    broadcast: Option(Subject(Datom))
+    intent_subjs: List(Subject(Datom))
   )
 }
 
@@ -66,7 +66,7 @@ pub opaque type StateActor {
 
 pub fn start(
   conn: sqlight.Connection,
-  broadcast: Option(Subject(Datom))
+  intent_subjs: List(process.Subject(gleamdb.Datom))
 ) -> Result(StateActor, actor.StartError) {
   // Ensure datoms schema is initialized
   let _ =
@@ -83,7 +83,7 @@ pub fn start(
       conn,
     )
 
-  actor.new(ActorState(conn, broadcast))
+  actor.new(ActorState(conn, intent_subjs))
   |> actor.on_message(handle_message)
   |> actor.start
   |> result.map(fn(started) { StateActor(started.data) })
@@ -96,9 +96,9 @@ fn handle_message(
     case message {
     TransactDatoms(datoms, tx, reply_to) -> {
       let res = hermes_state.save_datoms(state.conn, datoms, tx)
-      case state.broadcast {
-        Some(subj) -> list.each(datoms, process.send(subj, _))
-        None -> Nil
+      case state.intent_subjs {
+        intent_subjs -> list.each(intent_subjs, fn(subj) { list.each(datoms, process.send(subj, _)) })
+        
       }
       process.send(reply_to, res)
       actor.continue(state)
@@ -116,9 +116,9 @@ fn handle_message(
     HandleMcpNotification(method, params, reply_to) -> {
       let datoms = [gleamdb.Datom(entity: "mcp_client", attribute: method, value: params)]
       let res = hermes_state.save_datoms(state.conn, datoms, 0)
-      case state.broadcast {
-        Some(subj) -> list.each(datoms, process.send(subj, _))
-        None -> Nil
+      case state.intent_subjs {
+        intent_subjs -> list.each(intent_subjs, fn(subj) { list.each(datoms, process.send(subj, _)) })
+        
       }
       process.send(reply_to, res)
       actor.continue(state)
