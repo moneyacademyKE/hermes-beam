@@ -39,9 +39,9 @@ post(UrlBin, HeadersList, ContentTypeBin, BodyBin) ->
         {ok, {{_, 200, _}, _Headers, RespBody}} ->
             {ok, list_to_binary(RespBody)};
         {ok, {{_, Status, _}, _, _}} ->
-            {error, Status};
+            {error, list_to_binary(io_lib:format("HTTP ~p", [Status]))};
         {error, Reason} ->
-            {error, {conn_error, Reason}}
+            {error, list_to_binary(io_lib:format("Connection Error: ~p", [Reason]))}
     end.
 
 stream_post(UrlBin, HeadersList, ContentTypeBin, BodyBin) ->
@@ -53,7 +53,7 @@ stream_post(UrlBin, HeadersList, ContentTypeBin, BodyBin) ->
     _ = inets:start(),
     case httpc:request(post, {Url, Headers, ContentType, Body}, [], [{sync, false}, {stream, self}]) of
         {ok, RequestId} -> {ok, RequestId};
-        {error, Reason} -> {error, {conn_error, Reason}}
+        {error, Reason} -> {error, list_to_binary(io_lib:format("Connection Error: ~p", [Reason]))}
     end.
 
 decode_http_message(Payload, TargetReqId) ->
@@ -66,6 +66,8 @@ decode_http_message(Payload, TargetReqId) ->
             decoded_end;
         {ReqId, {error, Reason}} when ReqId =:= TargetReqId ->
             {decoded_error, list_to_binary(io_lib:format("~p", [Reason]))};
+        {ReqId, {{_Version, Status, _ReasonPhrase}, _Headers, Body}} when ReqId =:= TargetReqId ->
+            {decoded_error, list_to_binary(io_lib:format("HTTP ~p: ~s", [Status, Body]))};
         _ ->
             decoded_ignored
     end.
