@@ -338,3 +338,28 @@ This document summarizes the core learnings from porting python codebase element
 - Utilizing local Unix Domain Sockets (`.sock`) natively in Erlang via NIFs provides order-of-magnitude improvements in throughput compared to legacy standard-io multiplexing.
 - Offloading LLM Network generation directly to a Clojure/Babashka worker avoids the lack of native HTTP/streaming robustness in `gleam_http` and fully decomplects the core logic from network delays.
 - A functional `intent_loop` can effectively map string intents (`llm_request`) to physical Subagent process execution and JSON-RPC multiplexing, maintaining a pure core (`state_actor.gleam`) while supporting rich dynamic TUI telemetry.
+
+## 41. Hermes BEAM — Product Gap Analysis & Roadmap (2026-06)
+
+*   **Context**: Deep audit of `hermes_beam/` vs. Python `hermes-agent` to produce a comprehensive product roadmap.
+*   **Confirmed Open Bugs**:
+    1. **BUG-001 (Critical)**: SSE tool-call double API call — LLM tool responses stream empty `content`, triggers non-streaming fallback → 2× latency on every tool turn. Fix: parse `choices[0].delta.tool_calls[*]` fragments from SSE deltas and accumulate index-keyed partial JSON.
+    2. **BUG-002**: `AcceptConnection` handler in `subagent_supervisor.gleam` cannot spawn the `worker_read_loop` because the actor subject is not available inside `handle_message`. Active workers list is never populated.
+    3. **BUG-003**: `subagent_supervisor.gleam:58` hardcodes `/Users/moe/Desktop/ayncoder/babashka_workers` — blocks all non-developer deployments. Use `constants.get_hermes_home()` or env var.
+    4. **BUG-004**: MCP tool schema uses `string.inspect(schema_dyn)` which produces Gleam debug format, not valid JSON. Fix with proper `gleam_json` serialization.
+    5. **BUG-005**: Session `started_at` hardcoded as `1_700_000_000.0` in `/model` switch and `run_repl`. Use `system_time_ms()`.
+*   **BEAM Unique Advantages** (not in Python Hermes):
+    - GleamDB in-memory Datalog for recursive skill reasoning (permissions, routing)
+    - Evolutionary skill optimization (`optimize_skill/3`) — genetic patch + check-ratio scoring
+    - OTP supervisor auto-heal loops for subagent mesh
+    - Per-session BEAM process isolation (no GIL, no shared state between sessions)
+    - Reactive `intent_loop` separates datom production from side-effect execution
+*   **Critical Gaps** (Python has, BEAM lacks):
+    - Dynamic tool discovery (Python: 50+ auto-discovered tools; BEAM: 3 hardcoded + MCP)
+    - Session compression/summarization for long `/goal` runs
+    - External memory plugins (mem0, honcho, supermemory)
+    - API server mode (OpenAI-compatible `/chat/completions`)
+    - 14+ messaging gateways (only Telegram implemented in BEAM)
+    - Structured reasoning / thinking tokens (o3, Claude extended thinking)
+*   **Priority Action**: The `mist` + `wisp` deps are already in `gleam.toml`. Enabling the API server mode costs zero new dependencies and immediately makes BEAM accessible to any OpenAI client (VS Code, Continue, etc.).
+*   **Rich Hickey Verdict**: BEAM implementation correctly decomplects state from identity, values from places, and side-effects from core logic. The two-store problem (GleamDB + SQLite datoms table) is incidental complexity — they should be unified with SQLite as persistence backing GleamDB as the in-memory query layer, synced bidirectionally.

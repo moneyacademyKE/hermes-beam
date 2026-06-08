@@ -616,3 +616,41 @@ Adopt a Strict Dataflow Supervisor architecture driven by Unix Domain Sockets (U
 
 ### Benefit
 Isolates network boundaries across robust process borders. LLM IO happens outside the Erlang BEAM, leaving the state engine infinitely fast and purely functional.
+
+## 30. SSE Tool-Call Delta Accumulator Pattern (Fix BUG-001)
+
+### Context
+LLMs responding with tool calls via SSE streaming emit structured `choices[0].delta.tool_calls[*]` JSON fragments across many chunks. The `content` field is always `""` in these chunks. The naive pattern of accumulating `content` deltas and falling back to non-streaming when empty causes 2× API calls and 2× latency on every tool turn.
+
+### Pattern
+1. **Index-keyed tool call accumulator**: Maintain a `Dict(Int, PartialToolCall)` alongside the text accumulator in `stream_and_collect`.
+2. **Delta detection**: For each SSE chunk, after checking `content`, also check `choices[0].delta.tool_calls[*]` — specifically the `index`, `id`, `function.name`, and `function.arguments` fields.
+3. **Incremental merge**: When a tool_call delta arrives for index `i`, merge it into the accumulator: append `arguments` fragment, set `id` and `name` if present.
+4. **Completion**: When `StreamEnd` fires and the accumulator is non-empty, return `ToolCalls(assembled_calls)` directly without needing the fallback POST.
+5. **Fallback only on actual failure**: Only trigger `fetch_fallback_non_streaming` if both text and tool_call accumulator are empty AND stream did not error.
+
+### Key Insight (Rich Hickey)
+The double API call is a consequence of conflating "empty SSE content" with "no tool calls". These are different things. Decouple the two accumulations and the fallback becomes unnecessary in the nominal streaming case.
+
+### Gleam Type
+```gleam
+pub type PartialToolCall {
+  PartialToolCall(
+    id: String,
+    name: String,
+    arguments_acc: String,
+  )
+}
+
+pub type StreamAccumulator {
+  StreamAccumulator(
+    text: String,
+    tool_calls: dict.Dict(Int, PartialToolCall),
+    saw_tool_calls: Bool,
+  )
+}
+```
+
+### Benefit
+Eliminates the 2× API call cost on every tool-using turn. Critical for cost-sensitive deployments and low-iteration-budget agent runs.
+
