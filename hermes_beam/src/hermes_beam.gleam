@@ -19,6 +19,7 @@ import argv
 import state_actor
 import skill_compiler
 import subagent_supervisor
+import discord_gateway
 
 @external(erlang, "erlang", "system_time")
 fn system_time() -> Int
@@ -561,6 +562,12 @@ pub fn main() -> Nil {
       io.println("Server mode is disabled (website deleted).")
       Nil
     }
+    ["--discord", token] -> {
+      io.println("Starting Discord Gateway with token: " <> token)
+      let assert Ok(_subj) = discord_gateway.start(token)
+      // Keep main thread alive for the gateway
+      sleep_ms(10_000_000)
+    }
     ["--resume", session_id] -> {
       run_repl_resuming(session_id)
     }
@@ -577,6 +584,8 @@ pub fn run_repl_resuming(target_session_id: String) -> Nil {
   io.println("  Hermes BEAM — Pure Gleam Agentic Runner v2.0.0")
   io.println("  🔄 RESUMING SESSION: " <> target_session_id)
   io.println("══════════════════════════════════════════════════")
+  
+  utils.set_expand_fun()
 
   let db_path = constants.path_join(constants.get_hermes_home(), "state.db")
   let assert Ok(conn) = hermes_state.connect(db_path)
@@ -644,9 +653,10 @@ pub fn run_repl_resuming(target_session_id: String) -> Nil {
 pub fn run_repl() -> Nil {
 
   io.println("══════════════════════════════════════════════════")
-  io.println("  Hermes BEAM — Pure Gleam Agentic Runner v2.0.0")
-  io.println("══════════════════════════════════════════════════")
-
+  io.println("  Press Ctrl+C twice to exit. Type /help for commands.")
+  io.println("══════════════════════════════════════════════════\n")
+  
+  utils.set_expand_fun()
 
   // 1. Initialize database
   let db_path = constants.path_join(constants.get_hermes_home(), "state.db")

@@ -150,6 +150,29 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON message
         COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
     );
 END;
+END;
+"
+
+pub const auto_migrate_datoms_sql = "
+-- Migrate sessions
+INSERT OR IGNORE INTO datoms (entity, attribute, value, tx)
+SELECT 'session:' || id, 'source', source, 0 FROM sessions WHERE source IS NOT NULL;
+
+INSERT OR IGNORE INTO datoms (entity, attribute, value, tx)
+SELECT 'session:' || id, 'model', model, 0 FROM sessions WHERE model IS NOT NULL;
+
+INSERT OR IGNORE INTO datoms (entity, attribute, value, tx)
+SELECT 'session:' || id, 'started_at', CAST(started_at AS TEXT), 0 FROM sessions WHERE started_at IS NOT NULL;
+
+-- Migrate messages
+INSERT OR IGNORE INTO datoms (entity, attribute, value, tx)
+SELECT 'message:' || id, 'session_id', session_id, 0 FROM messages WHERE session_id IS NOT NULL;
+
+INSERT OR IGNORE INTO datoms (entity, attribute, value, tx)
+SELECT 'message:' || id, 'role', role, 0 FROM messages WHERE role IS NOT NULL;
+
+INSERT OR IGNORE INTO datoms (entity, attribute, value, tx)
+SELECT 'message:' || id, 'content', content, 0 FROM messages WHERE content IS NOT NULL;
 "
 
 // Connect to the SQLite session database
@@ -170,6 +193,9 @@ pub fn init_schema(conn: sqlight.Connection) -> Result(Nil, sqlight.Error) {
   let _ = sqlight.exec(deferred_index_sql, conn)
   let _ = sqlight.exec(fts_sql, conn)
   let _ = sqlight.exec(fts_trigram_sql, conn)
+  
+  // Auto-migrate legacy tables into unified datoms
+  let _ = sqlight.exec(auto_migrate_datoms_sql, conn)
   
   Ok(Nil)
 }

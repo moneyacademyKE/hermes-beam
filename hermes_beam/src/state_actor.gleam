@@ -3,6 +3,7 @@ import gleam/otp/actor
 import gleam/result
 import gleamdb.{type Database, type Datom}
 import gleam/list
+import gleam/float
 import hermes_state
 import sqlight
 
@@ -146,6 +147,15 @@ fn handle_message(
           system_prompt,
           started_at,
         )
+      
+      // Also write datoms
+      let datoms = [
+        gleamdb.Datom("session:" <> id, "source", source),
+        gleamdb.Datom("session:" <> id, "model", model),
+      ]
+      let _ = hermes_state.save_datoms(state.conn, datoms, 0)
+      let _ = list.each(state.intent_subjs, fn(subj) { list.each(datoms, process.send(subj, _)) })
+
       process.send(reply_to, res)
       actor.continue(state)
     }
@@ -170,6 +180,14 @@ fn handle_message(
           raw_json,
           timestamp,
         )
+      
+      let datoms = [
+        gleamdb.Datom("message:" <> float.to_string(timestamp), "session_id", session_id),
+        gleamdb.Datom("message:" <> float.to_string(timestamp), "role", role),
+      ]
+      let _ = hermes_state.save_datoms(state.conn, datoms, 0)
+      let _ = list.each(state.intent_subjs, fn(subj) { list.each(datoms, process.send(subj, _)) })
+
       process.send(reply_to, res)
       actor.continue(state)
     }

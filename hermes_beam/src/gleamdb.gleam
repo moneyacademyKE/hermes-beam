@@ -15,15 +15,27 @@ pub type Rule {
 }
 
 pub opaque type Database {
-  Database(datoms: List(Datom))
+  Database(
+    datoms: List(Datom),
+    attr_index: Dict(String, List(Datom))
+  )
 }
 
 pub fn new() -> Database {
-  Database([])
+  Database([], dict.new())
+}
+
+fn add_to_index(idx: Dict(String, List(Datom)), datom: Datom) -> Dict(String, List(Datom)) {
+  let existing = case dict.get(idx, datom.attribute) {
+    Ok(lst) -> lst
+    Error(_) -> []
+  }
+  dict.insert(idx, datom.attribute, [datom, ..existing])
 }
 
 pub fn transact(db: Database, datoms: List(Datom)) -> Database {
-  Database(list.append(db.datoms, datoms))
+  let new_idx = list.fold(datoms, db.attr_index, add_to_index)
+  Database(list.append(db.datoms, datoms), new_idx)
 }
 
 fn match_term(term: String, val: String, env: Dict(String, String)) -> Result(Dict(String, String), Nil) {
@@ -55,9 +67,20 @@ fn match_clause(clause: #(String, String, String), datom: Datom, env: Dict(Strin
   Ok(env)
 }
 
-fn query_clause(clause: #(String, String, String), db: List(Datom), envs: List(Dict(String, String))) -> List(Dict(String, String)) {
+fn query_clause(clause: #(String, String, String), db: Database, envs: List(Dict(String, String))) -> List(Dict(String, String)) {
   list.flat_map(envs, fn(env) {
-    list.filter_map(db, fn(datom) {
+    let attr_term = clause.1
+    let search_pool = case string.starts_with(attr_term, "?") {
+      True -> db.datoms
+      False -> {
+        // Known attribute, check index!
+        case dict.get(db.attr_index, attr_term) {
+          Ok(matched_datoms) -> matched_datoms
+          Error(_) -> []
+        }
+      }
+    }
+    list.filter_map(search_pool, fn(datom) {
       match_clause(clause, datom, env)
     })
   })
@@ -65,7 +88,7 @@ fn query_clause(clause: #(String, String, String), db: List(Datom), envs: List(D
 
 pub fn query(db: Database, clauses: List(#(String, String, String))) -> List(Dict(String, String)) {
   list.fold(clauses, [dict.new()], fn(envs, clause) {
-    query_clause(clause, db.datoms, envs)
+    query_clause(clause, db, envs)
   })
 }
 
@@ -81,9 +104,9 @@ fn instantiate_term(term: String, env: Dict(String, String)) -> String {
   }
 }
 
-fn apply_rule(rule: Rule, db: List(Datom)) -> List(Datom) {
-  // We temporarily wrap db in a Database struct for the query function
-  let envs = query(Database(db), rule.body)
+fn apply_rule(rule: Rule, db: Database) -> List(Datom) {
+  // We don't need to wrap db in a Database struct anymore since it's already one!
+  let envs = query(db, rule.body)
   list.map(envs, fn(env) {
     let entity = instantiate_term(rule.head.0, env)
     let attribute = instantiate_term(rule.head.1, env)
@@ -92,23 +115,23 @@ fn apply_rule(rule: Rule, db: List(Datom)) -> List(Datom) {
   })
 }
 
-fn step_rules(rules: List(Rule), db: List(Datom)) -> List(Datom) {
+fn step_rules(rules: List(Rule), db: Database) -> List(Datom) {
   let new_datoms = list.flat_map(rules, fn(rule) {
     apply_rule(rule, db)
   })
   
-  list.fold(new_datoms, db, fn(acc, datom) {
-    case list.contains(acc, datom) {
-      True -> acc
-      False -> [datom, ..acc]
-    }
+  list.filter(new_datoms, fn(datom) {
+    !list.contains(db.datoms, datom)
   })
 }
 
 pub fn evaluate_rules(db: Database, rules: List(Rule)) -> Database {
-  let next_datoms = step_rules(rules, db.datoms)
-  case list.length(next_datoms) == list.length(db.datoms) {
-    True -> db
-    False -> evaluate_rules(Database(next_datoms), rules)
+  let initial_count = list.length(db.datoms)
+  let new_datoms = step_rules(rules, db)
+  let next_db = transact(db, new_datoms)
+  
+  case list.length(next_db.datoms) > initial_count {
+    True -> evaluate_rules(next_db, rules)
+    False -> next_db
   }
 }
