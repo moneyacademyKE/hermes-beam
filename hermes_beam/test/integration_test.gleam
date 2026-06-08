@@ -87,6 +87,10 @@ pub fn state_actor_session_integration_test() {
 }
 
 pub fn batch_runner_integration_test() {
+  let assert Ok(conn) = sqlight.open(":memory:")
+  let assert Ok(Nil) = hermes_state.init_schema(conn)
+  let assert Ok(actor) = state_actor.start(conn, [])
+
   let prompts = ["prompt_1", "prompt_2", "prompt_3", "prompt_4"]
   
   // Define a simple worker function that appends a suffix
@@ -95,7 +99,7 @@ pub fn batch_runner_integration_test() {
   }
   
   // Execute prompts concurrently with 2 workers
-  let results = batch_runner.run_batch_parallel(prompts, run_worker, 2)
+  let results = batch_runner.run_batch_parallel(prompts, run_worker, 2, actor)
   
   // Assertions
   let assert 4 = list.length(results)

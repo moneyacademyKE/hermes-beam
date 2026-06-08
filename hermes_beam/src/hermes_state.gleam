@@ -94,6 +94,17 @@ CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+
+CREATE TABLE IF NOT EXISTS telemetry (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    log_level TEXT NOT NULL,
+    message TEXT NOT NULL,
+    metadata TEXT,
+    timestamp REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_telemetry_session ON telemetry(session_id, timestamp);
 "
 
 pub const deferred_index_sql = "
@@ -111,6 +122,23 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
         new.id,
         COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
     );
+END;
+
+CREATE VIRTUAL TABLE IF NOT EXISTS telemetry_fts USING fts5(
+    message,
+    metadata
+);
+
+CREATE TRIGGER IF NOT EXISTS telemetry_fts_insert AFTER INSERT ON telemetry BEGIN
+    INSERT INTO telemetry_fts(rowid, message, metadata) VALUES (
+        new.id,
+        new.message,
+        COALESCE(new.metadata, '')
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS telemetry_fts_delete AFTER DELETE ON telemetry BEGIN
+    DELETE FROM telemetry_fts WHERE rowid = old.id;
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
@@ -448,5 +476,33 @@ pub fn rollback_session(conn: sqlight.Connection, id: String, n: Int) -> Result(
     );
   "
   sqlight.query(query, on: conn, with: [sqlight.text(id), sqlight.int(n)], expecting: decode.dynamic)
+  |> result.map(fn(_) { Nil })
+}
+
+
+pub fn insert_telemetry(
+  conn: sqlight.Connection,
+  session_id: String,
+  log_level: String,
+  message: String,
+  metadata: String,
+  timestamp: Float,
+) -> Result(Nil, sqlight.Error) {
+  let query = "
+    INSERT INTO telemetry (session_id, log_level, message, metadata, timestamp)
+    VALUES (?, ?, ?, ?, ?);
+  "
+  sqlight.query(
+    query,
+    on: conn,
+    with: [
+      sqlight.text(session_id),
+      sqlight.text(log_level),
+      sqlight.text(message),
+      sqlight.text(metadata),
+      sqlight.float(timestamp),
+    ],
+    expecting: decode.dynamic,
+  )
   |> result.map(fn(_) { Nil })
 }

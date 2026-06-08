@@ -65,6 +65,17 @@ pub type Message {
     term: String,
     reply_to: Subject(Result(List(hermes_state.SearchMatch), sqlight.Error)),
   )
+  SearchHistory(
+    term: String,
+    reply_to: Subject(Result(List(hermes_state.SearchMatch), sqlight.Error)),
+  )
+  InsertTelemetry(
+    session_id: String,
+    log_level: String,
+    message: String,
+    metadata: String,
+    timestamp: Float,
+  )
 }
 
 pub type ActorState {
@@ -76,6 +87,10 @@ pub type ActorState {
 
 pub opaque type StateActor {
   StateActor(subject: Subject(Message))
+}
+
+pub fn get_subject(actor: StateActor) -> Subject(Message) {
+  actor.subject
 }
 
 pub fn start(
@@ -214,6 +229,22 @@ fn handle_message(
     SearchMessages(term, reply_to) -> {
       let res = hermes_state.search_messages(state.conn, term)
       process.send(reply_to, res)
+      actor.continue(state)
+    }
+    SearchHistory(term, reply_to) -> {
+      let res = hermes_state.search_messages(state.conn, term)
+      process.send(reply_to, res)
+      actor.continue(state)
+    }
+    InsertTelemetry(session_id, log_level, message, metadata, timestamp) -> {
+      let _ = hermes_state.insert_telemetry(
+        state.conn,
+        session_id,
+        log_level,
+        message,
+        metadata,
+        timestamp,
+      )
       actor.continue(state)
     }
   }
