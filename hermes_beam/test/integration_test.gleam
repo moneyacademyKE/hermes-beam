@@ -74,6 +74,7 @@ pub fn state_actor_session_integration_test() {
       "session-test",
       "user",
       "Hello via actor!",
+      "{\"role\":\"user\"}",
       1_700_000_100.0,
     )
   

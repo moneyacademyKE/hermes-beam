@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS messages (
     session_id TEXT NOT NULL REFERENCES sessions(id),
     role TEXT NOT NULL,
     content TEXT,
+    raw_json TEXT,
     tool_call_id TEXT,
     tool_calls TEXT,
     tool_name TEXT,
@@ -162,6 +163,10 @@ pub fn init_schema(conn: sqlight.Connection) -> Result(Nil, sqlight.Error) {
   let _ = sqlight.exec("PRAGMA journal_mode=WAL;", conn)
   
   let _ = sqlight.exec(schema_sql, conn)
+  
+  // Try to add raw_json column to existing databases
+  let _ = sqlight.exec("ALTER TABLE messages ADD COLUMN raw_json TEXT;", conn)
+  
   let _ = sqlight.exec(deferred_index_sql, conn)
   let _ = sqlight.exec(fts_sql, conn)
   let _ = sqlight.exec(fts_trigram_sql, conn)
@@ -262,11 +267,12 @@ pub fn insert_message(
   session_id: String,
   role: String,
   content: String,
+  raw_json: String,
   timestamp: Float,
 ) -> Result(Nil, sqlight.Error) {
   let query = "
-    INSERT INTO messages (session_id, role, content, timestamp)
-    VALUES (?, ?, ?, ?);
+    INSERT INTO messages (session_id, role, content, raw_json, timestamp)
+    VALUES (?, ?, ?, ?, ?);
   "
   sqlight.query(
     query,
@@ -275,6 +281,7 @@ pub fn insert_message(
       sqlight.text(session_id),
       sqlight.text(role),
       sqlight.text(content),
+      sqlight.text(raw_json),
       sqlight.float(timestamp),
     ],
     expecting: decode.dynamic,
@@ -397,4 +404,23 @@ pub fn get_session_cwd(conn: sqlight.Connection, id: String) -> Result(String, s
     Ok([]) -> Error(sqlight.SqlightError(code: sqlight.Notfound, message: "Session not found", offset: -1))
     Error(err) -> Error(err)
   }
+}
+
+pub fn get_session_history(conn: sqlight.Connection, id: String) -> Result(List(String), sqlight.Error) {
+  let query = "SELECT raw_json FROM messages WHERE session_id = ? AND active = 1 AND raw_json IS NOT NULL ORDER BY timestamp ASC;"
+  sqlight.query(query, on: conn, with: [sqlight.text(id)], expecting: decode.string)
+}
+
+pub fn rollback_session(conn: sqlight.Connection, id: String, n: Int) -> Result(Nil, sqlight.Error) {
+  let query = "
+    UPDATE messages SET active = 0 
+    WHERE id IN (
+      SELECT id FROM messages 
+      WHERE session_id = ? AND active = 1 
+      ORDER BY timestamp DESC 
+      LIMIT ?
+    );
+  "
+  sqlight.query(query, on: conn, with: [sqlight.text(id), sqlight.int(n)], expecting: decode.dynamic)
+  |> result.map(fn(_) { Nil })
 }

@@ -1,6 +1,5 @@
 import gleam/erlang/process.{type Subject}
 import gleam/otp/actor
-import gleam/result
 import gleamdb.{type Datom}
 import uds_ffi
 import gleam/io
@@ -56,7 +55,7 @@ fn handle_message(state: SupervisorState, msg: SupervisorMessage) -> actor.Next(
   case msg {
     StartSubagent(id, path) -> {
       io.println("Supervisor starting subagent: " <> id <> " with path " <> path)
-      let cmd = "cd /Users/moe/Desktop/ayncoder/ui-clj && bb -m worker " <> state.socket_path
+      let cmd = "cd /Users/moe/Desktop/ayncoder/babashka_workers && bb -m worker " <> state.socket_path
       let _ = hermes_exec.spawn_port(cmd)
       actor.continue(state)
     }
@@ -68,7 +67,7 @@ fn handle_message(state: SupervisorState, msg: SupervisorMessage) -> actor.Next(
       io.println("Supervisor broadcasting datom: " <> datom.attribute)
       actor.continue(state)
     }
-    AcceptConnection(sock) -> {
+    AcceptConnection(_sock) -> {
       io.println("Actor registered new subagent socket")
       // We don't have state.self, but worker_read_loop needs the Subject.
       // Wait, we need the Subject here to pass to worker_read_loop!
@@ -101,7 +100,9 @@ fn accept_loop(lsock: uds_ffi.ListenSocket, subj: Subject(SupervisorMessage)) ->
       accept_loop(lsock, subj)
     }
     Error(e) -> {
-      io.println("Accept loop failed: " <> string.inspect(e))
+      io.println("Accept loop failed: " <> string.inspect(e) <> ". Auto-healing in 1s...")
+      process.sleep(1000)
+      accept_loop(lsock, subj)
     }
   }
 }

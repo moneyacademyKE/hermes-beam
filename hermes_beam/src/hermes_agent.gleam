@@ -14,7 +14,7 @@ import mcp_client
 // ─── Tool Schemas ─────────────────────────────────────────────────────────────
 // Static OpenAI-format tool schemas exposed to the LLM.
 
-pub const run_command_schema = "{\"type\":\"function\",\"function\":{\"name\":\"run_command\",\"description\":\"Execute a shell command in the sandboxed terminal environment and return its stdout/stderr output and exit code.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"description\":\"The shell command to run (e.g. \\\"ls -la\\\", \\\"cat README.md\\\", \\\"echo hello\\\").\"}},\"required\":[\"command\"]}}}"
+pub const run_command_schema = "{\"type\":\"function\",\"function\":{\"name\":\"run_command\",\"description\":\"Execute a shell command in the sandboxed terminal environment and return its stdout/stderr output and exit code. CRITICAL: You MUST use Babashka (bb) for any task that requires scripting. DO NOT USE PYTHON.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"description\":\"The shell command to run (e.g. \\\"ls -la\\\", \\\"cat README.md\\\", \\\"echo hello\\\", \\\"bb -e '(+ 1 2)'\\\").\"}},\"required\":[\"command\"]}}}"
 
 pub const write_file_schema = "{\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"description\":\"Write content to a file at the given path.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Absolute or relative path to the file to write.\"},\"content\":{\"type\":\"string\",\"description\":\"The text content to write to the file.\"}},\"required\":[\"path\",\"content\"]}}}"
 
@@ -35,7 +35,8 @@ pub type AgentState {
     model: String,
     cwd: String,
     /// OpenAI-format message history as pre-encoded JSON strings
-    history: List(json.Json),
+    /// OpenAI-format message history as pre-encoded JSON strings
+    history: List(String),
     db_conn: StateActor,
     exec_env: hermes_exec.TerminalEnv,
     api_key: String,
@@ -460,19 +461,22 @@ pub fn stream_and_collect(
     }
 
     StreamError(reason) -> {
+      let msg = "\n[Stream Error: " <> reason <> "]"
       case on_delta {
-        None -> io.println("\n[Stream Error: " <> reason <> "]")
+        None -> io.println(msg)
         Some(_) -> Nil
       }
-      #(accumulated, False)
+      // Return error marker so agent_turn_loop knows it's an API failure
+      #("__STREAM_ERROR__:" <> reason, False)
     }
 
     StreamTimeout -> {
+      let msg = "\n[Stream Timeout — model may be down or key exhausted]"
       case on_delta {
-        None -> io.println("\n[Stream Timeout]")
+        None -> io.println(msg)
         Some(_) -> Nil
       }
-      #(accumulated, False)
+      #("__STREAM_ERROR__:timeout", False)
     }
   }
 }
@@ -483,7 +487,7 @@ pub fn stream_and_collect(
 pub fn build_request_body(
   model: String,
   system_prompt: String,
-  history: List(json.Json),
+  history: List(String),
   tools: String,
   stream: Bool,
 ) -> String {
@@ -491,7 +495,8 @@ pub fn build_request_body(
     json.object([
       #("role", json.string("system")),
       #("content", json.string(system_prompt)),
-    ])
+    ]) |> json.to_string
+  
   let all_messages = [system_msg, ..history]
 
   // Parse tools JSON string into a json.Json value for embedding
@@ -502,9 +507,9 @@ pub fn build_request_body(
 
   "{\"model\":\""
   <> model
-  <> "\",\"messages\":"
-  <> json.to_string(json.array(all_messages, of: fn(x) { x }))
-  <> ",\"tools\":"
+  <> "\",\"messages\":["
+  <> string.join(list.reverse(all_messages), ",")
+  <> "],\"tools\":"
   <> tools_json
   <> ",\"stream\":"
   <> case stream {
@@ -516,24 +521,21 @@ pub fn build_request_body(
 
 // ─── Message History Builders ──────────────────────────────────────────────────
 
-/// Create a user message JSON object.
-pub fn user_message(content: String) -> json.Json {
+pub fn user_message(content: String) -> String {
   json.object([
     #("role", json.string("user")),
     #("content", json.string(content)),
-  ])
+  ]) |> json.to_string
 }
 
-/// Create an assistant text message JSON object.
-pub fn assistant_message(content: String) -> json.Json {
+pub fn assistant_message(content: String) -> String {
   json.object([
     #("role", json.string("assistant")),
     #("content", json.string(content)),
-  ])
+  ]) |> json.to_string
 }
 
-/// Create an assistant message with tool_calls JSON.
-pub fn assistant_tool_calls_message(calls: List(ToolCall)) -> json.Json {
+pub fn assistant_tool_calls_message(calls: List(ToolCall)) -> String {
   let tool_calls_json =
     list.map(calls, fn(tc) {
       json.object([
@@ -552,16 +554,15 @@ pub fn assistant_tool_calls_message(calls: List(ToolCall)) -> json.Json {
     #("role", json.string("assistant")),
     #("content", json.null()),
     #("tool_calls", json.array(tool_calls_json, of: fn(x) { x })),
-  ])
+  ]) |> json.to_string
 }
 
-/// Create a tool result message JSON object (role=tool).
-pub fn tool_result_message(tool_call_id: String, result: String) -> json.Json {
+pub fn tool_result_message(tool_call_id: String, result: String) -> String {
   json.object([
     #("role", json.string("tool")),
     #("tool_call_id", json.string(tool_call_id)),
     #("content", json.string(result)),
-  ])
+  ]) |> json.to_string
 }
 
 // ─── Core Agent Loop ───────────────────────────────────────────────────────────
@@ -646,14 +647,24 @@ pub fn agent_turn_loop(
             stream_and_collect(req_id, hermes_client.new_line_parser(), "", on_delta)
 
           // If response_text is empty or signals tool calls, try a non-streaming
-          // call to get the structured tool_calls JSON or final text
+          // call to get the structured tool_calls JSON or final text.
+          // But if the stream returned an error sentinel, propagate it immediately.
           let response_trimmed = string.trim(response_text)
           let agent_resp = case response_trimmed {
             "" -> {
-              // Re-request without streaming to get tool_calls JSON or final text
+              // Re-request without streaming to get tool_calls JSON or final text.
+              // But if the stream returned an error sentinel, propagate it immediately.
               fetch_fallback_non_streaming(state, body)
             }
-            text -> FinalText(text)
+            text -> {
+              case string.starts_with(text, "__STREAM_ERROR__:") {
+                True -> {
+                  let reason = string.drop_start(text, 17)
+                  ErrorResponse("Stream failed: " <> reason)
+                }
+                False -> FinalText(text)
+              }
+            }
           }
 
           case agent_resp {
@@ -670,9 +681,18 @@ pub fn agent_turn_loop(
                 }
               }
 
+              let calls_msg = assistant_tool_calls_message(calls)
+              let _ = state_actor.insert_message(
+                state.db_conn,
+                state.session_id,
+                "assistant",
+                "",
+                calls_msg,
+                int.to_float(system_time_ms()) /. 1000.0,
+              )
               // Append the assistant's tool_calls message to history
               let history_with_assistant =
-                [assistant_tool_calls_message(calls), ..state.history]
+                [calls_msg, ..state.history]
 
               // Execute each tool and collect results
               let #(new_exec_env, new_history) =
@@ -684,7 +704,15 @@ pub fn agent_turn_loop(
                     None -> Nil
                   }
                   let tool_msg = tool_result_message(tc.id, result)
-                  #(next_env, [tool_msg, ..current_history])
+                let _ = state_actor.insert_message(
+                  state.db_conn,
+                  state.session_id,
+                  "tool",
+                  result,
+                  tool_msg,
+                  int.to_float(system_time_ms()) /. 1000.0,
+                )
+                #(next_env, [tool_msg, ..current_history])
                 })
 
               // Recurse with updated state
@@ -704,12 +732,14 @@ pub fn agent_turn_loop(
               // Record assistant response in DB
               let timestamp =
                 int.to_float(system_time_ms()) /. 1000.0
+              let asst_msg = assistant_message(final_text)
               let _ =
                 state_actor.insert_message(
                   state.db_conn,
                   state.session_id,
                   "assistant",
                   final_text,
+                  asst_msg,
                   timestamp,
                 )
 
@@ -724,16 +754,27 @@ pub fn agent_turn_loop(
               Ok(AgentState(..state, history: new_history))
             }
 
+            // ── Error response path ──────────────────────────────────────────
+            ErrorResponse(reason) -> {
+              case quiet {
+                False -> io.println("\n❌ API Error: " <> reason)
+                True -> Nil
+              }
+              Error("API error: " <> reason)
+            }
+
             _ -> {
               let final_text = "[No response from model]"
               let timestamp =
                 int.to_float(system_time_ms()) /. 1000.0
+              let asst_msg = assistant_message(final_text)
               let _ =
                 state_actor.insert_message(
                   state.db_conn,
                   state.session_id,
                   "assistant",
                   final_text,
+                  asst_msg,
                   timestamp,
                 )
 
@@ -795,12 +836,14 @@ pub fn run_conversation(
   let timestamp = int.to_float(system_time_ms()) /. 1000.0
 
   // Persist user message
+  let user_msg = user_message(user_prompt)
   let _ =
     state_actor.insert_message(
       state.db_conn,
       state.session_id,
       "user",
       user_prompt,
+      user_msg,
       timestamp,
     )
 

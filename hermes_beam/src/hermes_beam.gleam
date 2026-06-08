@@ -2,6 +2,7 @@ import constants
 import gleam/int
 import gleam/io
 import gleam/option.{None, Some}
+import iteration_budget
 import gleam/string
 import hermes_agent
 import mcp_client
@@ -17,8 +18,19 @@ import gleam/erlang/process
 import argv
 import state_actor
 import skill_compiler
-import tui_gateway
 import subagent_supervisor
+
+pub fn get_default_prompt() -> String {
+  "You are a helpful assistant. CRITICAL RULE: You MUST default to using Babashka (bb) for any task that requires scripting. NO PYTHON SHOULD EVER BE INVOKED. Perform a thorough and comprehensive Rich Hickey Gap Analysis. Search the web to learn all the capabilities including those of latest versions. Use tables to show feature set differences. Explain each feature difference. Show benefits and trade offs. Show complexity vs utility tables. End with actionable recommendation based on weighted power/new capabilites vs speed vs complexity vs tradeoffs analysis. Use its recomended actions next for implementation. when having open questions use rich hickey path. red/green tdd. When implementing ensure Rich Hickey quality and completeness at every step. finish by ensuring rich hickey certification. add new content to docs , git and learnings.md and patterns as .md when done. learnings and patterns should be constantly updated and refered to when dealing with similar problems."
+}
+
+pub fn get_tools_prompt() -> String {
+  "You are a helpful assistant with access to shell tools. When you need to run a command, use the run_command tool. When you need to read a file, use read_file. When you need to write a file, use write_file. CRITICAL RULE: You MUST default to using Babashka (bb) for any task that requires scripting. NO PYTHON SHOULD EVER BE INVOKED. Perform a thorough and comprehensive Rich Hickey Gap Analysis. Search the web to learn all the capabilities including those of latest versions. Use tables to show feature set differences. Explain each feature difference. Show benefits and trade offs. Show complexity vs utility tables. End with actionable recommendation based on weighted power/new capabilites vs speed vs complexity vs tradeoffs analysis. Use its recomended actions next for implementation. when having open questions use rich hickey path. red/green tdd. When implementing ensure Rich Hickey quality and completeness at every step. finish by ensuring rich hickey certification. add new content to docs , git and learnings.md and patterns as .md when done. learnings and patterns should be constantly updated and refered to when dealing with similar problems."
+}
+
+pub fn get_goal_prompt(goal: String) -> String {
+  "GOAL MODE ENGAGED. You must act completely autonomously. Do not ask for user input. Continue calling tools until the goal is completely achieved. If you hit a roadblock, keep trying different approaches. CRITICAL RULE: You MUST default to using Babashka (bb) for any task that requires scripting. NO PYTHON SHOULD EVER BE INVOKED. Perform a thorough and comprehensive Rich Hickey Gap Analysis. Search the web to learn all the capabilities including those of latest versions. Use tables to show feature set differences. Explain each feature difference. Show benefits and trade offs. Show complexity vs utility tables. End with actionable recommendation based on weighted power/new capabilites vs speed vs complexity vs tradeoffs analysis. Use its recomended actions next for implementation. when having open questions use rich hickey path. red/green tdd. When implementing ensure Rich Hickey quality and completeness at every step. finish by ensuring rich hickey certification. add new content to docs , git and learnings.md and patterns as .md when done. learnings and patterns should be constantly updated and refered to when dealing with similar problems.\n\nGoal: " <> goal
+}
 
 // ─── REPL State ───────────────────────────────────────────────────────────────
 
@@ -79,6 +91,11 @@ pub fn print_help() -> Nil {
   io.println("  /run <cmd>     - Execute a terminal command directly (bypasses LLM)")
   io.println("  /file <path>   - Load a prompt from a file and send to LLM agent")
   io.println("  /clear         - Clear the conversation history")
+  io.println("  /sessions      - List recent sessions for resumability")
+  io.println("  /resume <id>   - Resume a past session")
+  io.println("  /rollback <n>  - Undo the last N messages from memory and database")
+  io.println("  /search <term> - Search past messages across all sessions (FTS5)")
+  io.println("  /goal <prompt> - Run an autonomous long-running task until finished")
   io.println("  <message>      - Chat with the LLM agent (tools available)")
 }
 
@@ -107,6 +124,14 @@ fn type_out_string(s: String) -> Nil {
   }
 }
 
+pub fn log_event(msg: String) -> Nil {
+  let log_dir = constants.path_join(constants.get_hermes_home(), "logs")
+  let _ = simplifile.create_directory_all(log_dir)
+  let log_path = constants.path_join(log_dir, "agent.log")
+  let _ = simplifile.append(log_path, msg <> "\n")
+  Nil
+}
+
 // ─── REPL Loop ────────────────────────────────────────────────────────────────
 
 pub fn repl_loop(state: REPLState) -> Nil {
@@ -127,6 +152,11 @@ pub fn repl_loop(state: REPLState) -> Nil {
       let is_run = string.starts_with(trimmed, "/run ")
       let is_file = string.starts_with(trimmed, "/file ")
       let is_clear = trimmed == "/clear"
+      let is_sessions = trimmed == "/sessions"
+      let is_resume = string.starts_with(trimmed, "/resume ")
+      let is_rollback = string.starts_with(trimmed, "/rollback ")
+      let is_search = string.starts_with(trimmed, "/search ")
+      let is_goal = string.starts_with(trimmed, "/goal ")
 
       case trimmed {
         // ── Empty input ─────────────────────────────────────────────────────
@@ -168,7 +198,7 @@ pub fn repl_loop(state: REPLState) -> Nil {
               state.exec_env,
               state.api_key,
               state.base_url,
-              "You are a helpful assistant with access to shell tools.",
+              get_tools_prompt(),
               90,
               option.None,
             )
@@ -176,6 +206,113 @@ pub fn repl_loop(state: REPLState) -> Nil {
             Ok(new_agent) ->
               repl_loop(REPLState(..state, agent_state: new_agent))
             Error(_) -> repl_loop(state)
+          }
+        }
+
+        // ── /sessions ────────────────────────────────────────────────────────
+        _ if is_sessions -> {
+          case state_actor.list_sessions(state.db_conn) {
+            Ok(sessions) -> {
+              io.println("Recent Sessions:")
+              list.each(list.take(sessions, 10), fn(s) { io.println("  - " <> s) })
+            }
+            Error(err) -> io.println("Error listing sessions: " <> string.inspect(err))
+          }
+          repl_loop(state)
+        }
+
+        // ── /resume <id> ──────────────────────────────────────────────────────
+        _ if is_resume -> {
+          let resume_id = string.trim(string.drop_start(trimmed, 8))
+          case state_actor.get_session_history(state.db_conn, resume_id) {
+            Ok(history_strings) -> {
+              io.println("Resuming session: " <> resume_id)
+              // Note history from DB is oldest-first, so we reverse it for the in-memory state which expects newest-first list head
+              let new_agent = hermes_agent.AgentState(..state.agent_state, session_id: resume_id, history: list.reverse(history_strings))
+              repl_loop(REPLState(..state, session_id: resume_id, agent_state: new_agent))
+            }
+            Error(err) -> {
+              io.println("Failed to load session: " <> string.inspect(err))
+              repl_loop(state)
+            }
+          }
+        }
+
+        // ── /rollback <n> ────────────────────────────────────────────────────
+        _ if is_rollback -> {
+          let count_str = string.trim(string.drop_start(trimmed, 10))
+          case int.parse(count_str) {
+            Ok(n) -> {
+              let _ = state_actor.rollback_session(state.db_conn, state.session_id, n)
+              let new_history = list.drop(state.agent_state.history, n)
+              io.println("Rolled back " <> int.to_string(n) <> " messages.")
+              let new_agent = hermes_agent.AgentState(..state.agent_state, history: new_history)
+              repl_loop(REPLState(..state, agent_state: new_agent))
+            }
+            Error(_) -> {
+              io.println("Invalid number for rollback.")
+              repl_loop(state)
+            }
+          }
+        }
+
+        // ── /search <term> ──────────────────────────────────────────────────
+        _ if is_search -> {
+          let term = string.trim(string.drop_start(trimmed, 8))
+          case state_actor.search_messages(state.db_conn, term) {
+            Ok(matches) -> {
+              case matches {
+                [] -> io.println("No results for: " <> term)
+                results -> {
+                  io.println("Found " <> int.to_string(list.length(results)) <> " result(s):")
+                  list.each(list.take(results, 10), fn(m) {
+                    io.println("  [" <> m.session_id <> "] " <> m.role <> ": " <> string.slice(m.content, 0, 120))
+                  })
+                }
+              }
+            }
+            Error(err) -> io.println("Search error: " <> string.inspect(err))
+          }
+          repl_loop(state)
+        }
+
+        // ── /goal <prompt> ───────────────────────────────────────────────────
+        _ if is_goal -> {
+          let goal_prompt = string.trim(string.drop_start(trimmed, 6))
+          let full_prompt = get_goal_prompt(goal_prompt)
+          
+          io.println("🚀 GOAL MODE: " <> goal_prompt)
+          io.println("Allocating 1000 iterations. Press Ctrl+C to abort.")
+
+          // Create a high-budget actor just for this run
+          case iteration_budget.start(1000) {
+            Ok(goal_budget) -> {
+              let goal_agent = hermes_agent.AgentState(..state.agent_state, budget: goal_budget)
+              
+              case hermes_agent.run_conversation(goal_agent, full_prompt) {
+                Ok(new_agent) -> {
+                  io.println("✅ Goal completed.")
+                  // Restore original budget but keep new history/cwd
+                  let restored_agent = hermes_agent.AgentState(..new_agent, budget: state.agent_state.budget)
+                  repl_loop(
+                    REPLState(
+                      ..state,
+                      cwd: new_agent.cwd,
+                      exec_env: new_agent.exec_env,
+                      agent_state: restored_agent,
+                    ),
+                  )
+                }
+                Error(err) -> {
+                  io.println("❌ Goal Failed: " <> err)
+                  repl_loop(state)
+                }
+              }
+            }
+            Error(err) -> {
+              io.println("Failed to start goal budget: " <> string.inspect(err))
+              repl_loop(state)
+            }
           }
         }
 
@@ -188,7 +325,7 @@ pub fn repl_loop(state: REPLState) -> Nil {
               state.session_id,
               "repl",
               new_model,
-              "You are a helpful assistant.",
+              get_default_prompt(),
               1_700_000_000.0,
             )
           io.println("Switched model to: " <> new_model)
@@ -202,7 +339,7 @@ pub fn repl_loop(state: REPLState) -> Nil {
               state.exec_env,
               state.api_key,
               state.base_url,
-              "You are a helpful assistant with access to shell tools.",
+              get_tools_prompt(),
               90,
               option.None,
             )
@@ -307,7 +444,9 @@ pub fn repl_loop(state: REPLState) -> Nil {
                       )
                     }
                     Error(err) -> {
-                      io.println("\n[Agent Error: " <> err <> "]")
+                      let err_msg = "\n[Agent Error: " <> err <> "]"
+                      io.println(err_msg)
+                      log_event(err_msg)
                       repl_loop(state)
                     }
                   }
@@ -349,7 +488,9 @@ pub fn repl_loop(state: REPLState) -> Nil {
                   )
                 }
                 Error(err) -> {
-                  io.println("\n[Agent Error: " <> err <> "]")
+                  let err_msg = "\n[Agent Error: " <> err <> "]"
+                  io.println(err_msg)
+                  log_event(err_msg)
                   repl_loop(state)
                 }
               }
@@ -433,21 +574,9 @@ pub fn run_repl() -> Nil {
   let db_path = constants.path_join(constants.get_hermes_home(), "state.db")
   let assert Ok(conn) = hermes_state.connect(db_path)
   let assert Ok(Nil) = hermes_state.init_schema(conn)
-  let args = argv.load().arguments
-  let is_tui_flag = list.contains(args, "--tui")
-  let is_tui_env = case constants.get_env("HERMES_TUI") {
-    Some(val) -> val == "1" || val == "true"
-    None -> False
-  }
-  let is_tui = is_tui_flag || is_tui_env
-
   let intent_subj: process.Subject(gleamdb.Datom) = process.new_subject()
-  let tui_subj: process.Subject(gleamdb.Datom) = process.new_subject()
   
-  let subjects = case is_tui {
-    True -> [intent_subj, tui_subj]
-    False -> [intent_subj]
-  }
+  let subjects = [intent_subj]
 
   let assert Ok(actor) = state_actor.start(conn, subjects)
 
@@ -582,22 +711,17 @@ pub fn run_repl() -> Nil {
     intent_loop(selector, mcp_client_opt, supervisor_subj)
   })
 
-  case is_tui {
-    True -> {
-      tui_gateway.start_tui_server(actor, api_key, base_url, model, option.Some(tui_subj))
-    }
-    False -> {
-      // 3. Create session
-      let session_id = hermes_exec.generate_uuid()
-      let assert Ok(Nil) =
-        state_actor.create_session(
-          actor,
-          session_id,
-          "repl",
-          model,
-          "You are a helpful assistant with access to shell tools.",
-          1_700_000_000.0,
-        )
+  // 3. Create session
+  let session_id = hermes_exec.generate_uuid()
+  let assert Ok(Nil) =
+    state_actor.create_session(
+      actor,
+      session_id,
+      "repl",
+      model,
+      get_tools_prompt(),
+      1_700_000_000.0,
+    )
 
       // 4. Initialize sandbox exec environment
       let initial_cwd = hermes_exec.get_temp_dir()
@@ -618,32 +742,6 @@ pub fn run_repl() -> Nil {
       io.println("CWD        : " <> exec_env.cwd)
       io.println("\nType /help to see commands. Press Ctrl+D or /quit to exit.")
 
-      // Start MCP Client if HERMES_MCP_CMD is set
-      let mcp_client_opt = case constants.get_env("HERMES_MCP_CMD") {
-        Some(cmd) -> {
-          let notif_subj: process.Subject(mcp_client.JsonRpcNotification) = process.new_subject()
-          let _ = process.spawn(fn() {
-            let selector = process.new_selector()
-              |> process.select(notif_subj)
-            notification_loop(selector, actor)
-          })
-          
-          case mcp_client.start(cmd, Some(notif_subj)) {
-            Ok(client) -> {
-              let _ = mcp_client.initialize(client)
-              io.println("MCP Client started.")
-              Some(client)
-            }
-            Error(e) -> {
-              io.println("Failed to start MCP client: " <> e)
-              None
-            }
-          }
-        }
-        None -> None
-      }
-
-
       // 5. Build initial AgentState (max 90 iterations per conversation turn)
       let agent_result =
         hermes_agent.new_agent_state(
@@ -654,7 +752,7 @@ pub fn run_repl() -> Nil {
           exec_env,
           api_key,
           base_url,
-          "You are a helpful assistant with access to shell tools. When you need to run a command, use the run_command tool. When you need to read a file, use read_file. When you need to write a file, use write_file.",
+          get_tools_prompt(),
           90,
           mcp_client_opt,
         )
@@ -680,8 +778,6 @@ pub fn run_repl() -> Nil {
           repl_loop(state)
         }
       }
-    }
-  }
 }
 
 fn notification_loop(
@@ -709,7 +805,9 @@ fn intent_loop(
     Ok(datom) -> {
       case datom.attribute {
         "call_tool" -> {
-          io.println("[Side Effect] Reactive gleamdb intent to call tool: " <> datom.value)
+          let msg = "[Side Effect] Reactive gleamdb intent to call tool: " <> datom.value
+          io.println(msg)
+          log_event(msg)
           case mcp_client_opt {
             option.Some(client) -> {
               let _ = mcp_client.call_tool(client, "reactive_task", datom.value)
@@ -719,14 +817,24 @@ fn intent_loop(
           }
         }
         "spawn_worker" -> {
-          io.println("[Side Effect] Spawning babashka worker: " <> datom.entity)
+          let msg = "[Side Effect] Spawning babashka worker: " <> datom.entity
+          io.println(msg)
+          log_event(msg)
           process.send(supervisor_subj, subagent_supervisor.StartSubagent(datom.entity, datom.value))
           Nil
         }
         "llm_request" -> {
-          io.println("[Side Effect] Sending LLM request to babashka worker: " <> datom.entity)
-          let msg = "{\"jsonrpc\":\"2.0\",\"method\":\"execute_task\",\"params\":" <> datom.value <> "}"
-          process.send(supervisor_subj, subagent_supervisor.SendSubagentMsg(datom.entity, msg))
+          let msg = "[Side Effect] Sending LLM request to babashka worker: " <> datom.entity
+          io.println(msg)
+          log_event(msg)
+          let msg_str = "{\"jsonrpc\":\"2.0\",\"method\":\"execute_task\",\"params\":" <> datom.value <> "}"
+          process.send(supervisor_subj, subagent_supervisor.SendSubagentMsg(datom.entity, msg_str))
+          Nil
+        }
+        "telemetry" -> {
+          let msg = "\n[Babashka Telemetry] " <> datom.value
+          io.println(msg)
+          log_event(msg)
           Nil
         }
         _ -> Nil

@@ -1,9 +1,6 @@
-import gleeunit/should
 import subagent_supervisor
-import uds_ffi
 import gleam/erlang/process
 import gleam/io
-import gleam/result
 
 pub fn supervisor_test() {
   let socket_path = "/tmp/hermes_agent_supervisor_test.sock"

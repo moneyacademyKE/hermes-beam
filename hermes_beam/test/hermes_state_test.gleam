@@ -34,6 +34,7 @@ pub fn state_db_workflow_test() {
     "session-123",
     "user",
     "Hello agent, please find the bug in code_execution_tool.py",
+    "{\"role\":\"user\"}",
     1_717_001_000.0,
   )
   let assert Ok(Nil) = hermes_state.insert_message(
@@ -41,6 +42,7 @@ pub fn state_db_workflow_test() {
     "session-123",
     "assistant",
     "I have analyzed the file and resolved the bug.",
+    "{\"role\":\"assistant\"}",
     1_717_002_000.0,
   )
   

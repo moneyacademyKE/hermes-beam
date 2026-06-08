@@ -1,0 +1,2 @@
+Spawning gateway process with command: ["/Users/moe/Desktop/ayncoder/.venv/bin/python" "-m" "tui_gateway.entry"]
+Received update message type: :backend-eof msg: {:type :backend-eof}

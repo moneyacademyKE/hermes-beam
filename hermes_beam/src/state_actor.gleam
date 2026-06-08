@@ -2,7 +2,6 @@ import gleam/erlang/process.{type Subject}
 import gleam/otp/actor
 import gleam/result
 import gleamdb.{type Database, type Datom}
-import gleam/option.{type Option}
 import gleam/list
 import hermes_state
 import sqlight
@@ -38,7 +37,17 @@ pub type Message {
     session_id: String,
     role: String,
     content: String,
+    raw_json: String,
     timestamp: Float,
+    reply_to: Subject(Result(Nil, sqlight.Error)),
+  )
+  GetSessionHistory(
+    session_id: String,
+    reply_to: Subject(Result(List(String), sqlight.Error)),
+  )
+  RollbackSession(
+    session_id: String,
+    n: Int,
     reply_to: Subject(Result(Nil, sqlight.Error)),
   )
   ListSessions(reply_to: Subject(Result(List(String), sqlight.Error)))
@@ -50,6 +59,10 @@ pub type Message {
     method: String,
     params: String,
     reply_to: Subject(Result(Nil, sqlight.Error)),
+  )
+  SearchMessages(
+    term: String,
+    reply_to: Subject(Result(List(hermes_state.SearchMatch), sqlight.Error)),
   )
 }
 
@@ -147,15 +160,26 @@ fn handle_message(
       process.send(reply_to, res)
       actor.continue(state)
     }
-    InsertMessage(session_id, role, content, timestamp, reply_to) -> {
+    InsertMessage(session_id, role, content, raw_json, timestamp, reply_to) -> {
       let res =
         hermes_state.insert_message(
           state.conn,
           session_id,
           role,
           content,
+          raw_json,
           timestamp,
         )
+      process.send(reply_to, res)
+      actor.continue(state)
+    }
+    GetSessionHistory(session_id, reply_to) -> {
+      let res = hermes_state.get_session_history(state.conn, session_id)
+      process.send(reply_to, res)
+      actor.continue(state)
+    }
+    RollbackSession(session_id, n, reply_to) -> {
+      let res = hermes_state.rollback_session(state.conn, session_id, n)
       process.send(reply_to, res)
       actor.continue(state)
     }
@@ -166,6 +190,11 @@ fn handle_message(
     }
     GetSessionCwd(id, reply_to) -> {
       let res = hermes_state.get_session_cwd(state.conn, id)
+      process.send(reply_to, res)
+      actor.continue(state)
+    }
+    SearchMessages(term, reply_to) -> {
+      let res = hermes_state.search_messages(state.conn, term)
       process.send(reply_to, res)
       actor.continue(state)
     }
@@ -225,12 +254,38 @@ pub fn insert_message(
   session_id: String,
   role: String,
   content: String,
+  raw_json: String,
   timestamp: Float,
 ) -> Result(Nil, sqlight.Error) {
   actor.call(
     actor.subject,
-    5000,
-    InsertMessage(session_id, role, content, timestamp, _),
+    1000,
+    fn(subj) {
+      InsertMessage(session_id, role, content, raw_json, timestamp, subj)
+    },
+  )
+}
+
+pub fn get_session_history(
+  actor: StateActor,
+  session_id: String,
+) -> Result(List(String), sqlight.Error) {
+  actor.call(
+    actor.subject,
+    1000,
+    fn(subj) { GetSessionHistory(session_id, subj) },
+  )
+}
+
+pub fn rollback_session(
+  actor: StateActor,
+  session_id: String,
+  n: Int,
+) -> Result(Nil, sqlight.Error) {
+  actor.call(
+    actor.subject,
+    1000,
+    fn(subj) { RollbackSession(session_id, n, subj) },
   )
 }
 
@@ -251,4 +306,11 @@ pub fn handle_mcp_notification(
   params: String,
 ) -> Result(Nil, sqlight.Error) {
   actor.call(actor.subject, 1000, fn(subject) { HandleMcpNotification(method, params, subject) })
+}
+
+pub fn search_messages(
+  actor: StateActor,
+  term: String,
+) -> Result(List(hermes_state.SearchMatch), sqlight.Error) {
+  actor.call(actor.subject, 5000, fn(subject) { SearchMessages(term, subject) })
 }

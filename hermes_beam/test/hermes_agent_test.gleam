@@ -75,14 +75,14 @@ pub fn parse_finish_reason_fallback_test() {
 
 pub fn user_message_test() {
   let msg = user_message("hello")
-  let json_str = json.to_string(msg)
+  let json_str = msg
   let assert True = string.contains(json_str, "\"role\":\"user\"")
   let assert True = string.contains(json_str, "\"content\":\"hello\"")
 }
 
 pub fn assistant_message_test() {
   let msg = assistant_message("world")
-  let json_str = json.to_string(msg)
+  let json_str = msg
   let assert True = string.contains(json_str, "\"role\":\"assistant\"")
   let assert True = string.contains(json_str, "\"content\":\"world\"")
 }
@@ -91,7 +91,7 @@ pub fn assistant_tool_calls_message_test() {
   let tc =
     ToolCall(id: "call_1", name: "run_command", arguments: "{\"command\":\"ls\"}")
   let msg = assistant_tool_calls_message([tc])
-  let json_str = json.to_string(msg)
+  let json_str = msg
   let assert True = string.contains(json_str, "\"role\":\"assistant\"")
   let assert True = string.contains(json_str, "\"tool_calls\"")
   let assert True = string.contains(json_str, "run_command")
@@ -99,7 +99,7 @@ pub fn assistant_tool_calls_message_test() {
 
 pub fn tool_result_message_test() {
   let msg = tool_result_message("call_1", "{\"output\":\"file1.txt\"}")
-  let json_str = json.to_string(msg)
+  let json_str = msg
   let assert True = string.contains(json_str, "\"role\":\"tool\"")
   let assert True = string.contains(json_str, "\"tool_call_id\":\"call_1\"")
 }
