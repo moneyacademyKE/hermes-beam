@@ -10,6 +10,7 @@ import hermes_exec
 import iteration_budget
 import state_actor.{type StateActor}
 import mcp_client
+import constants
 
 // ─── Tool Schemas ─────────────────────────────────────────────────────────────
 // Static OpenAI-format tool schemas exposed to the LLM.
@@ -418,7 +419,12 @@ pub fn stream_and_collect(
   accumulated: String,
   on_delta: Option(fn(String) -> Nil),
 ) -> #(String, Bool) {
-  case hermes_client.receive_stream_chunk(req_id, 120_000) {
+  // Allow configuring timeout via env var for slow free-tier models (default: 300s)
+  let timeout_ms = case constants.get_env("HERMES_STREAM_TIMEOUT_MS") {
+    Some(val) -> case int.parse(val) { Ok(n) -> n  Error(_) -> 300_000 }
+    None -> 300_000
+  }
+  case hermes_client.receive_stream_chunk(req_id, timeout_ms) {
     StreamStart(_) ->
       stream_and_collect(req_id, parser, accumulated, on_delta)
 
