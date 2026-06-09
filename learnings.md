@@ -363,3 +363,66 @@ This document summarizes the core learnings from porting python codebase element
     - Structured reasoning / thinking tokens (o3, Claude extended thinking)
 *   **Priority Action**: The `mist` + `wisp` deps are already in `gleam.toml`. Enabling the API server mode costs zero new dependencies and immediately makes BEAM accessible to any OpenAI client (VS Code, Continue, etc.).
 *   **Rich Hickey Verdict**: BEAM implementation correctly decomplects state from identity, values from places, and side-effects from core logic. The two-store problem (GleamDB + SQLite datoms table) is incidental complexity — they should be unified with SQLite as persistence backing GleamDB as the in-memory query layer, synced bidirectionally.
+
+## 42. Rich Hickey Complexity vs. Utility Weighted Assessment
+
+*   **Context**: Comprehensive Gap Analysis of application components comparing their legacy Python implementations and new Erlang/Gleam/BEAM implementations.
+*   **Learning**: 
+    - Value-oriented programming (using GleamDB Datalog and transaction logs) offers the highest ratio of utility to complexity by converting dynamic runtime state mutations into pure, queryable data structures.
+    - Delegated out-of-process tool execution (via standard JSON-RPC MCP clients) is structurally simpler than dynamic, in-process runtime importing because it draws a clear boundary around memory and execution safety, preventing C-extension panics or library bugs from crashing the agent loop.
+    - Lightweight process isolation natively supported by the BEAM Virtual Machine eliminates the GIL and multiprocessing fork overhead, making concurrent task pools extremely performant and simple to manage via OTP Supervisors.
+*   **Impact**: When planning future capabilities, prioritize functional isolation (simple and decoupled) over library integration (easy but complected).
+
+## 43. Codebase Component List Deconstruction (2026-06)
+
+*   **Context**: Deep audit and component deconstruction of all 41 files in `hermes_beam/src` for a fully aligned and correct Gap Analysis.
+*   **Learning**:
+    - Mapping files to specific functional responsibilities reveals 8 core architectural modules: (1) Core Loop & Config, (2) State & Database, (3) Execution Sandbox, (4) Tool Registry, (5) Skills Compiler, (6) Concurrency & UDS, (7) Platform Gateways, and (8) Context & Memory.
+    - Accurately documenting this deconstruction within `docs/gap_analysis_hermes_beam_vs_agent.md` ensures that future developer onboarding maps exactly to the actual filesystem layout, bridging the gap between design theory and concrete code implementation.
+
+## 44. Decomplecting the REPL loop: Goal Mode as Default
+
+*   **Context**: Removing the legacy in-process standard mode prompt execution from `hermes_beam.gleam` and defaulting REPL prompt submissions to out-of-process Babashka subagent workers.
+*   **Learning**:
+    - Forcing all prompt messages (both `/file` and raw console prompts) to transact a `spawn_worker` Datom into the state actor serializes intent execution completely.
+    - The main loop thread is freed from the synchronous blocking of the LLM API stream, delegating concurrency and supervision entirely to the UDS `subagent_supervisor.gleam` process tree.
+    - This architecture completely separates the **UI input loop** (Identity/REPL state) from **asynchronous task execution** (Time/Side-effects), resolving accidental complexity at the interaction edge.
+
+## 45. Bi-directional UDS JSON-RPC Tool Delegation
+
+*   **Problem**: In goal-mode executions where a subagent worker runs out-of-process (e.g. Babashka), the worker lacks access to Gleam-side stateful integrations (like MCP clients, WASM sandbox tools, Datalog facts/rules, etc.).
+*   **Resolution**: Establish a bi-directional JSON-RPC protocol over the UDS connection. The supervisor compiles the dynamic tools schema and sends it to the worker in the parameters payload. When the worker encounters an unknown tool, it delegates it back to Gleam using a `"call_tool_on_gleam"` request. The Gleam intent loop executes the tool via `dispatch_tool` and forwards the result back to the worker process.
+*   **Impact**: Fully resolves the component bypass in Goal Mode, maintaining OTP actor separation while enabling the out-of-process worker to leverage all core Gleam capabilities.
+
+## 46. Babashka-Only vs. Babashka + Gleam Architectural Decoupling
+
+*   **Problem**: Standard single-language script runtimes (like pure Babashka/Clojure) tempt developers to embed all orchestration, state tracking, and tool execution in a single thread space due to "easiness". However, dynamic tool executions (like running arbitrary command-line processes or network queries) complect the core runtime and compromise fault isolation.
+*   **Resolution**: By splitting the architecture into a functional orchestration state manager (Gleam/BEAM) and an out-of-process scripting executor (Babashka workers), we draw a strict boundary around failure domains.
+*   **Impact**: Ensures that tool side-effects or interpreter failures cannot crash the main database session or agent coordination process, achieving Rich Hickey quality.
+
+## 47. Tooling Conversion Boundaries: Gleam-Level vs. Babashka-Level
+
+*   **Problem**: In hybrid architectures, deciding which VM should run specific tooling components can complect performance, safety, and complexity. For example, running in-memory Datalog logic inside a custom-written engine (`gleamdb.gleam`) on the BEAM is slow and lacks indexing compared to mature tooling ecosystems.
+*   **Resolution**: Delegate dynamic, relational/graph reasoning tasks (like Datalog queries) directly to DataScript running inside the Clojure/Babashka worker. DataScript is highly optimized and natively matches Clojure collections, reducing system complexity.
+*   **Impact**: Simplifies core orchestrator code while increasing Datalog query throughput, illustrating the value of mapping capabilities to their most natural runtime environment.
+
+## 48. JVM-Native DataScript and Native OS Sandboxing in Worker
+
+*   **Problem**: Running relational Datalog query logic via custom Gleam code is slow and lacks standard Datalog semantics. Meanwhile, executing WebAssembly sandboxed tools using native Erlang NIFs or JVM interpreters (like Chicory) introduces classpath resolution complexity, JVM dependency bloat, and execution overhead.
+*   **Resolution**: 
+    - Offload Datalog skills directly to the JVM-native **DataScript** database inside the Babashka worker, transacting facts/rules and resolving entity names locally.
+    - Replace WebAssembly execution entirely by running commands under macOS native kernel-level sandboxing (`sandbox-exec`) inside the worker, restricting file write operations strictly to the temp directory and local project workspace.
+    - Synchronize the dynamic database state by querying SQLite datoms in Gleam and passing them in the initial JSON-RPC payload.
+*   **Impact**: Simplifies both Gleam and Clojure code by completely retiring native NIF shims and external WASM library/runtime dependencies, while achieving robust, zero-latency process isolation.
+
+## 49. Pure-Clojure Micro-Datalog Engine (100% JVM-Free Architecture)
+
+*   **Problem**: While using DataScript in Babashka successfully executed Datalog skills, it forced a dependency on `me.tonsky.persistent-sorted-set` which contains Java bytecode. This triggered JVM invocation for classloading, violating the goal of a 100% JVM-free worker architecture.
+*   **Resolution**: 
+    - Replace `datascript` entirely with a custom pure-Clojure micro-Datalog engine inside `worker.clj`.
+    - Implemented a custom unification algorithm (`match-term?`), recursive rule solver (`solve-rule`, `solve-clause`), and query evaluator mapping directly to core Datalog semantics.
+*   **Impact**: Removed the final JVM dependency constraint. Babashka can now run the worker completely independently without needing `java` binaries or Maven resolutions, achieving ultra-fast boot times, pure C-level binary execution, and completing the Rich Hickey mandate of extreme decomplectation.
+
+
+
+

@@ -1,3 +1,1 @@
-{:paths ["src" "test"]
- :deps {io.github.TimoKramer/charm.clj {:git/sha "cf7a6c2fcfcccc44fcf04996e264183aa49a70d6"}}
- :tasks {test (do (require 'hermes-tui-test) (clojure.test/run-tests 'hermes-tui-test))}}
+{:paths ["src" "test"]}

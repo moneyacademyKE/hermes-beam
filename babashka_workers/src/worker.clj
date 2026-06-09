@@ -3,10 +3,14 @@
             [cheshire.core :as json]
             [babashka.http-client :as http]
             [babashka.process :as p]
-            [clojure.java.io :as io])
+            [clojure.java.io :as io]
+            [clojure.edn :as edn]
+            [clojure.walk :as walk]
+            [clojure.set :as set])
   (:import [java.net UnixDomainSocketAddress StandardProtocolFamily]
            [java.nio.channels SocketChannel]
-           [java.nio ByteBuffer]))
+           [java.nio ByteBuffer]
+           [java.nio.file Files Paths]))
 
 (def tool-schemas
   [{:type "function"
@@ -46,7 +50,27 @@
                :parameters {:type "object"
                             :properties {:image {:type "string" :description "Docker image to use, e.g. babashka/babashka:latest"}
                                          :code {:type "string" :description "Clojure/Babashka code to execute"}}
-                            :required ["image" "code"]}}}])
+                            :required ["image" "code"]}}}
+   {:type "function"
+    :function {:name "query_datalog"
+               :description "Query the in-memory DataScript database using Clojure Datalog query syntax. Input: query-str (e.g. '[:find ?y :in $ % ?x :where (path ?x ?y)]'), inputs-list (e.g. '[\"A\"]')"
+               :parameters {:type "object"
+                            :properties {:query {:type "string"}
+                                         :inputs {:type "array" :items {:type "string"}}}
+                            :required ["query" "inputs"]}}}
+   {:type "function"
+    :function {:name "transact_datalog"
+               :description "Transact new facts to the in-memory DataScript database. Input: list of EAV triples (e.g. '[[\"A\" \"route/link\" \"B\"]]')"
+               :parameters {:type "object"
+                            :properties {:facts {:type "array" :items {:type "array" :items {:type "string"}}}}
+                            :required ["facts"]}}}
+   {:type "function"
+    :function {:name "run_sandboxed_command"
+               :description "Runs a shell command under a strict OS-level sandbox (macOS sandbox-exec). Write operations are only permitted within allowed_write_paths (defaults to /tmp and workspace)."
+               :parameters {:type "object"
+                            :properties {:command {:type "string" :description "Shell command to execute"}
+                                         :allowed_write_paths {:type "array" :items {:type "string"} :description "Optional list of additional directories permitted for writing"}}
+                            :required ["command"]}}}])
 
 (defn connect-uds [path]
   (let [addr (UnixDomainSocketAddress/of path)
@@ -91,7 +115,188 @@
       (= 0 exit))
     (catch Exception _ false)))
 
-(defn execute-tool [channel name args-str]
+(defn recv-tool-response [channel expected-id]
+  (let [buf (ByteBuffer/allocate 4096)]
+    (loop [acc ""]
+      (if (clojure.string/includes? acc "\n")
+        (let [lines (clojure.string/split acc #"\n")
+              line (first lines)
+              remaining (clojure.string/join "\n" (rest lines))]
+          (let [parsed (try {:ok (json/parse-string line true)}
+                            (catch Exception _ {:err true}))]
+            (if (:err parsed)
+              (recur remaining)
+              (let [resp (:ok parsed)]
+                (if (= (:id resp) expected-id)
+                  (if-let [err (:error resp)]
+                    (throw (Exception. (str "Gleam tool error: " (:message err))))
+                    (:result resp))
+                  (recur remaining))))))
+        (do
+          (.clear buf)
+          (let [bytes-read (.read channel buf)]
+            (if (pos? bytes-read)
+              (do
+                (.flip buf)
+                (let [bytes (byte-array (.remaining buf))]
+                  (.get buf bytes)
+                  (recur (str acc (String. bytes "UTF-8")))))
+              (throw (Exception. "Socket closed while waiting for tool response")))))))))
+
+(defn merge-tool-schemas [gleam-tools]
+  (let [native-names (set (map #(get-in % [:function :name]) tool-schemas))
+        filtered-gleam (filter #(not (contains? native-names (get-in % [:function :name])))
+                               gleam-tools)]
+    (vec (concat tool-schemas filtered-gleam))))
+
+;; ─── Micro-Datalog Engine ────────────────────────────────────────────────────
+
+(defn- clean-symbol [s]
+  (if (and (string? s) (clojure.string/starts-with? s "?"))
+    (symbol s)
+    s))
+
+(defn- rule-name-for [attr]
+  (symbol (clojure.string/replace attr #"/" "-")))
+
+(defn parse-query [query-str]
+  (let [q (edn/read-string query-str)]
+    (loop [rem q current-kw nil acc {:find [] :in [] :where []}]
+      (if (empty? rem)
+        acc
+        (let [x (first rem)]
+          (if (keyword? x)
+            (recur (rest rem) x acc)
+            (recur (rest rem) current-kw (if current-kw (update acc current-kw conj x) acc))))))))
+
+(defn resolve-term [term env]
+  (loop [t term seen #{}]
+    (if (and (symbol? t) (clojure.string/starts-with? (name t) "?"))
+      (if (seen t) t
+          (if-let [bound (get env t)]
+            (recur bound (conj seen t))
+            t))
+      t)))
+
+(defn match-term? [pattern term env]
+  (let [p (resolve-term pattern env)
+        t (resolve-term term env)]
+    (cond
+      (and (symbol? p) (clojure.string/starts-with? (name p) "?"))
+      (assoc env p t)
+      
+      (and (symbol? t) (clojure.string/starts-with? (name t) "?"))
+      (assoc env t p)
+      
+      (= p t) env
+      :else nil)))
+
+(declare solve-clause)
+(defn match-fact [clause facts env]
+  (let [pe (first clause) pa (second clause) pv (nth clause 2)]
+    (keep (fn [[e a v]]
+            (when-let [env1 (match-term? pe e env)]
+              (when-let [env2 (match-term? pa a env1)]
+                (match-term? pv v env2))))
+          facts)))
+
+(defn rename-vars [rule suffix]
+  (clojure.walk/postwalk
+   (fn [x]
+     (if (and (symbol? x) (clojure.string/starts-with? (name x) "?"))
+       (symbol (str (name x) "_" suffix))
+       x))
+   rule))
+
+(def rule-counter (atom 0))
+
+(defn solve-rule [clause rules facts env]
+  (let [rname (first clause)
+        re (second clause)
+        rv (nth clause 2)
+        matching-rules (filter (fn [[head & _]] (and (= (first head) rname) (= (count head) 3))) rules)]
+    (mapcat (fn [rule]
+              (let [renamed-rule (rename-vars rule (swap! rule-counter inc))
+                    [_ he hv] (first renamed-rule)
+                    body (rest renamed-rule)]
+                (if-let [env1 (match-term? he re env)]
+                  (if-let [env2 (match-term? hv rv env1)]
+                    (reduce (fn [envs body-clause] (mapcat #(solve-clause body-clause rules facts %) envs)) [env2] body)
+                    []) [])))
+            matching-rules)))
+
+(defn solve-clause [clause rules facts env]
+  (if (seq? clause)
+    (solve-rule clause rules facts env)
+    (match-fact clause facts env)))
+
+(defn query-datalog [q-map facts rules inputs-map]
+  (let [initial-env inputs-map
+        envs (reduce (fn [envs clause] (mapcat #(solve-clause clause rules facts %) envs)) [initial-env] (:where q-map))]
+    (mapv (fn [env] (mapv #(resolve-term % env) (:find q-map))) (distinct envs))))
+
+(defn- extract-rule-from-entity-datoms [entity-datoms rule-attrs]
+  (let [find-val (fn [attr] (:value (first (filter #(= (:attribute %) attr) entity-datoms))))
+        head-0 (find-val "rule/head_0")
+        head-1 (find-val "rule/head_1")
+        head-2 (find-val "rule/head_2")
+        head-expr (list (rule-name-for head-1) (clean-symbol head-0) (clean-symbol head-2))
+        
+        clauses (loop [idx 0 acc []]
+                  (let [e-attr (str "rule/body_" idx "_0")
+                        a-attr (str "rule/body_" idx "_1")
+                        v-attr (str "rule/body_" idx "_2")]
+                    (if (some #(= (:attribute %) e-attr) entity-datoms)
+                      (let [clause [(find-val e-attr) (find-val a-attr) (find-val v-attr)]]
+                        (recur (inc idx) (conj acc clause)))
+                      acc)))
+        compiled-clauses (mapv (fn [[e a v]]
+                                 (if (and (string? a) (clojure.string/starts-with? a "?"))
+                                   [(clean-symbol e) (clean-symbol a) (clean-symbol v)]
+                                   (if (contains? rule-attrs a)
+                                     (list (rule-name-for a) (clean-symbol e) (clean-symbol v))
+                                     [(clean-symbol e) (keyword a) (clean-symbol v)])))
+                               clauses)]
+    (vec (cons head-expr compiled-clauses))))
+
+(defn init-datascript [datoms]
+  (let [is-rule? (fn [d] (clojure.string/starts-with? (:attribute d) "rule/"))
+        rule-datoms (filter is-rule? datoms)
+        fact-datoms (filter #(not (is-rule? %)) datoms)
+        
+        grouped-rules (group-by :entity rule-datoms)
+        rule-attrs (set (keep (fn [[_ ds]]
+                                (some #(when (= (:attribute %) "rule/head_1") (:value %)) ds))
+                              grouped-rules))
+        compiled-rules (mapv (fn [[_ ds]] (extract-rule-from-entity-datoms ds rule-attrs))
+                             grouped-rules)
+        
+        entities (set (map :entity datoms))
+        ref-values (set (keep (fn [d] (when (contains? entities (:value d)) (:value d))) fact-datoms))
+        all-nodes (set/union entities ref-values)
+        name-facts (mapv (fn [n] [n :name n]) all-nodes)
+        
+        base-facts (mapv (fn [d]
+                           [(:entity d) (keyword (:attribute d)) (:value d)])
+                         fact-datoms)]
+    {:facts (atom (vec (concat name-facts base-facts)))
+     :rules compiled-rules}))
+
+(defn resolve-query-input [facts v]
+  (if (string? v)
+    (if-let [name-fact (first (filter (fn [[e a v2]] (and (= a :name) (= v2 v))) facts))]
+      (first name-fact)
+      v)
+    v))
+
+(defn resolve-entity-names [facts results]
+  (let [name-map (into {} (keep (fn [[e a v]] (when (= a :name) [e v])) facts))
+        resolve-val (fn [v] (if (integer? v) (get name-map v v) v))]
+    (walk/postwalk resolve-val results)))
+
+;; ─── Tool Execution ───────────────────────────────────────────────────────────
+
+(defn execute-tool [channel name args-str ds-db]
   (send-telemetry channel (str "tool_start:" name " args: " args-str))
   (try
     (let [args (json/parse-string args-str true)
@@ -112,7 +317,6 @@
 
                    "fetch_url" (:body (http/get (:url args)))
 
-                   ;; Inline Babashka evaluation
                    "bb_eval"
                    (let [tmp-file (java.io.File/createTempFile "bb-eval-" ".clj")
                          _ (spit tmp-file (:code args))
@@ -120,7 +324,6 @@
                          _ (.delete tmp-file)]
                      (str "STDOUT:\n" out "\nSTDERR:\n" err "\nEXIT:" exit))
 
-                   ;; Docker with Babashka image, native bb fallback
                    "run_in_docker"
                    (let [code (:code args)
                          image (or (:image args) "babashka/babashka:latest")
@@ -139,7 +342,51 @@
                            "[ERROR: Neither Docker nor Babashka is available]"))
                        (finally (.delete tmp-file))))
 
-                   (str "Unknown tool: " name))]
+                   "query_datalog"
+                   (let [q-map (parse-query (:query args))
+                         inputs (:inputs args)
+                         in-vars (remove #{'$ '%} (:in q-map))
+                         parsed-inputs (mapv #(if (and (string? %) (clojure.string/starts-with? % "?"))
+                                                (symbol %)
+                                                %)
+                                             inputs)
+                         facts @(:facts ds-db)
+                         rules (:rules ds-db)
+                         resolved-inputs (mapv #(resolve-query-input facts %) parsed-inputs)
+                         inputs-map (zipmap in-vars resolved-inputs)
+                         results (query-datalog q-map facts rules inputs-map)
+                         resolved-results (resolve-entity-names facts results)]
+                     (json/generate-string resolved-results))
+
+                   "transact_datalog"
+                   (let [new-facts (:facts args)
+                         tx-data (mapv (fn [[e a v]] [(if (string? e) e e) (keyword a) v]) new-facts)]
+                     (swap! (:facts ds-db) into tx-data)
+                     "Facts transacted successfully.")
+
+                    "run_sandboxed_command"
+                    (let [cmd (:command args)
+                          custom-paths (or (:allowed_write_paths args) [])
+                          os-name (clojure.string/lower-case (System/getProperty "os.name"))
+                          is-mac? (clojure.string/includes? os-name "mac")]
+                      (if is-mac?
+                        (let [default-paths ["/tmp" "/private/tmp" "/var/folders" "/Users/moe/Desktop/ayncoder"]
+                              all-paths (distinct (concat default-paths custom-paths))
+                              write-rules (clojure.string/join " " (map #(str "(subpath \"" % "\")") all-paths))
+                              profile (str "(version 1) (deny default) (allow process-fork) (allow process-exec) (allow sysctl-read) (allow file-read*) (allow file-write* " write-rules ")")
+                              {:keys [out err exit]} (p/sh "sandbox-exec" "-p" profile "sh" "-c" cmd)]
+                          (str "STDOUT:\n" out "\nSTDERR:\n" err "\nEXIT:" exit))
+                        (let [{:keys [out err exit]} (p/sh "sh" "-c" cmd)]
+                          (str "[WARN: Not on macOS, running without sandboxing]\nSTDOUT:\n" out "\nSTDERR:\n" err "\nEXIT:" exit))))
+
+                   ;; Fallback to Gleam-delegated tool calls
+                   (let [msg-id (rand-int 1000000)
+                         req (json/generate-string {:jsonrpc "2.0"
+                                                    :id msg-id
+                                                    :method "call_tool_on_gleam"
+                                                    :params {:name name :arguments args-str}})
+                         _ (send-msg channel (str req "\n"))]
+                     (recv-tool-response channel msg-id)))]
       (send-telemetry channel (str "tool_complete:" name))
       result)
     (catch Exception e
@@ -149,8 +396,9 @@
 
 (defn handle-task [channel payload]
   (try
-    (let [{:keys [url model api_key messages]} payload
-          ;; Phase 1: Reasoning Validation
+    (let [{:keys [url model api_key messages tools datoms]} payload
+          ds-db (init-datascript datoms)
+          merged-tools (if (seq tools) (merge-tool-schemas tools) tool-schemas)
           reasoning-prompt {:role "system" 
                             :content "You are an expert planner. Provide a step-by-step reasoning chain validating the user's request, outlining the necessary tool calls. Return ONLY the chain of thought."}
           reasoning-req-body {:model model
@@ -166,11 +414,10 @@
           reasoning-msg (:message (first (:choices reasoning-result)))
           _ (send-telemetry channel (str "reasoning: \n" (:content reasoning-msg)))]
       
-      ;; Phase 2: Execution Loop
       (loop [loop-messages (vec (concat messages [reasoning-prompt reasoning-msg]))]
         (let [req-body {:model model
                         :messages loop-messages
-                        :tools tool-schemas}
+                        :tools merged-tools}
               response (with-retries* 3 1000
                          (fn []
                            (http/post url
@@ -182,11 +429,10 @@
               msg (:message choice)]
           
           (if-let [tool-calls (:tool_calls msg)]
-            ;; Intercept tool calls, execute, and recurse
             (let [tool-results (map (fn [tc]
                                       (let [fn-name (-> tc :function :name)
                                             fn-args (-> tc :function :arguments)
-                                            res (execute-tool channel fn-name fn-args)]
+                                            res (execute-tool channel fn-name fn-args ds-db)]
                                         {:role "tool"
                                          :tool_call_id (:id tc)
                                          :name fn-name
@@ -195,7 +441,6 @@
                   next-messages (concat loop-messages [msg] tool-results)]
               (recur (vec next-messages)))
             
-            ;; Finished
             (send-msg channel (json/generate-string {:jsonrpc "2.0"
                                                      :method "task_result"
                                                      :params {:result result}}))))))

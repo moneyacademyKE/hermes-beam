@@ -286,38 +286,13 @@ pub fn repl_loop(state: REPLState) -> Nil {
           let full_prompt = get_goal_prompt(goal_prompt)
           
           io.println("🚀 GOAL MODE: " <> goal_prompt)
-          io.println("Allocating 1000 iterations. Press Ctrl+C to abort.")
+          io.println("Delegating goal to Babashka subagent. Telemetry will print in the background...")
 
-          // Create a high-budget actor just for this run
-          case iteration_budget.start(1000) {
-            Ok(goal_budget) -> {
-              let goal_agent = hermes_agent.AgentState(..state.agent_state, budget: goal_budget)
-              
-              case hermes_agent.run_conversation(goal_agent, full_prompt) {
-                Ok(new_agent) -> {
-                  io.println("✅ Goal completed.")
-                  // Restore original budget but keep new history/cwd
-                  let restored_agent = hermes_agent.AgentState(..new_agent, budget: state.agent_state.budget)
-                  repl_loop(
-                    REPLState(
-                      ..state,
-                      cwd: new_agent.cwd,
-                      exec_env: new_agent.exec_env,
-                      agent_state: restored_agent,
-                    ),
-                  )
-                }
-                Error(err) -> {
-                  io.println("❌ Goal Failed: " <> err)
-                  repl_loop(state)
-                }
-              }
-            }
-            Error(err) -> {
-              io.println("Failed to start goal budget: " <> string.inspect(err))
-              repl_loop(state)
-            }
-          }
+          let worker_id = "goal_worker_" <> state.session_id
+          let datom = gleamdb.Datom(entity: worker_id, attribute: "spawn_worker", value: full_prompt)
+          let _ = state_actor.transact(state.db_conn, [datom], 1)
+          
+          repl_loop(state)
         }
 
         // ── /model <name> ────────────────────────────────────────────────────
@@ -417,7 +392,7 @@ pub fn repl_loop(state: REPLState) -> Nil {
           }
         }
 
-        // ── /file <path> ─────────────────────────────────────────────────────
+        // ── /file <path> (Goal Mode Default) ──────────────────────────────────
         _ if is_file -> {
           let path = string.trim(string.drop_start(trimmed, 6))
           case simplifile.read(path) {
@@ -429,31 +404,15 @@ pub fn repl_loop(state: REPLState) -> Nil {
                   repl_loop(state)
                 }
                 False -> {
-                  case hermes_agent.run_conversation(state.agent_state, content) {
-                    Ok(new_agent) -> {
-                      let new_cwd = new_agent.exec_env.cwd
-                      let _ =
-                        state_actor.update_session_cwd(
-                          state.db_conn,
-                          state.session_id,
-                          new_cwd,
-                        )
-                      repl_loop(
-                        REPLState(
-                          ..state,
-                          cwd: new_cwd,
-                          exec_env: new_agent.exec_env,
-                          agent_state: new_agent,
-                        ),
-                      )
-                    }
-                    Error(err) -> {
-                      let err_msg = "\n[Agent Error: " <> err <> "]"
-                      io.println(err_msg)
-                      log_event(err_msg)
-                      repl_loop(state)
-                    }
-                  }
+                  let full_prompt = get_goal_prompt(content)
+                  io.println("🚀 GOAL MODE (Default - from file): " <> path)
+                  io.println("Delegating goal to Babashka subagent. Telemetry will print in the background...")
+
+                  let worker_id = "goal_worker_" <> state.session_id
+                  let datom = gleamdb.Datom(entity: worker_id, attribute: "spawn_worker", value: full_prompt)
+                  let _ = state_actor.transact(state.db_conn, [datom], 1)
+                  
+                  repl_loop(state)
                 }
               }
             }
@@ -464,7 +423,7 @@ pub fn repl_loop(state: REPLState) -> Nil {
           }
         }
 
-        // ── LLM prompt via agent loop ─────────────────────────────────────────
+        // ── LLM prompt via Goal Mode subagent (Default) ───────────────────────
         _ -> {
           case state.api_key == "" {
             True -> {
@@ -472,32 +431,15 @@ pub fn repl_loop(state: REPLState) -> Nil {
               repl_loop(state)
             }
             False -> {
-              case hermes_agent.run_conversation(state.agent_state, trimmed) {
-                Ok(new_agent) -> {
-                  // Sync CWD back from agent exec_env in case tools changed it
-                  let new_cwd = new_agent.exec_env.cwd
-                  let _ =
-                    state_actor.update_session_cwd(
-                      state.db_conn,
-                      state.session_id,
-                      new_cwd,
-                    )
-                  repl_loop(
-                    REPLState(
-                      ..state,
-                      cwd: new_cwd,
-                      exec_env: new_agent.exec_env,
-                      agent_state: new_agent,
-                    ),
-                  )
-                }
-                Error(err) -> {
-                  let err_msg = "\n[Agent Error: " <> err <> "]"
-                  io.println(err_msg)
-                  log_event(err_msg)
-                  repl_loop(state)
-                }
-              }
+              let full_prompt = get_goal_prompt(trimmed)
+              io.println("🚀 GOAL MODE (Default): " <> trimmed)
+              io.println("Delegating goal to Babashka subagent. Telemetry will print in the background...")
+
+              let worker_id = "goal_worker_" <> state.session_id
+              let datom = gleamdb.Datom(entity: worker_id, attribute: "spawn_worker", value: full_prompt)
+              let _ = state_actor.transact(state.db_conn, [datom], 1)
+              
+              repl_loop(state)
             }
           }
         }
@@ -600,11 +542,11 @@ pub fn run_repl_resuming(target_session_id: String) -> Nil {
       None -> "meta-llama/llama-3-8b-instruct:free"
     }
 
-  let socket_path = "/tmp/hermes_agent_supervisor_resume.sock"
-  let assert Ok(supervisor_subj) = subagent_supervisor.start_supervisor(socket_path, intent_subj)
+  let socket_path = constants.path_join(constants.get_hermes_home(), "subagents.sock")
+  let assert Ok(supervisor_subj) = subagent_supervisor.start_supervisor(socket_path, actor)
   let _ = process.spawn(fn() {
     let selector = process.new_selector() |> process.select(intent_subj)
-    intent_loop(selector, None, supervisor_subj)
+    intent_loop(selector, None, supervisor_subj, api_key, base_url)
   })
 
   // Restore session history and CWD from DB
@@ -789,14 +731,14 @@ pub fn run_repl() -> Nil {
     None -> None
   }
 
-  let socket_path = "/tmp/hermes_agent_supervisor.sock"
-  let assert Ok(supervisor_subj) = subagent_supervisor.start_supervisor(socket_path, intent_subj)
+  let socket_path = constants.path_join(constants.get_hermes_home(), "subagents.sock")
+  let assert Ok(supervisor_subj) = subagent_supervisor.start_supervisor(socket_path, actor)
 
   // Always spawn intent_loop to process side effects (e.g. running tools)
   let _ = process.spawn(fn() {
     let selector = process.new_selector()
       |> process.select(intent_subj)
-    intent_loop(selector, mcp_client_opt, supervisor_subj)
+    intent_loop(selector, mcp_client_opt, supervisor_subj, api_key, base_url)
   })
 
   // 3. Create session
@@ -887,7 +829,10 @@ fn notification_loop(
 
 fn intent_loop(
   selector: process.Selector(gleamdb.Datom),
-  mcp_client_opt: option.Option(mcp_client.McpClient), supervisor_subj: process.Subject(subagent_supervisor.SupervisorMessage)
+  mcp_client_opt: option.Option(mcp_client.McpClient),
+  supervisor_subj: process.Subject(subagent_supervisor.SupervisorMessage),
+  api_key: String,
+  base_url: String,
 ) -> Nil {
   case process.selector_receive(selector, 600_000) {
     Ok(datom) -> {
@@ -905,10 +850,10 @@ fn intent_loop(
           }
         }
         "spawn_worker" -> {
-          let msg = "[Side Effect] Spawning babashka worker: " <> datom.entity
+          let msg = "[Side Effect] Spawning subagent worker: " <> datom.entity
           io.println(msg)
           log_event(msg)
-          process.send(supervisor_subj, subagent_supervisor.StartSubagent(datom.entity, datom.value))
+          process.send(supervisor_subj, subagent_supervisor.StartSubagent(datom.entity, datom.value, api_key, base_url))
           Nil
         }
         "llm_request" -> {
@@ -927,8 +872,8 @@ fn intent_loop(
         }
         _ -> Nil
       }
-      intent_loop(selector, mcp_client_opt, supervisor_subj)
+      intent_loop(selector, mcp_client_opt, supervisor_subj, api_key, base_url)
     }
-    Error(_) -> intent_loop(selector, mcp_client_opt, supervisor_subj)
+    Error(_) -> intent_loop(selector, mcp_client_opt, supervisor_subj, api_key, base_url)
   }
 }

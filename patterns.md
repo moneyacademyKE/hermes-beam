@@ -654,3 +654,90 @@ pub type StreamAccumulator {
 ### Benefit
 Eliminates the 2× API call cost on every tool-using turn. Critical for cost-sensitive deployments and low-iteration-budget agent runs.
 
+---
+
+## 31. Complexity-to-Utility Decomplectation Boundary Pattern
+
+### Intent
+Isolate architectural layers to maximize utility while minimizing code and operational complexity, ensuring third-party failures do not crash the system.
+
+### Pattern
+Instead of compiling all capabilities into a single monolithic run loop:
+1. **State Isolation**: Encapsulate state inside pure functional actors (`state_actor.gleam`) and represent state transitions as append-only transaction logs.
+2. **Execution Isolation**: Delegate heavy, non-deterministic execution tasks (such as ML inference or custom tool libraries) to out-of-process boundaries via standard protocols (e.g. MCP JSON-RPC over standard I/O pipes).
+3. **UI Isolation**: Deconstruct UI event loops from core agent processes. UI clients run as independent processes (like Clojure/Babashka `ui-clj` or React dashboards) communicating with the backend orchestration engine over JSON-RPC.
+
+### Benefit
+Draws a clear boundary around memory and execution safety, preventing C-extension panics or libraries from crashing the system. Keeps the core orchestration layer extremely lightweight, type-safe, and robust.
+
+---
+
+## 32. Bi-directional JSON-RPC Tool Delegation Pattern
+
+### Intent
+Allow out-of-process worker subagents (e.g. Clojure/Babashka workers) to execute stateful or dynamically configured tools owned by the orchestrator process (e.g. Gleam/BEAM core) over a UDS socket.
+
+### Pattern
+1. **Dynamic Schema Sync**: The supervisor retrieves all dynamic tool schemas (including MCP and core tools) from the state engine and passes them to the worker in the task initialization envelope.
+2. **Worker Interception**: The worker's tool executor checks if a tool is native to the worker. If not, it serializes a JSON-RPC request (`call_tool_on_gleam`) with a unique message ID and sends it back up the UDS stream.
+3. **Blocking Socket Read**: The worker blocks its own reader thread, waiting for the JSON-RPC response message with matching ID.
+4. **State Actor & Intent Loop Dispatch**: The supervisor receives the request, transacts a delegation datom to SQLite, and broadcasts the event. The reactive `intent_loop` intercepts the datom, executes the tool via the core's dispatch engine (updating agent state/environment), and returns the serialized result back to the worker via UDS.
+5. **Resume Worker Execution**: The worker reads the result, unpacks it, and returns the output to the LLM agent loop.
+
+---
+
+## 33. Runtime Decoupled Worker Pattern (Orchestrator-Worker Boundary)
+
+### Intent
+Decomplect state management, concurrency scheduling, and side-effect execution by maintaining a strict process and runtime boundary between the orchestrator VM and tool executors.
+
+### Pattern
+1. **Functional Orchestrator**: The orchestrator (compiled to Erlang bytecode) handles session state transactions (EAVT datoms), supervisor trees, and external MCP coordination.
+2. **Dynamic Scripting Worker**: The worker runtime (e.g. Babashka Native Image) is started dynamically in an isolated OS process via Unix Domain Sockets (UDS) and only evaluates user-defined shell tasks.
+3. **Structured Protocol**: The orchestrator and worker communicate strictly via JSON-RPC payloads. All tool requests are serialized, keeping the execution logic completely decoupled.
+4. **Independent Failure Recovery**: Any crash in the worker runtime triggers an OTP restart, leaving the orchestrator's state database intact.
+
+---
+
+## 34. Host-Native Kernel Sandbox Pattern (macOS Seatbelt Sandbox)
+
+### Intent
+Mitigate system security and crash risks of LLM-generated code by executing scripts inside a strict native OS-level container sandbox using macOS `sandbox-exec`, eliminating external VM interpreters and class-loading overhead.
+
+### Pattern
+1. **Declare Sandbox Boundaries**: Define standard paths permitted for read operations and restrict write operations solely to targeted paths (such as `/tmp`, `/private/tmp`, `/var/folders`, and the workspace directory).
+2. **Draft Sandbox Scheme Profile**: Construct a macOS Seatbelt sandbox Scheme expression string:
+   `(version 1) (deny default) (allow process-fork) (allow process-exec) (allow sysctl-read) (allow file-read*) (allow file-write* (subpath "/tmp") ...)`
+3. **Execute via Native Wrapper**: Launch the tool command wrapped under `sandbox-exec -p <profile_string> <command>`, which enforces kernel-level blocking of disallowed operations (e.g. attempting to touch system files outside the paths) and returns stderr/stdout.
+
+---
+
+## 35. State Synchronized In-Memory Datalog Worker Pattern
+
+### Intent
+Enable out-of-process scripting workers to run relational Datalog queries natively against the global database state without querying Erlang side-effect API processes.
+
+### Pattern
+1. **State Snapshot Fetch**: Query all EAV datoms table from the relational persistence layer (SQLite) inside the supervisor process.
+2. **State Serialization**: Serialize all datoms into a compact JSON array and append it as `datoms` parameter to the dynamic JSON-RPC task launch envelope.
+3. **Dynamic Schema & Unique Identifier Indexing**: On worker startup, parse facts and rules, dynamically detect reference attribute type maps, transact a unique `:name` identity map, and build an in-memory DataScript database instance.
+4. **Local Query Evaluation**: Evaluate Datalog skill rule queries natively using native Clojure syntax, and map integer IDs back to original string identifiers post-query.
+
+---
+
+## 36. Zero-Dependency Micro-Datalog Interpreter Pattern
+
+### Intent
+Execute recursive Datalog queries natively in a dynamic scripting runtime (e.g., Babashka) without relying on heavy external JVM libraries like DataScript, avoiding JVM boot overhead and classloading bloat.
+
+### Pattern
+1. **Fact Atom**: Store EAV facts in a simple Clojure `atom` referencing an immutable list of tuples.
+2. **Variable Resolution**: Parse queries to distinguish logic variables (e.g., `?entity`) from literals.
+3. **Unification Algorithm**: Implement a recursive matching function `match-term?` that walks the clauses. If a term is a logic variable, bind its value to an environment map (`env`). If it's bound, compare the values.
+4. **Recursive Rule Solving**: For `rule` evaluations, recursively call `solve-clause` to match rule bodies against the fact database, effectively traversing tree structures natively without an external Datalog compiler.
+
+### Benefit
+Keeps the runtime completely independent from the JVM ecosystem, resulting in instantaneous boot times, while retaining the functional expressiveness required to reason over complex Datalog graphs and policies.
+
+
+
