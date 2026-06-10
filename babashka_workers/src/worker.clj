@@ -210,29 +210,37 @@
 
 (def rule-counter (atom 0))
 
-(defn solve-rule [clause rules facts env]
+(declare solve-clause)
+
+(defn solve-rule [clause rules facts env visited]
   (let [rname (first clause)
         re (second clause)
         rv (nth clause 2)
-        matching-rules (filter (fn [[head & _]] (and (= (first head) rname) (= (count head) 3))) rules)]
-    (mapcat (fn [rule]
-              (let [renamed-rule (rename-vars rule (swap! rule-counter inc))
-                    [_ he hv] (first renamed-rule)
-                    body (rest renamed-rule)]
-                (if-let [env1 (match-term? he re env)]
-                  (if-let [env2 (match-term? hv rv env1)]
-                    (reduce (fn [envs body-clause] (mapcat #(solve-clause body-clause rules facts %) envs)) [env2] body)
-                    []) [])))
-            matching-rules)))
+        evaluated-re (resolve-term re env)
+        evaluated-rv (resolve-term rv env)
+        goal [rname evaluated-re evaluated-rv]]
+    (if (contains? visited goal)
+      []
+      (let [visited (conj visited goal)
+            matching-rules (filter (fn [[head & _]] (and (= (first head) rname) (= (count head) 3))) rules)]
+        (mapcat (fn [rule]
+                  (let [renamed-rule (rename-vars rule (swap! rule-counter inc))
+                        [_ he hv] (first renamed-rule)
+                        body (rest renamed-rule)]
+                    (if-let [env1 (match-term? he re env)]
+                      (if-let [env2 (match-term? hv rv env1)]
+                        (reduce (fn [envs body-clause] (mapcat #(solve-clause body-clause rules facts % visited) envs)) [env2] body)
+                        []) [])))
+                matching-rules)))))
 
-(defn solve-clause [clause rules facts env]
+(defn solve-clause [clause rules facts env visited]
   (if (seq? clause)
-    (solve-rule clause rules facts env)
+    (solve-rule clause rules facts env visited)
     (match-fact clause facts env)))
 
 (defn query-datalog [q-map facts rules inputs-map]
   (let [initial-env inputs-map
-        envs (reduce (fn [envs clause] (mapcat #(solve-clause clause rules facts %) envs)) [initial-env] (:where q-map))]
+        envs (reduce (fn [envs clause] (mapcat #(solve-clause clause rules facts % #{}) envs)) [initial-env] (:where q-map))]
     (mapv (fn [env] (mapv #(resolve-term % env) (:find q-map))) (distinct envs))))
 
 (defn- extract-rule-from-entity-datoms [entity-datoms rule-attrs]
@@ -476,22 +484,66 @@
                (catch Exception _ false))]
       (when ok (recur)))))
 
+(defn handle-cli-query [payload]
+  (let [datoms (:datoms payload)
+        q (:query payload)
+        db (init-datascript datoms)
+        
+        rules-raw (:rules payload)
+        rule-attrs-payload (set (map second (map first (or rules-raw []))))
+        rule-attrs-db (set (keep (fn [d] (when (= (:attribute d) "rule/head_1") (:value d))) datoms))
+        all-rule-attrs (clojure.set/union rule-attrs-payload rule-attrs-db)
+        
+        parse-clause (fn [c] 
+                       (let [attr (second c)
+                             parsed [(clean-symbol (first c))
+                                     (if (and (string? attr) (clojure.string/starts-with? attr "?"))
+                                       (clean-symbol attr)
+                                       (keyword attr))
+                                     (clean-symbol (nth c 2))]]
+                         (if (contains? all-rule-attrs attr)
+                           (list (rule-name-for attr) (first parsed) (nth parsed 2))
+                           parsed)))
+        extra-rules (mapv (fn [r] (vec (cons (parse-clause (first r)) (mapv parse-clause (rest r))))) (or rules-raw []))
+        
+        all-rules (vec (concat (:rules db) extra-rules))
+        facts @(:facts db)
+        
+        q-map {:find (mapv clean-symbol (:find q))
+               :where (mapv parse-clause (:where q))}
+        _ (println "facts:" facts)
+        _ (println "all-rules:" all-rules)
+        _ (println "q-map:" q-map)
+               
+        results (query-datalog q-map facts all-rules {})
+        resolved (resolve-entity-names facts results)
+        find-vars (map str (:find q-map))
+        mapped-results (map (fn [res-vec] (zipmap find-vars res-vec)) resolved)]
+    (println (json/generate-string {:status "success" :results mapped-results}))))
+
 (defn -main [& args]
-  (let [path (first args)]
-    (println "Worker started, targeting UDS path:" path)
-    (loop []
-      (try
-        (let [channel (connect-uds path)]
-          (println "Connected to UDS.")
-          (send-msg channel "{\"jsonrpc\":\"2.0\",\"method\":\"init\",\"params\":{\"status\":\"ready\"}}")
-          (telemetry-loop channel)
-          (read-loop channel)
-          (println "Read loop exited. Disconnected."))
-        (catch Exception e
-          (println "Connection error:" (.getMessage e))))
-      (println "Auto-healing UDS connection in 1s...")
-      (Thread/sleep 1000)
-      (recur))))
+  (let [cmd (first args)]
+    (cond
+      (= cmd "--datalog-query")
+      (let [payload (json/parse-stream *in* true)]
+        (handle-cli-query payload))
+        
+      :else
+      (let [path cmd]
+        (println "Worker started, targeting UDS path:" path)
+        (loop []
+          (try
+            (let [channel (connect-uds path)]
+              (println "Connected to UDS.")
+              (send-msg channel "{\"jsonrpc\":\"2.0\",\"method\":\"init\",\"params\":{\"status\":\"ready\"}}")
+              (telemetry-loop channel)
+              (read-loop channel)
+              (println "Read loop exited. Disconnected."))
+            (catch Exception e
+              (println "Connection error:" (.getMessage e))))
+          (println "Auto-healing UDS connection in 1s...")
+          (Thread/sleep 1000)
+          (recur))))))
 
 (when (= *file* (System/getProperty "babashka.file"))
   (apply -main *command-line-args*))

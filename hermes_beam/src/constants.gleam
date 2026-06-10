@@ -13,7 +13,13 @@ pub type ReasoningEffort {
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
-pub const valid_reasoning_efforts = ["minimal", "low", "medium", "high", "xhigh"]
+pub const valid_reasoning_efforts = [
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+]
 
 pub const partial_stream_stub_id = "partial-stream-stub"
 
@@ -306,14 +312,13 @@ pub fn display_hermes_home() -> String {
         True -> {
           let user_home_len = string.length(user_home)
           let relative = string.drop_start(home, user_home_len)
-          let relative_clean =
-            case
-              string.starts_with(relative, "/")
-              || string.starts_with(relative, "\\")
-            {
-              True -> string.drop_start(relative, 1)
-              False -> relative
-            }
+          let relative_clean = case
+            string.starts_with(relative, "/")
+            || string.starts_with(relative, "\\")
+          {
+            True -> string.drop_start(relative, 1)
+            False -> relative
+          }
           "~/" <> relative_clean
         }
         False -> home

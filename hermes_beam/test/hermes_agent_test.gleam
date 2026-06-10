@@ -4,15 +4,9 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import hermes_agent.{
-  ToolCall,
-  all_tool_schemas,
-  assistant_message,
-  assistant_tool_calls_message,
-  build_request_body,
-  parse_finish_reason,
-  parse_tool_calls_from_json,
-  tool_result_message,
-  user_message,
+  ToolCall, all_tool_schemas, assistant_message, assistant_tool_calls_message,
+  build_request_body, parse_finish_reason, parse_tool_calls_from_json,
+  tool_result_message, user_message,
 }
 import hermes_client
 
@@ -20,7 +14,8 @@ import hermes_client
 
 pub fn parse_tool_calls_empty_test() {
   // Plain text response should return empty list
-  let j = "{\"choices\":[{\"message\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}]}"
+  let j =
+    "{\"choices\":[{\"message\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}]}"
   let calls = parse_tool_calls_from_json(j)
   let assert [] = calls
 }
@@ -56,7 +51,8 @@ pub fn parse_tool_calls_malformed_test() {
 // ─── Finish Reason Parsing ─────────────────────────────────────────────────────
 
 pub fn parse_finish_reason_stop_test() {
-  let j = "{\"choices\":[{\"message\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}"
+  let j =
+    "{\"choices\":[{\"message\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}"
   let assert "stop" = parse_finish_reason(j)
 }
 
@@ -89,7 +85,11 @@ pub fn assistant_message_test() {
 
 pub fn assistant_tool_calls_message_test() {
   let tc =
-    ToolCall(id: "call_1", name: "run_command", arguments: "{\"command\":\"ls\"}")
+    ToolCall(
+      id: "call_1",
+      name: "run_command",
+      arguments: "{\"command\":\"ls\"}",
+    )
   let msg = assistant_tool_calls_message([tc])
   let json_str = msg
   let assert True = string.contains(json_str, "\"role\":\"assistant\"")
@@ -112,7 +112,7 @@ pub fn all_tool_schemas_valid_json_test() {
   let result = json.parse(from: schemas, using: decode.list(decode.dynamic))
   let assert Ok(items) = result
   // Should have 3 tools: run_command, write_file, read_file
-  let assert 3 = list.length(items)
+  let assert 5 = list.length(items)
 }
 
 pub fn tool_schemas_contain_required_names_test() {
@@ -132,6 +132,7 @@ pub fn build_request_body_contains_model_test() {
       [],
       "[]",
       False,
+      "",
     )
   // Should be valid JSON
   let result = json.parse(from: body, using: decode.dynamic)
@@ -141,20 +142,21 @@ pub fn build_request_body_contains_model_test() {
 }
 
 pub fn build_request_body_includes_system_test() {
-  let body = build_request_body("gpt-4o", "Be precise.", [], "[]", True)
+  let body = build_request_body("gpt-4o", "Be precise.", [], "[]", True, "")
   let assert True = string.contains(body, "Be precise.")
   let assert True = string.contains(body, "\"stream\":true")
 }
 
 pub fn build_request_body_with_history_test() {
   let history = [user_message("What is 2+2?"), assistant_message("4")]
-  let body = build_request_body("gpt-4o", "You are helpful.", history, "[]", False)
+  let body =
+    build_request_body("gpt-4o", "You are helpful.", history, "[]", False, "")
   let assert True = string.contains(body, "What is 2+2?")
   let assert True = string.contains(body, "\"stream\":false")
 }
 
 pub fn build_request_body_non_stream_test() {
-  let body = build_request_body("claude-3", "sys", [], "[]", False)
+  let body = build_request_body("claude-3", "sys", [], "[]", False, "")
   let assert True = string.contains(body, "\"stream\":false")
 }
 

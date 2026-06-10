@@ -1,12 +1,12 @@
-import gleam/io
-import gleam/string
-import gleam/int
-import gleam/list
-import gleam/option.{type Option, Some, None}
-import gleam/result
-import gleam/erlang/process.{type Pid, type Subject}
-import gleam/otp/actor
 import gleam/dynamic.{type Dynamic}
+import gleam/erlang/process.{type Pid, type Subject}
+import gleam/int
+import gleam/io
+import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/otp/actor
+import gleam/result
+import gleam/string
 import simplifile
 
 pub type OsFamily {
@@ -35,10 +35,7 @@ pub type Message {
 }
 
 pub type CacheState {
-  CacheState(
-    resolved: Bool,
-    timezone_name: Option(String),
-  )
+  CacheState(resolved: Bool, timezone_name: Option(String))
 }
 
 pub type ErlangDateTime =
@@ -125,10 +122,16 @@ fn extract_timezone_line(line: String) -> Result(String, Nil) {
             Error(_) -> value_part
           }
           let clean_val = string.trim(value_no_comment)
-          let clean_val = case string.starts_with(clean_val, "\"") && string.ends_with(clean_val, "\"") {
+          let clean_val = case
+            string.starts_with(clean_val, "\"")
+            && string.ends_with(clean_val, "\"")
+          {
             True -> string.slice(clean_val, 1, string.length(clean_val) - 2)
             False -> {
-              case string.starts_with(clean_val, "'") && string.ends_with(clean_val, "'") {
+              case
+                string.starts_with(clean_val, "'")
+                && string.ends_with(clean_val, "'")
+              {
                 True -> string.slice(clean_val, 1, string.length(clean_val) - 2)
                 False -> clean_val
               }
@@ -177,7 +180,10 @@ pub fn resolve_timezone_name() -> String {
   }
 }
 
-fn handle_message(state: CacheState, message: Message) -> actor.Next(CacheState, Message) {
+fn handle_message(
+  state: CacheState,
+  message: Message,
+) -> actor.Next(CacheState, Message) {
   case message {
     ResetCache -> {
       actor.continue(CacheState(resolved: False, timezone_name: None))
@@ -196,7 +202,11 @@ fn handle_message(state: CacheState, message: Message) -> actor.Next(CacheState,
               case validate_timezone(name) {
                 True -> Some(name)
                 False -> {
-                  io.println("Warning: Invalid timezone '" <> name <> "'. Falling back to server local time.")
+                  io.println(
+                    "Warning: Invalid timezone '"
+                    <> name
+                    <> "'. Falling back to server local time.",
+                  )
                   None
                 }
               }
@@ -218,10 +228,8 @@ pub fn get_cache_pid() -> Pid {
         actor.new_with_initialiser(1000, fn(subject) {
           let selector =
             process.new_selector()
-            |> process.select_other(fn(dyn_msg) {
-              unsafe_coerce(dyn_msg)
-            })
-          
+            |> process.select_other(fn(dyn_msg) { unsafe_coerce(dyn_msg) })
+
           actor.initialised(CacheState(resolved: False, timezone_name: None))
           |> actor.selecting(selector)
           |> actor.returning(subject)
@@ -229,7 +237,7 @@ pub fn get_cache_pid() -> Pid {
         })
         |> actor.on_message(handle_message)
         |> actor.start
-      
+
       let pid = started.pid
       let _ = register_cache(pid)
       pid
@@ -239,7 +247,6 @@ pub fn get_cache_pid() -> Pid {
 
 @external(erlang, "hermes_time_ffi", "identity")
 fn unsafe_coerce(x: Dynamic) -> Message
-
 
 pub fn get_timezone() -> Option(String) {
   let pid = get_cache_pid()
@@ -276,10 +283,10 @@ pub fn get_server_local_time() -> DateTime {
   let local_secs = erl_datetime_to_gregorian_seconds(local)
   let utc_secs = erl_datetime_to_gregorian_seconds(utc)
   let offset = local_secs - utc_secs
-  
+
   let #(#(year, month, day), #(hour, minute, second)) = local
   let tz_name = get_local_timezone_name()
-  
+
   DateTime(
     year: year,
     month: month,
@@ -302,7 +309,9 @@ fn parse_offset_string(offset: String) -> Int {
           let mins_str = string.slice(rest, 2, 2)
           case int.parse(hrs_str), int.parse(mins_str) {
             Ok(hrs), Ok(mins) -> {
-              let total_secs = { hrs * 3600 + mins * 60 }
+              let total_secs = {
+                hrs * 3600 + mins * 60
+              }
               case sign {
                 "-" -> -total_secs
                 _ -> total_secs

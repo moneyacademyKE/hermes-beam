@@ -79,10 +79,14 @@ pub fn reasoning_effort_test() {
   |> should.equal(Some(constants.ReasoningEffort(enabled: False, effort: None)))
 
   constants.parse_reasoning_effort("minimal")
-  |> should.equal(Some(constants.ReasoningEffort(enabled: True, effort: Some("minimal"))))
+  |> should.equal(
+    Some(constants.ReasoningEffort(enabled: True, effort: Some("minimal"))),
+  )
 
   constants.parse_reasoning_effort("HIGH")
-  |> should.equal(Some(constants.ReasoningEffort(enabled: True, effort: Some("high"))))
+  |> should.equal(
+    Some(constants.ReasoningEffort(enabled: True, effort: Some("high"))),
+  )
 
   constants.parse_reasoning_effort("invalid")
   |> should.equal(None)

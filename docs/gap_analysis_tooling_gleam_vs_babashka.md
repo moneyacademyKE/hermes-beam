@@ -1,5 +1,9 @@
 # Gap Analysis: Gleam-Level vs. Babashka-Level Tooling Execution
 
+> [!NOTE]
+> **Post-Implementation Update (June 2026)**
+> Since this gap analysis was performed, we implemented the recommendation to convert the Datalog Engine to the Babashka level by implementing a custom JVM-free micro-Datalog interpreter directly in `worker.clj`. The custom orchestrator-side `gleamdb.gleam` has been completely removed. Logical query execution (such as permissions checks and skill evolutionary loops) is now successfully delegated from Gleam to Babashka over CLI boundaries.
+
 This document details how the Clojure/Babashka worker currently interacts with Gleam-level tooling, and evaluates which advanced tooling components would perform better if converted to run directly at the Babashka level instead.
 
 ---

@@ -1,11 +1,12 @@
+import datom.{Datom}
 import gleam/list
 import gleam/string
-import gleamdb.{Datom}
-import skill_compiler
 import simplifile
+import skill_compiler
 
 pub fn parse_skill_file_test() {
-  let content = "---
+  let content =
+    "---
 name: mock-skill
 description: A mock skill for testing parser.
 user-invocable: true
@@ -19,13 +20,14 @@ With multiple lines.
   let assert "mock-skill" = sk.name
   let assert "A mock skill for testing parser." = sk.description
   let assert [] = sk.rules
-  
+
   let assert [Datom("mock-skill", "skill/prompt", prompt)] = sk.facts
   let assert "This is the prompt body.\nWith multiple lines." = prompt
 }
 
 pub fn parse_skill_file_quoted_test() {
-  let content = "---
+  let content =
+    "---
 name: \"quoted-name\"
 description: 'quoted description'
 ---
@@ -43,7 +45,8 @@ pub fn parse_skill_file_no_frontmatter_test() {
 }
 
 pub fn parse_skill_file_missing_fields_test() {
-  let content = "---
+  let content =
+    "---
 description: Missing name
 ---
 body"
@@ -54,11 +57,12 @@ pub fn load_skills_from_dir_test() {
   // Setup a temporary directory with mock skills
   let temp_dir = "./test_skills_temp"
   let assert Ok(_) = simplifile.create_directory(temp_dir)
-  
+
   let skill_dir_1 = temp_dir <> "/skill1"
   let assert Ok(_) = simplifile.create_directory(skill_dir_1)
   let skill_file_1 = skill_dir_1 <> "/SKILL.md"
-  let content_1 = "---
+  let content_1 =
+    "---
 name: skill1
 description: Description 1
 ---
@@ -68,7 +72,8 @@ Prompt 1"
   let skill_dir_2 = temp_dir <> "/skill2"
   let assert Ok(_) = simplifile.create_directory(skill_dir_2)
   let skill_file_2 = skill_dir_2 <> "/SKILL.md"
-  let content_2 = "---
+  let content_2 =
+    "---
 name: skill2
 description: Description 2
 ---

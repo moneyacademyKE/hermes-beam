@@ -12,7 +12,8 @@
     putenv/2,
     format_float/1,
     read_line/1,
-    get_cwd/0
+    get_cwd/0,
+    set_expand_fun/0
 ]).
 
 identity(X) -> X.
@@ -64,4 +65,25 @@ get_cwd() ->
     case file:get_cwd() of
         {ok, Cwd} -> {ok, list_to_binary(Cwd)};
         {error, Reason} -> {error, Reason}
+    end.
+
+set_expand_fun() ->
+    io:setopts([{expand_fun, fun expand/1}]).
+
+expand(RevStr) ->
+    Str = lists:reverse(RevStr),
+    Commands = ["/goal ", "/search ", "/rollback ", "/resume ", "/clear ", "/help ", "/model ", "/cwd ", "/run ", "/file ", "/sessions ", "/quit ", "/exit "],
+    case Str of
+        "/" ++ Rest ->
+            Matches = [Cmd || Cmd <- Commands, lists:prefix(Str, Cmd)],
+            case Matches of
+                [] -> {no, "", []};
+                [One] -> 
+                    Expansion = string:substr(One, length(Str) + 1),
+                    {yes, Expansion, []};
+                Many ->
+                    {yes, "", Many}
+            end;
+        _ ->
+            {no, "", []}
     end.

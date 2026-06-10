@@ -1,5 +1,9 @@
 # Rich Hickey Gap Analysis: Babashka-Only vs. Babashka + Gleam (Hybrid)
 
+> [!NOTE]
+> **Post-Implementation Update (June 2026)**
+> Since this gap analysis was performed, we successfully consolidated all Datalog engine logic into the Babashka worker and stripped the native `gleamdb.gleam` engine from the orchestrator. State transitions continue to be tracked via immutable transaction logs in SQLite (as EAV Datom facts managed by the `StateActor` process), but query evaluation is handled out-of-process inside the Clojure worker via CLI execution, retaining the JVM-free runtime benefits and strict process failure boundaries of the hybrid architecture.
+
 This document performs a thorough and comprehensive **Rich Hickey Gap Analysis** comparing a pure Babashka-only implementation of the agent runner with the hybrid Babashka + Gleam (`hermes_beam`) architecture. It evaluates the architectural paradigms under the lens of **Simplicity vs. Easiness**, **Decomplecting State from Identity**, and **Values vs. Mutable Places**.
 
 ---

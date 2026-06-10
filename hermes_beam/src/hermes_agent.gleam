@@ -1,28 +1,28 @@
+import constants
+import context_engine
+import error_classifier
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
+import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
-import hermes_client.{type LineParserState, StreamChunk, StreamEnd, StreamError, StreamStart, StreamTimeout}
+import hermes_client.{
+  type LineParserState, StreamChunk, StreamEnd, StreamError, StreamStart,
+  StreamTimeout,
+}
 import hermes_exec
+import hermes_logger
 import iteration_budget
-import state_actor.{type StateActor}
+import kawaii_spinner
 import mcp_client
-import constants
+import memory_plugin
 import model_router.{type ModelRouter}
-import error_classifier
-
-// ─── Tool Schemas ─────────────────────────────────────────────────────────────
-// Static OpenAI-format tool schemas exposed to the LLM.
-
-pub const run_command_schema = "{\"type\":\"function\",\"function\":{\"name\":\"run_command\",\"description\":\"Execute a shell command in the sandboxed terminal environment and return its stdout/stderr output and exit code. CRITICAL: You MUST use Babashka (bb) for any task that requires scripting. DO NOT USE PYTHON.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"description\":\"The shell command to run (e.g. \\\"ls -la\\\", \\\"cat README.md\\\", \\\"echo hello\\\", \\\"bb -e '(+ 1 2)'\\\").\"}},\"required\":[\"command\"]}}}"
-
-pub const write_file_schema = "{\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"description\":\"Write content to a file at the given path.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Absolute or relative path to the file to write.\"},\"content\":{\"type\":\"string\",\"description\":\"The text content to write to the file.\"}},\"required\":[\"path\",\"content\"]}}}"
-
-pub const read_file_schema = "{\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"description\":\"Read the contents of a file at the given path. Returns the file text on success or an error message.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"description\":\"Absolute or relative path to the file to read.\"}},\"required\":[\"path\"]}}}"
+import state_actor.{type StateActor}
+import tools_registry
 
 // ─── Core Types ────────────────────────────────────────────────────────────────
 
@@ -53,7 +53,10 @@ pub type AgentState {
   )
 }
 
-pub fn with_event_handler(state: AgentState, handler: fn(AgentEvent) -> Nil) -> AgentState {
+pub fn with_event_handler(
+  state: AgentState,
+  handler: fn(AgentEvent) -> Nil,
+) -> AgentState {
   AgentState(..state, on_event: Some(handler))
 }
 
@@ -79,12 +82,15 @@ pub fn dispatch_tool(
   quiet: Bool,
 ) -> #(hermes_exec.TerminalEnv, String) {
   let exec_env = state.exec_env
+  hermes_logger.info(state.session_id, "Dispatching tool call: " <> call.name)
   case call.name {
     "run_command" -> {
-      let command = case json.parse(from: call.arguments, using: {
-        use cmd <- decode.field("command", decode.string)
-        decode.success(cmd)
-      }) {
+      let command = case
+        json.parse(from: call.arguments, using: {
+          use cmd <- decode.field("command", decode.string)
+          decode.success(cmd)
+        })
+      {
         Ok(cmd) -> cmd
         Error(_) -> "echo 'Error: could not parse command argument'"
       }
@@ -113,11 +119,12 @@ pub fn dispatch_tool(
     }
 
     "write_file" -> {
-      let parsed = json.parse(from: call.arguments, using: {
-        use path <- decode.field("path", decode.string)
-        use content <- decode.field("content", decode.string)
-        decode.success(#(path, content))
-      })
+      let parsed =
+        json.parse(from: call.arguments, using: {
+          use path <- decode.field("path", decode.string)
+          use content <- decode.field("content", decode.string)
+          decode.success(#(path, content))
+        })
       case parsed {
         Ok(#(path, content)) -> {
           case quiet {
@@ -128,11 +135,13 @@ pub fn dispatch_tool(
             True -> path
             False -> exec_env.cwd <> "/" <> path
           }
-          let write_result =
-            do_write_file(full_path, content)
+          let write_result = do_write_file(full_path, content)
           let result_json = case write_result {
             Ok(_) ->
-              json.object([#("status", json.string("ok")), #("path", json.string(full_path))])
+              json.object([
+                #("status", json.string("ok")),
+                #("path", json.string(full_path)),
+              ])
               |> json.to_string
             Error(err) ->
               json.object([#("error", json.string(err))])
@@ -140,16 +149,20 @@ pub fn dispatch_tool(
           }
           #(exec_env, result_json)
         }
-        Error(_) ->
-          #(exec_env, json.object([#("error", json.string("Invalid write_file arguments"))]) |> json.to_string)
+        Error(_) -> #(
+          exec_env,
+          json.object([#("error", json.string("Invalid write_file arguments"))])
+            |> json.to_string,
+        )
       }
     }
 
     "read_file" -> {
-      let parsed = json.parse(from: call.arguments, using: {
-        use path <- decode.field("path", decode.string)
-        decode.success(path)
-      })
+      let parsed =
+        json.parse(from: call.arguments, using: {
+          use path <- decode.field("path", decode.string)
+          decode.success(path)
+        })
       case parsed {
         Ok(path) -> {
           case quiet {
@@ -171,8 +184,84 @@ pub fn dispatch_tool(
           }
           #(exec_env, result_json)
         }
-        Error(_) ->
-          #(exec_env, json.object([#("error", json.string("Invalid read_file arguments"))]) |> json.to_string)
+        Error(_) -> #(
+          exec_env,
+          json.object([#("error", json.string("Invalid read_file arguments"))])
+            |> json.to_string,
+        )
+      }
+    }
+
+    "semantic_search_history" -> {
+      let parsed =
+        json.parse(from: call.arguments, using: {
+          use query <- decode.field("query", decode.string)
+          decode.success(query)
+        })
+      case parsed {
+        Ok(query) -> {
+          case quiet {
+            False -> io.println("  [tool: semantic_search_history] ? " <> query)
+            True -> Nil
+          }
+          // The semantic search uses our new semantic_search.gleam module to generate embedding 
+          // (Mock response for pure gleam math)
+          let result_json =
+            json.object([
+              #("status", json.string("embedded and matched mock")),
+              #("query", json.string(query)),
+            ])
+            |> json.to_string
+          #(exec_env, result_json)
+        }
+        Error(_) -> #(
+          exec_env,
+          json.object([#("error", json.string("Invalid search arguments"))])
+            |> json.to_string,
+        )
+      }
+    }
+
+    "handoff_session" -> {
+      let parsed =
+        json.parse(from: call.arguments, using: {
+          use target <- decode.field("target_session_id", decode.string)
+          use context <- decode.field("handoff_context", decode.string)
+          decode.success(#(target, context))
+        })
+      case parsed {
+        Ok(#(target, context)) -> {
+          case quiet {
+            False -> io.println("  [tool: handoff_session] -> " <> target)
+            True -> Nil
+          }
+          let timestamp = int.to_float(system_time_ms()) /. 1000.0
+          let handoff_msg =
+            "<handoff_context>\n" <> context <> "\n</handoff_context>"
+          let _ =
+            state_actor.insert_message(
+              state.db_conn,
+              target,
+              "system",
+              handoff_msg,
+              handoff_msg,
+              timestamp,
+            )
+          let result_json =
+            json.object([
+              #(
+                "status",
+                json.string("handoff payload injected to target session"),
+              ),
+            ])
+            |> json.to_string
+          #(exec_env, result_json)
+        }
+        Error(_) -> #(
+          exec_env,
+          json.object([#("error", json.string("Invalid handoff arguments"))])
+            |> json.to_string,
+        )
       }
     }
 
@@ -185,7 +274,8 @@ pub fn dispatch_tool(
         Some(client) -> {
           case mcp_client.call_tool(client, unknown, call.arguments) {
             Ok(res) -> res
-            Error(err) -> json.object([#("error", json.string(err))]) |> json.to_string
+            Error(err) ->
+              json.object([#("error", json.string(err))]) |> json.to_string
           }
         }
         None -> {
@@ -193,7 +283,9 @@ pub fn dispatch_tool(
             #(
               "error",
               json.string(
-                "Unknown tool: " <> unknown <> ". Available statically: run_command, write_file, read_file",
+                "Unknown tool: "
+                <> unknown
+                <> ". Available statically: run_command, write_file, read_file",
               ),
             ),
           ])
@@ -220,14 +312,22 @@ fn system_time_ms() -> Int
 
 /// Returns the JSON string for all registered tool schemas to include in API requests.
 pub fn all_tool_schemas(mcp_client: Option(mcp_client.McpClient)) -> String {
-  let base_schemas = run_command_schema <> "," <> write_file_schema <> "," <> read_file_schema
+  let base_schemas = tools_registry.all_core_tool_schemas()
   case mcp_client {
     Some(client) -> {
       case mcp_client.list_tools(client) {
         Ok(tools) -> {
-          let mcp_schemas = list.map(tools, fn(t) {
-            "{\"type\":\"function\",\"function\":{\"name\":\"" <> t.name <> "\",\"description\":\"" <> t.description <> "\",\"parameters\":" <> t.input_schema <> "}}"
-          }) |> string.join(",")
+          let mcp_schemas =
+            list.map(tools, fn(t) {
+              "{\"type\":\"function\",\"function\":{\"name\":\""
+              <> t.name
+              <> "\",\"description\":\""
+              <> t.description
+              <> "\",\"parameters\":"
+              <> t.input_schema
+              <> "}}"
+            })
+            |> string.join(",")
           case mcp_schemas == "" {
             True -> "[" <> base_schemas <> "]"
             False -> "[" <> base_schemas <> "," <> mcp_schemas <> "]"
@@ -263,24 +363,33 @@ pub fn decode_tool_call(data: json.Json) -> Option(ToolCall) {
 /// Parse a complete (non-streaming) OpenAI chat completion JSON response.
 pub fn parse_completion_response(json_str: String) -> AgentResponse {
   let text_decoder = {
-    use choices <- decode.field("choices", decode.list({
-      use message <- decode.field("message", {
-        use content <- decode.field("content", decode.string)
-        decode.success(content)
-      })
-      decode.success(message)
-    }))
+    use choices <- decode.field(
+      "choices",
+      decode.list({
+        use message <- decode.field("message", {
+          use content <- decode.field("content", decode.string)
+          decode.success(content)
+        })
+        decode.success(message)
+      }),
+    )
     decode.success(choices)
   }
 
   let tool_decoder = {
-    use choices <- decode.field("choices", decode.list({
-      use message <- decode.field("message", {
-        use tool_calls <- decode.field("tool_calls", decode.list(decode.dynamic))
-        decode.success(tool_calls)
-      })
-      decode.success(message)
-    }))
+    use choices <- decode.field(
+      "choices",
+      decode.list({
+        use message <- decode.field("message", {
+          use tool_calls <- decode.field(
+            "tool_calls",
+            decode.list(decode.dynamic),
+          )
+          decode.success(tool_calls)
+        })
+        decode.success(message)
+      }),
+    )
     decode.success(choices)
   }
 
@@ -289,11 +398,12 @@ pub fn parse_completion_response(json_str: String) -> AgentResponse {
     Ok([[first_dyn_call, ..] as dyn_calls, ..]) -> {
       let _ = first_dyn_call
       // Encode each dynamic value back to json for decode_tool_call
-      let raw_json_values = list.map(dyn_calls, fn(dyn) {
-        let _ = dyn
-        // Use dynamic decoder to extract tool call fields
-        json.null()
-      })
+      let raw_json_values =
+        list.map(dyn_calls, fn(dyn) {
+          let _ = dyn
+          // Use dynamic decoder to extract tool call fields
+          json.null()
+        })
       let _ = raw_json_values
       // Parse tool calls from raw JSON strings
       let tool_calls = parse_tool_calls_from_json(json_str)
@@ -317,21 +427,31 @@ pub fn parse_completion_response(json_str: String) -> AgentResponse {
 /// Handles the OpenAI format: choices[0].message.tool_calls[].
 pub fn parse_tool_calls_from_json(json_str: String) -> List(ToolCall) {
   let decoder = {
-    use choices <- decode.field("choices", decode.list({
-      use message <- decode.field("message", {
-        use tool_calls <- decode.field("tool_calls", decode.list({
-          use id <- decode.field("id", decode.string)
-          use function <- decode.field("function", {
-            use name <- decode.field("name", decode.string)
-            use arguments <- decode.field("arguments", decode.string)
-            decode.success(#(name, arguments))
-          })
-          decode.success(ToolCall(id: id, name: function.0, arguments: function.1))
-        }))
-        decode.success(tool_calls)
-      })
-      decode.success(message)
-    }))
+    use choices <- decode.field(
+      "choices",
+      decode.list({
+        use message <- decode.field("message", {
+          use tool_calls <- decode.field(
+            "tool_calls",
+            decode.list({
+              use id <- decode.field("id", decode.string)
+              use function <- decode.field("function", {
+                use name <- decode.field("name", decode.string)
+                use arguments <- decode.field("arguments", decode.string)
+                decode.success(#(name, arguments))
+              })
+              decode.success(ToolCall(
+                id: id,
+                name: function.0,
+                arguments: function.1,
+              ))
+            }),
+          )
+          decode.success(tool_calls)
+        })
+        decode.success(message)
+      }),
+    )
     decode.success(choices)
   }
   case json.parse(from: json_str, using: decoder) {
@@ -343,10 +463,13 @@ pub fn parse_tool_calls_from_json(json_str: String) -> List(ToolCall) {
 /// Parse finish_reason from a completion response JSON.
 pub fn parse_finish_reason(json_str: String) -> String {
   let decoder = {
-    use choices <- decode.field("choices", decode.list({
-      use finish_reason <- decode.field("finish_reason", decode.string)
-      decode.success(finish_reason)
-    }))
+    use choices <- decode.field(
+      "choices",
+      decode.list({
+        use finish_reason <- decode.field("finish_reason", decode.string)
+        decode.success(finish_reason)
+      }),
+    )
     decode.success(choices)
   }
   case json.parse(from: json_str, using: decoder) {
@@ -359,13 +482,16 @@ pub fn parse_finish_reason(json_str: String) -> String {
 
 fn decode_openai_delta(json_str: String) -> Result(String, Nil) {
   let decoder = {
-    use choices <- decode.field("choices", decode.list({
-      use delta <- decode.field("delta", {
-        use content <- decode.field("content", decode.string)
-        decode.success(content)
-      })
-      decode.success(delta)
-    }))
+    use choices <- decode.field(
+      "choices",
+      decode.list({
+        use delta <- decode.field("delta", {
+          use content <- decode.field("content", decode.string)
+          decode.success(content)
+        })
+        decode.success(delta)
+      }),
+    )
     decode.success(choices)
   }
   case json.parse(from: json_str, using: decoder) {
@@ -375,36 +501,110 @@ fn decode_openai_delta(json_str: String) -> Result(String, Nil) {
 }
 
 fn decode_openai_delta_tool_calls(json_str: String) -> Bool {
-  // If choices[0].delta has tool_calls, we're in a tool call stream
+  // If choices[0].delta has tool_calls, we're in an OpenAI tool call stream
   let decoder = {
-    use choices <- decode.field("choices", decode.list({
-      use delta <- decode.field("delta", {
-        use tool_calls <- decode.field("tool_calls", decode.list(decode.dynamic))
-        decode.success(tool_calls)
-      })
-      decode.success(delta)
-    }))
+    use choices <- decode.field(
+      "choices",
+      decode.list({
+        use delta <- decode.field("delta", {
+          use tool_calls <- decode.field(
+            "tool_calls",
+            decode.list(decode.dynamic),
+          )
+          decode.success(tool_calls)
+        })
+        decode.success(delta)
+      }),
+    )
     decode.success(choices)
   }
   case json.parse(from: json_str, using: decoder) {
     Ok([[_first_tc, ..], ..]) -> True
-    _ -> False
+    _ -> {
+      // Check for Anthropic tool stream format
+      let anthropic_start_decoder = {
+        use block <- decode.field("content_block", {
+          use type_ <- decode.field("type", decode.string)
+          decode.success(type_)
+        })
+        decode.success(block)
+      }
+      let anthropic_delta_decoder = {
+        use delta <- decode.field("delta", {
+          use type_ <- decode.field("type", decode.string)
+          decode.success(type_)
+        })
+        decode.success(delta)
+      }
+
+      case json.parse(from: json_str, using: anthropic_start_decoder) {
+        Ok("tool_use") -> True
+        _ ->
+          case json.parse(from: json_str, using: anthropic_delta_decoder) {
+            Ok("input_json_delta") -> True
+            _ -> False
+          }
+      }
+    }
   }
 }
 
 pub type PartialToolCall {
-  PartialToolCall(
-    id: String,
-    name: String,
-    arguments_acc: String,
-  )
+  PartialToolCall(id: String, name: String, arguments_acc: String)
 }
 
 pub type StreamAccumulator {
   StreamAccumulator(
     text: String,
+    reasoning: String,
     tool_calls: Dict(Int, PartialToolCall),
   )
+}
+
+fn decode_anthropic_tool_call_delta(
+  json_str: String,
+) -> List(#(Int, PartialToolCall)) {
+  let start_decoder = {
+    use index <- decode.field("index", decode.int)
+    use block <- decode.field("content_block", {
+      use type_ <- decode.field("type", decode.string)
+      use id <- decode.optional_field("id", "", decode.string)
+      use name <- decode.optional_field("name", "", decode.string)
+      decode.success(#(type_, id, name))
+    })
+    decode.success(#(index, block))
+  }
+
+  case json.parse(from: json_str, using: start_decoder) {
+    Ok(#(index, #("tool_use", id, name))) -> [
+      #(index, PartialToolCall(id: id, name: name, arguments_acc: "")),
+    ]
+    _ -> {
+      let delta_decoder = {
+        use index <- decode.field("index", decode.int)
+        use delta <- decode.field("delta", {
+          use type_ <- decode.field("type", decode.string)
+          use partial_json <- decode.optional_field(
+            "partial_json",
+            "",
+            decode.string,
+          )
+          decode.success(#(type_, partial_json))
+        })
+        decode.success(#(index, delta))
+      }
+
+      case json.parse(from: json_str, using: delta_decoder) {
+        Ok(#(index, #("input_json_delta", partial_json))) -> [
+          #(
+            index,
+            PartialToolCall(id: "", name: "", arguments_acc: partial_json),
+          ),
+        ]
+        _ -> []
+      }
+    }
+  }
 }
 
 fn decode_delta_tool_calls(json_str: String) -> List(#(Int, PartialToolCall)) {
@@ -420,43 +620,76 @@ fn decode_delta_tool_calls(json_str: String) -> List(#(Int, PartialToolCall)) {
       Some(#(n, a)) -> #(n, a)
       None -> #("", "")
     }
-    decode.success(#(index, PartialToolCall(id: id, name: name, arguments_acc: arguments)))
+    decode.success(#(
+      index,
+      PartialToolCall(id: id, name: name, arguments_acc: arguments),
+    ))
   }
   let decoder = {
-    use choices <- decode.field("choices", decode.list({
-      use delta <- decode.field("delta", {
-        use tool_calls <- decode.field("tool_calls", decode.list(tc_decoder))
-        decode.success(tool_calls)
-      })
-      decode.success(delta)
-    }))
+    use choices <- decode.field(
+      "choices",
+      decode.list({
+        use delta <- decode.field("delta", {
+          use tool_calls <- decode.field("tool_calls", decode.list(tc_decoder))
+          decode.success(tool_calls)
+        })
+        decode.success(delta)
+      }),
+    )
     decode.success(choices)
   }
   case json.parse(from: json_str, using: decoder) {
     Ok([tcs, ..]) -> tcs
-    _ -> []
+    _ -> decode_anthropic_tool_call_delta(json_str)
+  }
+}
+
+fn decode_openai_reasoning(json_str: String) -> Result(String, Nil) {
+  let decoder = {
+    use choices <- decode.field(
+      "choices",
+      decode.list({
+        use delta <- decode.field("delta", {
+          use reasoning <- decode.field("reasoning_content", decode.string)
+          decode.success(reasoning)
+        })
+        decode.success(delta)
+      }),
+    )
+    decode.success(choices)
+  }
+  case json.parse(from: json_str, using: decoder) {
+    Ok([reasoning, ..]) -> Ok(reasoning)
+    _ -> Error(Nil)
   }
 }
 
 /// Decode streaming delta text from an SSE JSON line.
 /// Tries OpenAI delta format first, then Anthropic text format.
-pub fn extract_delta_content(json_str: String) -> String {
-  case decode_openai_delta(json_str) {
-    Ok(text) -> text
+pub fn extract_delta_content(json_str: String) -> #(String, String) {
+  let text = case decode_openai_delta(json_str) {
+    Ok(t) -> t
     Error(_) -> {
       let anthropic_decoder = {
         use delta <- decode.field("delta", {
-          use text <- decode.field("text", decode.string)
-          decode.success(text)
+          use t <- decode.field("text", decode.string)
+          decode.success(t)
         })
         decode.success(delta)
       }
       case json.parse(from: json_str, using: anthropic_decoder) {
-        Ok(text) -> text
+        Ok(t) -> t
         Error(_) -> ""
       }
     }
   }
+
+  let reasoning = case decode_openai_reasoning(json_str) {
+    Ok(r) -> r
+    Error(_) -> ""
+  }
+
+  #(text, reasoning)
 }
 
 // ─── Streaming Response Collector ─────────────────────────────────────────────
@@ -468,68 +701,101 @@ pub fn stream_and_collect(
   parser: LineParserState,
   accumulated: StreamAccumulator,
   on_delta: Option(fn(String) -> Nil),
+  spinner: Option(process.Subject(kawaii_spinner.SpinnerMessage)),
 ) -> #(StreamAccumulator, Bool) {
   // Allow configuring timeout via env var for slow free-tier models (default: 300s)
   let timeout_ms = case constants.get_env("HERMES_STREAM_TIMEOUT_MS") {
-    Some(val) -> case int.parse(val) { Ok(n) -> n  Error(_) -> 300_000 }
+    Some(val) ->
+      case int.parse(val) {
+        Ok(n) -> n
+        Error(_) -> 300_000
+      }
     None -> 300_000
   }
   case hermes_client.receive_stream_chunk(req_id, timeout_ms) {
     StreamStart(_) ->
-      stream_and_collect(req_id, parser, accumulated, on_delta)
+      stream_and_collect(req_id, parser, accumulated, on_delta, spinner)
 
     StreamChunk(chunk) -> {
+      case spinner {
+        Some(s) -> kawaii_spinner.stop(s)
+        None -> Nil
+      }
       let #(lines, next_parser) = hermes_client.feed_chunk(parser, chunk)
       let #(new_acc, saw_tool_call) =
         list.fold(lines, #(accumulated, False), fn(state, line) {
           let #(acc, tc_seen) = state
           case hermes_client.parse_sse_line(line) {
             Some(json_str) -> {
-              let text_delta = case decode_openai_delta(json_str) {
-                Ok(text) -> {
+              let #(text_delta, reasoning_delta) =
+                extract_delta_content(json_str)
+
+              case text_delta != "" {
+                True -> {
                   case on_delta {
-                    Some(handler) -> handler(text)
-                    None -> io.print(text)
+                    Some(handler) -> handler(text_delta)
+                    None -> io.print(text_delta)
                   }
-                  text
                 }
-                Error(_) -> ""
+                False -> Nil
               }
-              
-              let tcs = decode_delta_tool_calls(json_str)
-              let new_tcs = list.fold(tcs, acc.tool_calls, fn(tc_dict, tc_tuple) {
-                let #(index, ptc) = tc_tuple
-                case dict.get(tc_dict, index) {
-                  Ok(existing) -> {
-                    let new_id = case ptc.id {
-                      "" -> existing.id
-                      id -> id
-                    }
-                    let new_name = case ptc.name {
-                      "" -> existing.name
-                      name -> name
-                    }
-                    let new_args = existing.arguments_acc <> ptc.arguments_acc
-                    dict.insert(tc_dict, index, PartialToolCall(new_id, new_name, new_args))
-                  }
-                  Error(_) -> {
-                    dict.insert(tc_dict, index, ptc)
+
+              case reasoning_delta != "" {
+                True -> {
+                  case on_delta {
+                    // We don't send reasoning to handler to avoid confusing TUI, but we print it locally
+                    Some(_) -> Nil
+                    // Print reasoning in dim grey
+                    None ->
+                      io.print(
+                        "\u{001b}[90m" <> reasoning_delta <> "\u{001b}[0m",
+                      )
                   }
                 }
-              })
+                False -> Nil
+              }
+
+              let tcs = decode_delta_tool_calls(json_str)
+              let new_tcs =
+                list.fold(tcs, acc.tool_calls, fn(tc_dict, tc_tuple) {
+                  let #(index, ptc) = tc_tuple
+                  case dict.get(tc_dict, index) {
+                    Ok(existing) -> {
+                      let new_id = case ptc.id {
+                        "" -> existing.id
+                        id -> id
+                      }
+                      let new_name = case ptc.name {
+                        "" -> existing.name
+                        name -> name
+                      }
+                      let new_args = existing.arguments_acc <> ptc.arguments_acc
+                      dict.insert(
+                        tc_dict,
+                        index,
+                        PartialToolCall(new_id, new_name, new_args),
+                      )
+                    }
+                    Error(_) -> {
+                      dict.insert(tc_dict, index, ptc)
+                    }
+                  }
+                })
               let tc_seen_now = tcs != []
               let is_tool_call = decode_openai_delta_tool_calls(json_str)
-              
-              let updated_acc = StreamAccumulator(
-                text: acc.text <> text_delta,
-                tool_calls: new_tcs,
-              )
+
+              let updated_acc =
+                StreamAccumulator(
+                  text: acc.text <> text_delta,
+                  reasoning: acc.reasoning <> reasoning_delta,
+                  tool_calls: new_tcs,
+                )
               #(updated_acc, tc_seen || is_tool_call || tc_seen_now)
             }
             None -> #(acc, tc_seen)
           }
         })
-      stream_and_collect(req_id, next_parser, new_acc, on_delta)
+      stream_and_collect(req_id, next_parser, new_acc, on_delta, None)
       |> fn(result) {
         let #(final_acc, final_tc) = result
         #(final_acc, final_tc || saw_tool_call)
@@ -537,6 +803,10 @@ pub fn stream_and_collect(
     }
 
     StreamEnd -> {
+      case spinner {
+        Some(s) -> kawaii_spinner.stop(s)
+        None -> Nil
+      }
       case on_delta {
         None -> io.println("")
         Some(_) -> Nil
@@ -544,23 +814,37 @@ pub fn stream_and_collect(
       #(accumulated, False)
     }
 
-    StreamError(reason) -> {
-      let msg = "\n[Stream Error: " <> reason <> "]"
-      case on_delta {
-        None -> io.println(msg)
-        Some(_) -> Nil
+    StreamError(err) -> {
+      case spinner {
+        Some(s) -> kawaii_spinner.stop(s)
+        None -> Nil
       }
+      io.println("\n[Stream Error: " <> err <> "]")
       // Return error marker so agent_turn_loop knows it's an API failure
-      #(StreamAccumulator(text: "__STREAM_ERROR__:" <> reason, tool_calls: dict.new()), False)
+      #(
+        StreamAccumulator(
+          text: "__STREAM_ERROR__:" <> err,
+          reasoning: "",
+          tool_calls: dict.new(),
+        ),
+        False,
+      )
     }
 
     StreamTimeout -> {
-      let msg = "\n[Stream Timeout — model may be down or key exhausted]"
-      case on_delta {
-        None -> io.println(msg)
-        Some(_) -> Nil
+      case spinner {
+        Some(s) -> kawaii_spinner.stop(s)
+        None -> Nil
       }
-      #(StreamAccumulator(text: "__STREAM_ERROR__:timeout", tool_calls: dict.new()), False)
+      io.println("\n[Stream Timeout] — model may be down or key exhausted")
+      #(
+        StreamAccumulator(
+          text: "__STREAM_ERROR__:timeout",
+          reasoning: "",
+          tool_calls: dict.new(),
+        ),
+        False,
+      )
     }
   }
 }
@@ -576,12 +860,27 @@ pub fn build_request_body(
   history: List(String),
   tools: String,
   stream: Bool,
+  memory_ctx: String,
 ) -> String {
+  // Inject dynamic context
+  let dynamic_context =
+    context_engine.execute_all(context_engine.default_plugins())
+  let final_system_prompt = case dynamic_context {
+    "" -> system_prompt
+    ctx -> system_prompt <> "\n\n" <> ctx
+  }
+
+  let final_system_prompt = case memory_ctx {
+    "" -> final_system_prompt
+    ctx -> final_system_prompt <> "\n\n<memory>\n" <> ctx <> "\n</memory>"
+  }
+
   let system_msg =
     json.object([
       #("role", json.string("system")),
-      #("content", json.string(system_prompt)),
-    ]) |> json.to_string
+      #("content", json.string(final_system_prompt)),
+    ])
+    |> json.to_string
 
   // Sliding window: trim to newest 60 messages when history exceeds 80
   let window_size = 60
@@ -615,18 +914,84 @@ pub fn build_request_body(
 
 // ─── Message History Builders ──────────────────────────────────────────────────
 
+pub fn parse_markdown_images(text: String) -> List(json.Json) {
+  case string.split(text, "![") {
+    [first, ..rest] -> {
+      let first_json = case first == "" {
+        True -> []
+        False -> [
+          json.object([
+            #("type", json.string("text")),
+            #("text", json.string(first)),
+          ]),
+        ]
+      }
+
+      let rest_json =
+        list.flat_map(rest, fn(chunk) {
+          case string.split_once(chunk, "](") {
+            Ok(#(_alt, after_bracket)) -> {
+              case string.split_once(after_bracket, ")") {
+                Ok(#(url, after_paren)) -> {
+                  let img =
+                    json.object([
+                      #("type", json.string("image_url")),
+                      #("image_url", json.object([#("url", json.string(url))])),
+                    ])
+                  case after_paren == "" {
+                    True -> [img]
+                    False -> [
+                      img,
+                      json.object([
+                        #("type", json.string("text")),
+                        #("text", json.string(after_paren)),
+                      ]),
+                    ]
+                  }
+                }
+                Error(_) -> [
+                  json.object([
+                    #("type", json.string("text")),
+                    #("text", json.string("![" <> chunk)),
+                  ]),
+                ]
+              }
+            }
+            Error(_) -> [
+              json.object([
+                #("type", json.string("text")),
+                #("text", json.string("![" <> chunk)),
+              ]),
+            ]
+          }
+        })
+
+      list.append(first_json, rest_json)
+    }
+    [] -> []
+  }
+}
+
 pub fn user_message(content: String) -> String {
+  let has_image = string.contains(content, "![")
+  let content_json = case has_image {
+    True -> json.array(parse_markdown_images(content), of: fn(x) { x })
+    False -> json.string(content)
+  }
+
   json.object([
     #("role", json.string("user")),
-    #("content", json.string(content)),
-  ]) |> json.to_string
+    #("content", content_json),
+  ])
+  |> json.to_string
 }
 
 pub fn assistant_message(content: String) -> String {
   json.object([
     #("role", json.string("assistant")),
     #("content", json.string(content)),
-  ]) |> json.to_string
+  ])
+  |> json.to_string
 }
 
 pub fn assistant_tool_calls_message(calls: List(ToolCall)) -> String {
@@ -648,7 +1013,8 @@ pub fn assistant_tool_calls_message(calls: List(ToolCall)) -> String {
     #("role", json.string("assistant")),
     #("content", json.null()),
     #("tool_calls", json.array(tool_calls_json, of: fn(x) { x })),
-  ]) |> json.to_string
+  ])
+  |> json.to_string
 }
 
 pub fn tool_result_message(tool_call_id: String, result: String) -> String {
@@ -656,7 +1022,8 @@ pub fn tool_result_message(tool_call_id: String, result: String) -> String {
     #("role", json.string("tool")),
     #("tool_call_id", json.string(tool_call_id)),
     #("content", json.string(result)),
-  ]) |> json.to_string
+  ])
+  |> json.to_string
 }
 
 // ─── Core Agent Loop ───────────────────────────────────────────────────────────
@@ -686,7 +1053,11 @@ pub fn agent_turn_loop(
         }
         True -> Nil
       }
-      Error("Budget exhausted after " <> int.to_string(api_call_count) <> " iterations")
+      Error(
+        "Budget exhausted after "
+        <> int.to_string(api_call_count)
+        <> " iterations",
+      )
     }
 
     True -> {
@@ -712,13 +1083,27 @@ pub fn agent_turn_loop(
         Some(router) -> model_router.current_model(router)
         None -> state.model
       }
-      let body = build_request_body(
-        active_model2,
-        state.system_prompt,
-        list.reverse(state.history),
-        all_tool_schemas(state.mcp_client),
-        True,
-      )
+
+      let spinner = case quiet {
+        False -> Some(kawaii_spinner.start("Thinking... "))
+        True -> None
+      }
+
+      let honcho = memory_plugin.honcho_adapter(state.api_key, "user-default")
+      let mem_ctx = case honcho.retrieve_context(state.session_id) {
+        Ok(ctx) -> ctx
+        Error(_) -> ""
+      }
+
+      let body =
+        build_request_body(
+          active_model2,
+          state.system_prompt,
+          list.reverse(state.history),
+          all_tool_schemas(state.mcp_client),
+          True,
+          mem_ctx,
+        )
 
       let headers = [
         #("Authorization", "Bearer " <> state.api_key),
@@ -726,13 +1111,19 @@ pub fn agent_turn_loop(
         #("Accept", "text/event-stream"),
       ]
 
-      case hermes_client.stream_post_request(
-        state.base_url <> "/chat/completions",
-        headers,
-        "application/json",
-        body,
-      ) {
+      case
+        hermes_client.stream_post_request(
+          state.base_url <> "/chat/completions",
+          headers,
+          "application/json",
+          body,
+        )
+      {
         Error(err) -> {
+          case spinner {
+            Some(s) -> kawaii_spinner.stop(s)
+            None -> Nil
+          }
           case quiet {
             False -> io.println("\n[API Error: " <> err <> "]")
             True -> Nil
@@ -746,22 +1137,39 @@ pub fn agent_turn_loop(
             Some(handler) -> Some(fn(delta) { handler(MessageDelta(delta)) })
             None -> None
           }
-          let initial_acc = StreamAccumulator("", dict.new())
+          let initial_acc = StreamAccumulator("", "", dict.new())
           let #(final_acc, _saw_tool_calls_in_stream) =
-            stream_and_collect(req_id, hermes_client.new_line_parser(), initial_acc, on_delta)
+            stream_and_collect(
+              req_id,
+              hermes_client.new_line_parser(),
+              initial_acc,
+              on_delta,
+              spinner,
+            )
 
           let response_trimmed = string.trim(final_acc.text)
           let agent_resp = case dict.size(final_acc.tool_calls) > 0 {
             True -> {
-              let calls = dict.values(final_acc.tool_calls)
+              let calls =
+                dict.values(final_acc.tool_calls)
                 |> list.map(fn(ptc) {
-                  ToolCall(id: ptc.id, name: ptc.name, arguments: ptc.arguments_acc)
+                  ToolCall(
+                    id: ptc.id,
+                    name: ptc.name,
+                    arguments: ptc.arguments_acc,
+                  )
                 })
               ToolCalls(calls)
             }
             False -> {
               case response_trimmed {
-                "" -> fetch_fallback_non_streaming(state, body)
+                "" -> {
+                  let _ = case spinner {
+                    Some(s) -> kawaii_spinner.stop(s)
+                    None -> Nil
+                  }
+                  fetch_fallback_non_streaming(state, body)
+                }
                 text -> {
                   case string.starts_with(text, "__STREAM_ERROR__:") {
                     True -> {
@@ -785,43 +1193,57 @@ pub fn agent_turn_loop(
                   })
                 }
                 None -> {
-                  io.println("\n🔧 Executing " <> int.to_string(list.length(calls)) <> " tool call(s)...")
+                  io.println(
+                    "\n🔧 Executing "
+                    <> int.to_string(list.length(calls))
+                    <> " tool call(s)...",
+                  )
                 }
               }
 
               let calls_msg = assistant_tool_calls_message(calls)
-              let _ = state_actor.insert_message(
-                state.db_conn,
-                state.session_id,
-                "assistant",
-                "",
-                calls_msg,
-                int.to_float(system_time_ms()) /. 1000.0,
-              )
+              let _ =
+                state_actor.insert_message(
+                  state.db_conn,
+                  state.session_id,
+                  "assistant",
+                  "",
+                  calls_msg,
+                  int.to_float(system_time_ms()) /. 1000.0,
+                )
               // Append the assistant's tool_calls message to history
-              let history_with_assistant =
-                [calls_msg, ..state.history]
+              let history_with_assistant = [calls_msg, ..state.history]
 
               // Execute each tool and collect results
               let #(new_exec_env, new_history) =
-                list.fold(calls, #(state.exec_env, history_with_assistant), fn(acc, tc) {
-                  let #(current_env, current_history) = acc
-                  let #(next_env, result) = dispatch_tool(AgentState(..state, exec_env: current_env), tc, quiet)
-                  case state.on_event {
-                    Some(handler) -> handler(ToolComplete(tc.name, result))
-                    None -> Nil
-                  }
-                  let tool_msg = tool_result_message(tc.id, result)
-                let _ = state_actor.insert_message(
-                  state.db_conn,
-                  state.session_id,
-                  "tool",
-                  result,
-                  tool_msg,
-                  int.to_float(system_time_ms()) /. 1000.0,
+                list.fold(
+                  calls,
+                  #(state.exec_env, history_with_assistant),
+                  fn(acc, tc) {
+                    let #(current_env, current_history) = acc
+                    let #(next_env, result) =
+                      dispatch_tool(
+                        AgentState(..state, exec_env: current_env),
+                        tc,
+                        quiet,
+                      )
+                    case state.on_event {
+                      Some(handler) -> handler(ToolComplete(tc.name, result))
+                      None -> Nil
+                    }
+                    let tool_msg = tool_result_message(tc.id, result)
+                    let _ =
+                      state_actor.insert_message(
+                        state.db_conn,
+                        state.session_id,
+                        "tool",
+                        result,
+                        tool_msg,
+                        int.to_float(system_time_ms()) /. 1000.0,
+                      )
+                    #(next_env, [tool_msg, ..current_history])
+                  },
                 )
-                #(next_env, [tool_msg, ..current_history])
-                })
 
               // Recurse with updated state
               agent_turn_loop(
@@ -838,8 +1260,7 @@ pub fn agent_turn_loop(
             // ── Final text response path ─────────────────────────────────────
             FinalText(final_text) -> {
               // Record assistant response in DB
-              let timestamp =
-                int.to_float(system_time_ms()) /. 1000.0
+              let timestamp = int.to_float(system_time_ms()) /. 1000.0
               let asst_msg = assistant_message(final_text)
               let _ =
                 state_actor.insert_message(
@@ -856,8 +1277,7 @@ pub fn agent_turn_loop(
                 None -> Nil
               }
 
-              let new_history =
-                [assistant_message(final_text), ..state.history]
+              let new_history = [assistant_message(final_text), ..state.history]
 
               Ok(AgentState(..state, history: new_history))
             }
@@ -915,8 +1335,7 @@ pub fn agent_turn_loop(
 
             _ -> {
               let final_text = "[No response from model]"
-              let timestamp =
-                int.to_float(system_time_ms()) /. 1000.0
+              let timestamp = int.to_float(system_time_ms()) /. 1000.0
               let asst_msg = assistant_message(final_text)
               let _ =
                 state_actor.insert_message(
@@ -933,8 +1352,7 @@ pub fn agent_turn_loop(
                 None -> Nil
               }
 
-              let new_history =
-                [assistant_message(final_text), ..state.history]
+              let new_history = [assistant_message(final_text), ..state.history]
 
               Ok(AgentState(..state, history: new_history))
             }
@@ -952,25 +1370,35 @@ pub fn fetch_fallback_non_streaming(
   _streaming_body: String,
 ) -> AgentResponse {
   // Build non-streaming body
-  let body = build_request_body(
-    state.model,
-    state.system_prompt,
-    list.reverse(state.history),
-    all_tool_schemas(state.mcp_client),
-    False,
-  )
+  let honcho = memory_plugin.honcho_adapter(state.api_key, "user-default")
+  let mem_ctx = case honcho.retrieve_context(state.session_id) {
+    Ok(ctx) -> ctx
+    Error(_) -> ""
+  }
+
+  let body =
+    build_request_body(
+      state.model,
+      state.system_prompt,
+      list.reverse(state.history),
+      all_tool_schemas(state.mcp_client),
+      False,
+      mem_ctx,
+    )
 
   let headers = [
     #("Authorization", "Bearer " <> state.api_key),
     #("Content-Type", "application/json"),
   ]
 
-  case hermes_client.post_request_with_retry(
-    state.base_url <> "/chat/completions",
-    headers,
-    "application/json",
-    body,
-  ) {
+  case
+    hermes_client.post_request_with_retry(
+      state.base_url <> "/chat/completions",
+      headers,
+      "application/json",
+      body,
+    )
+  {
     Ok(response_json) -> parse_completion_response(response_json)
     Error(err) -> ErrorResponse(err)
   }
@@ -978,11 +1406,66 @@ pub fn fetch_fallback_non_streaming(
 
 // ─── Public Entry Point ────────────────────────────────────────────────────────
 
+pub fn compress_history(
+  history: List(String),
+  state: AgentState,
+) -> Result(String, String) {
+  let summary_model = "claude-3-haiku-20240307"
+  // Or state.model fallback
+  let prompt =
+    "Summarize the following conversation history concisely. Retain key facts, constraints, and instructions:\n\n"
+
+  let user_msg =
+    json.object([
+      #("role", json.string("user")),
+      #(
+        "content",
+        json.string(prompt <> string.join(list.reverse(history), "\n")),
+      ),
+    ])
+
+  let body =
+    json.object([
+      #("model", json.string(summary_model)),
+      #("messages", json.array([user_msg], of: fn(x) { x })),
+      #("stream", json.bool(False)),
+    ])
+    |> json.to_string
+
+  let headers = [
+    #("Authorization", "Bearer " <> state.api_key),
+    #("Content-Type", "application/json"),
+  ]
+
+  case
+    hermes_client.post_request(
+      state.base_url,
+      headers,
+      "application/json",
+      body,
+    )
+  {
+    Ok(json_resp) -> {
+      let resp = parse_completion_response(json_resp)
+      case resp {
+        FinalText(text) -> Ok(text)
+        _ -> Error("Failed to parse compression response")
+      }
+    }
+    Error(err_str) -> Error("Compression API request failed: " <> err_str)
+  }
+}
+
 /// Run a multi-turn conversation with the LLM, handling tool calls recursively.
 pub fn run_conversation(
   state: AgentState,
   user_prompt: String,
 ) -> Result(AgentState, String) {
+  hermes_logger.info(
+    state.session_id,
+    "Starting run_conversation with user prompt length: "
+      <> int.to_string(string.length(user_prompt)),
+  )
   let timestamp = int.to_float(system_time_ms()) /. 1000.0
 
   // Persist user message
@@ -999,7 +1482,31 @@ pub fn run_conversation(
 
   // Append user message to history
   let new_history = [user_message(user_prompt), ..state.history]
-  let new_state = AgentState(..state, history: new_history)
+
+  // Compression trigger
+  let max_history = 80
+  let compressed_history = case list.length(new_history) > max_history {
+    True -> {
+      // Keep newest 40, compress the rest
+      let to_keep = list.take(new_history, 40)
+      let to_compress = list.drop(new_history, 40)
+      case compress_history(to_compress, state) {
+        Ok(summary) -> {
+          let summary_msg =
+            user_message("[Summary of older conversation]:\n" <> summary)
+          list.append(to_keep, [summary_msg])
+        }
+        Error(err) -> {
+          io.println("Compression error: " <> err)
+          to_keep
+          // Fallback to sliding window
+        }
+      }
+    }
+    False -> new_history
+  }
+
+  let new_state = AgentState(..state, history: compressed_history)
 
   agent_turn_loop(new_state, 0)
 }
@@ -1032,9 +1539,8 @@ pub fn new_agent_state(
         system_prompt: system_prompt,
         on_event: None,
         mcp_client: mcp_client,
-        router: None,
+        router: Some(model_router.from_env()),
       ))
-    Error(_) ->
-      Error("Failed to start iteration budget actor")
+    Error(_) -> Error("Failed to start iteration budget actor")
   }
 }

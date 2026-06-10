@@ -4,7 +4,10 @@ import gleeunit/should
 import qcheck
 
 // A pure version of the buffer logic used in mcp_client
-fn pure_process_buffer(buffer: String, acc: List(String)) -> #(String, List(String)) {
+fn pure_process_buffer(
+  buffer: String,
+  acc: List(String),
+) -> #(String, List(String)) {
   case string.split_once(buffer, "\n") {
     Ok(#(line, rest)) -> {
       pure_process_buffer(rest, list.append(acc, [line]))
@@ -14,7 +17,11 @@ fn pure_process_buffer(buffer: String, acc: List(String)) -> #(String, List(Stri
 }
 
 // Helper to simulate receiving fragments over a stream
-fn simulate_stream(fragments: List(String), buffer: String, acc: List(String)) -> #(String, List(String)) {
+fn simulate_stream(
+  fragments: List(String),
+  buffer: String,
+  acc: List(String),
+) -> #(String, List(String)) {
   case fragments {
     [] -> #(buffer, acc)
     [frag, ..rest] -> {
@@ -27,13 +34,11 @@ fn simulate_stream(fragments: List(String), buffer: String, acc: List(String)) -
 pub fn buffer_reconstitution_property_test() {
   // Generate random lists of "messages" that are newline terminated
   let _message_generator = qcheck.string()
-  
+
   // Property: For any list of fragments, if we concatenate them and process, 
   // it should yield the exact same extracted lines as processing them chunk by chunk,
   // demonstrating that fragmentation boundaries do not violate data integrity (immutability of stream).
-  use fragments <- qcheck.given(
-    qcheck.list_from(qcheck.string())
-  )
+  use fragments <- qcheck.given(qcheck.list_from(qcheck.string()))
 
   let full_string = string.concat(fragments)
   let #(final_buf1, lines1) = pure_process_buffer(full_string, [])

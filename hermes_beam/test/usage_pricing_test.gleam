@@ -1,11 +1,10 @@
-import gleam/option.{Some, None}
-import gleam/json
 import gleam/dynamic/decode
+import gleam/json
+import gleam/option.{None, Some}
 import usage_pricing.{
-  CanonicalUsage,
-  resolve_billing_route, normalize_anthropic_model_name,
-  normalize_usage, estimate_usage_cost,
-  format_duration_compact, format_token_count_compact
+  CanonicalUsage, estimate_usage_cost, format_duration_compact,
+  format_token_count_compact, normalize_anthropic_model_name, normalize_usage,
+  resolve_billing_route,
 }
 
 pub fn resolve_billing_route_test() {
@@ -15,12 +14,18 @@ pub fn resolve_billing_route_test() {
   let assert "subscription_included" = route.billing_mode
 
   // 2. OpenRouter
-  let route = resolve_billing_route("meta-llama/llama-3", Some("openrouter"), None)
+  let route =
+    resolve_billing_route("meta-llama/llama-3", Some("openrouter"), None)
   let assert "openrouter" = route.provider
   let assert "official_models_api" = route.billing_mode
 
   // 3. OpenRouter via URL match
-  let route = resolve_billing_route("meta-llama/llama-3", None, Some("https://openrouter.ai/api/v1"))
+  let route =
+    resolve_billing_route(
+      "meta-llama/llama-3",
+      None,
+      Some("https://openrouter.ai/api/v1"),
+    )
   let assert "openrouter" = route.provider
   let assert "official_models_api" = route.billing_mode
 
@@ -36,20 +41,29 @@ pub fn resolve_billing_route_test() {
   let assert "official_docs_snapshot" = route.billing_mode
 
   // 6. Custom
-  let route = resolve_billing_route("my-local-model", Some("local"), Some("http://localhost:8000"))
+  let route =
+    resolve_billing_route(
+      "my-local-model",
+      Some("local"),
+      Some("http://localhost:8000"),
+    )
   let assert "local" = route.provider
   let assert "unknown" = route.billing_mode
 }
 
 pub fn normalize_anthropic_model_name_test() {
-  let assert "claude-opus-4-7" = normalize_anthropic_model_name("anthropic/claude-opus-4.7")
-  let assert "claude-sonnet-4-6" = normalize_anthropic_model_name("claude-sonnet-4.6")
-  let assert "claude-3-5-sonnet" = normalize_anthropic_model_name("claude-3.5-sonnet")
+  let assert "claude-opus-4-7" =
+    normalize_anthropic_model_name("anthropic/claude-opus-4.7")
+  let assert "claude-sonnet-4-6" =
+    normalize_anthropic_model_name("claude-sonnet-4.6")
+  let assert "claude-3-5-sonnet" =
+    normalize_anthropic_model_name("claude-3.5-sonnet")
 }
 
 pub fn normalize_usage_test() {
   // 1. Anthropic style
-  let raw_json = "
+  let raw_json =
+    "
   {
     \"input_tokens\": 100,
     \"output_tokens\": 50,
@@ -65,7 +79,8 @@ pub fn normalize_usage_test() {
   let assert 10 = usage.cache_write_tokens
 
   // 2. Codex style
-  let raw_json = "
+  let raw_json =
+    "
   {
     \"input_tokens\": 200,
     \"output_tokens\": 80,
@@ -84,7 +99,8 @@ pub fn normalize_usage_test() {
   let assert 30 = usage.cache_write_tokens
 
   // 3. OpenAI style
-  let raw_json = "
+  let raw_json =
+    "
   {
     \"prompt_tokens\": 300,
     \"completion_tokens\": 150,
@@ -110,15 +126,17 @@ pub fn normalize_usage_test() {
 pub fn estimate_usage_cost_test() {
   // 1. Claude Opus 4.8 snapshot
   // input_cost = $5.00/M, output_cost = $25.00/M, cache_read = $0.50/M, cache_write = $6.25/M
-  let usage = CanonicalUsage(
-    input_tokens: 1_000_000,
-    output_tokens: 1_000_000,
-    cache_read_tokens: 1_000_000,
-    cache_write_tokens: 1_000_000,
-    reasoning_tokens: 0,
-    request_count: 1,
-  )
-  let cost = estimate_usage_cost("claude-opus-4-8", usage, Some("anthropic"), None)
+  let usage =
+    CanonicalUsage(
+      input_tokens: 1_000_000,
+      output_tokens: 1_000_000,
+      cache_read_tokens: 1_000_000,
+      cache_write_tokens: 1_000_000,
+      reasoning_tokens: 0,
+      request_count: 1,
+    )
+  let cost =
+    estimate_usage_cost("claude-opus-4-8", usage, Some("anthropic"), None)
   // expected cost = 5.00 + 25.00 + 0.50 + 6.25 = 36.75
   let assert Some(amount) = cost.amount_usd
   let assert True = amount >. 36.74 && amount <. 36.76
@@ -130,7 +148,8 @@ pub fn estimate_usage_cost_test() {
   let assert "included" = cost.status
 
   // 3. Unknown model
-  let cost = estimate_usage_cost("some-future-model", usage, Some("openai"), None)
+  let cost =
+    estimate_usage_cost("some-future-model", usage, Some("openai"), None)
   let assert None = cost.amount_usd
   let assert "unknown" = cost.status
 }
@@ -140,7 +159,7 @@ pub fn format_duration_compact_test() {
   let assert "2m" = format_duration_compact(120.0)
   let assert "1h" = format_duration_compact(3600.0)
   let assert "1h 1m" = format_duration_compact(3660.0)
-  let assert "1.0d" = format_duration_compact(90000.0)
+  let assert "1.0d" = format_duration_compact(90_000.0)
 }
 
 pub fn format_token_count_compact_test() {

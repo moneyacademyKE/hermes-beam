@@ -1,28 +1,36 @@
 import hermes_time
 
 pub fn parse_timezone_from_yaml_test() {
-  let content = "
+  let content =
+    "
 # some comment
 timezone: Asia/Kolkata # target
   "
   let assert Ok("Asia/Kolkata") = hermes_time.parse_timezone_from_yaml(content)
 
-  let content_quoted = "
+  let content_quoted =
+    "
 timezone: \"America/New_York\"
   "
-  let assert Ok("America/New_York") = hermes_time.parse_timezone_from_yaml(content_quoted)
+  let assert Ok("America/New_York") =
+    hermes_time.parse_timezone_from_yaml(content_quoted)
 
-  let content_single_quoted = "
+  let content_single_quoted =
+    "
 timezone: 'Europe/London'
   "
-  let assert Ok("Europe/London") = hermes_time.parse_timezone_from_yaml(content_single_quoted)
+  let assert Ok("Europe/London") =
+    hermes_time.parse_timezone_from_yaml(content_single_quoted)
 
-  let content_commented = "
+  let content_commented =
+    "
 # timezone: UTC
   "
-  let assert Error(Nil) = hermes_time.parse_timezone_from_yaml(content_commented)
+  let assert Error(Nil) =
+    hermes_time.parse_timezone_from_yaml(content_commented)
 
-  let content_empty = "
+  let content_empty =
+    "
 timezone: 
   "
   let assert Error(Nil) = hermes_time.parse_timezone_from_yaml(content_empty)

@@ -1,7 +1,7 @@
-import gleeunit/should
-import gleam/option.{Some, None}
 import gleam/dynamic
+import gleam/option.{None, Some}
 import gleam/string
+import gleeunit/should
 import simplifile
 import utils
 
@@ -80,15 +80,15 @@ pub fn atomic_json_write_test() {
   let filepath = temp_dir <> "/test.json"
 
   // Create a structured dynamic object
-  let test_data = utils.YamlMap([
-    #("key", utils.YamlString("value")),
-    #("nested", utils.YamlMap([
-      #("number", utils.YamlInt(123))
-    ]))
-  ])
+  let test_data =
+    utils.YamlMap([
+      #("key", utils.YamlString("value")),
+      #("nested", utils.YamlMap([#("number", utils.YamlInt(123))])),
+    ])
 
   // Write it
-  let write_result = utils.atomic_json_write(filepath, test_data, Some(420)) // 0o644 is 420 in decimal
+  let write_result = utils.atomic_json_write(filepath, test_data, Some(420))
+  // 0o644 is 420 in decimal
   write_result |> should.equal(Ok(Nil))
 
   // Read it and verify
@@ -106,12 +106,11 @@ pub fn atomic_yaml_write_test() {
   let filepath = temp_dir <> "/test.yaml"
 
   // Create a structured object
-  let test_data = utils.YamlMap([
-    #("key", utils.YamlString("value")),
-    #("nested", utils.YamlMap([
-      #("number", utils.YamlInt(123))
-    ]))
-  ])
+  let test_data =
+    utils.YamlMap([
+      #("key", utils.YamlString("value")),
+      #("nested", utils.YamlMap([#("number", utils.YamlInt(123))])),
+    ])
 
   // Write it
   let write_result = utils.atomic_yaml_write(filepath, test_data, Some(420))

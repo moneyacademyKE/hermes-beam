@@ -1,6 +1,8 @@
-import gleam/string
 import gleam/list
-import model_router.{type FailureKind, AuthFailure, InfraError, LogicError, RateLimit, Unknown}
+import gleam/string
+import model_router.{
+  type FailureKind, AuthFailure, InfraError, LogicError, RateLimit, Unknown,
+}
 
 // ─── Error Classifier ─────────────────────────────────────────────────────────
 //
@@ -21,11 +23,44 @@ pub type ClassifiedError {
 /// Input is typically the raw string from StreamError or HTTP response body.
 pub fn classify(raw: String) -> ClassifiedError {
   let lower = string.lowercase(raw)
-  
-  let is_auth = list.any(["401", "403", "invalid api key", "unauthorized", "authentication", "forbidden"], string.contains(lower, _))
-  let is_rate = list.any(["429", "402", "rate limit", "quota", "too many requests"], string.contains(lower, _))
-  let is_infra = list.any(["502", "503", "504", "timeout", "connection refused", "econnrefused", "stream failed", "provider returned error", "model is unavailable"], string.contains(lower, _))
-  let is_logic = list.any(["400", "invalid model", "not a valid model", "not found"], string.contains(lower, _))
+
+  let is_auth =
+    list.any(
+      [
+        "401",
+        "403",
+        "invalid api key",
+        "unauthorized",
+        "authentication",
+        "forbidden",
+      ],
+      string.contains(lower, _),
+    )
+  let is_rate =
+    list.any(
+      ["429", "402", "rate limit", "quota", "too many requests"],
+      string.contains(lower, _),
+    )
+  let is_infra =
+    list.any(
+      [
+        "502",
+        "503",
+        "504",
+        "timeout",
+        "connection refused",
+        "econnrefused",
+        "stream failed",
+        "provider returned error",
+        "model is unavailable",
+      ],
+      string.contains(lower, _),
+    )
+  let is_logic =
+    list.any(
+      ["400", "invalid model", "not a valid model", "not found"],
+      string.contains(lower, _),
+    )
 
   case is_auth, is_rate, is_infra, is_logic {
     True, _, _, _ -> make(AuthFailure, raw)
@@ -37,7 +72,11 @@ pub fn classify(raw: String) -> ClassifiedError {
 }
 
 fn make(kind: FailureKind, raw: String) -> ClassifiedError {
-  ClassifiedError(kind: kind, reason: raw, emoji: model_router.failure_emoji(kind))
+  ClassifiedError(
+    kind: kind,
+    reason: raw,
+    emoji: model_router.failure_emoji(kind),
+  )
 }
 
 /// Short label for display.

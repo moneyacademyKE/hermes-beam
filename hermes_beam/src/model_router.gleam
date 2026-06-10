@@ -1,7 +1,7 @@
+import constants
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
-import constants
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -113,20 +113,24 @@ pub fn mark_failure(
       case next_index >= total {
         True -> Error("All models exhausted after " <> model)
         False ->
-          Ok(ModelRouter(
-            ..router,
-            current_index: next_index,
-            attempt_on_current: 0,
-            failures: updated_failures,
-          ))
+          Ok(
+            ModelRouter(
+              ..router,
+              current_index: next_index,
+              attempt_on_current: 0,
+              failures: updated_failures,
+            ),
+          )
       }
     }
     False ->
-      Ok(ModelRouter(
-        ..router,
-        attempt_on_current: router.attempt_on_current + 1,
-        failures: updated_failures,
-      ))
+      Ok(
+        ModelRouter(
+          ..router,
+          attempt_on_current: router.attempt_on_current + 1,
+          failures: updated_failures,
+        ),
+      )
   }
 }
 
@@ -138,7 +142,12 @@ pub fn status_line(router: ModelRouter) -> String {
   let remaining = remaining_candidates(router)
   let attempt_info = case router.attempt_on_current {
     0 -> ""
-    n -> " (attempt " <> int_to_str(n + 1) <> "/" <> int_to_str(router.max_attempts_per_model) <> ")"
+    n ->
+      " (attempt "
+      <> int_to_str(n + 1)
+      <> "/"
+      <> int_to_str(router.max_attempts_per_model)
+      <> ")"
   }
   let fallback_info = case remaining > 1 {
     True -> " → " <> int_to_str(remaining - 1) <> " fallback(s)"

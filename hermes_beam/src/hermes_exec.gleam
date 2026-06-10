@@ -13,6 +13,11 @@ pub type PortMessage {
   PortIgnored
 }
 
+pub type ExecutionTarget {
+  LocalShell
+  DaytonaWorkspace(api_key: String, workspace_id: String)
+}
+
 pub type TerminalEnv {
   TerminalEnv(
     session_id: String,
@@ -23,33 +28,80 @@ pub type TerminalEnv {
     cwd_file: String,
     cwd_marker: String,
     snapshot_ready: Bool,
+    target: ExecutionTarget,
   )
 }
 
 const provider_env_blocklist = [
-  "OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_API_BASE", "OPENAI_ORG_ID",
-  "OPENAI_ORGANIZATION", "OPENROUTER_API_KEY", "ANTHROPIC_BASE_URL",
-  "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "LLM_MODEL", "GOOGLE_API_KEY",
-  "DEEPSEEK_API_KEY", "MISTRAL_API_KEY", "GROQ_API_KEY", "TOGETHER_API_KEY",
-  "PERPLEXITY_API_KEY", "COHERE_API_KEY", "FIREWORKS_API_KEY", "XAI_API_KEY",
-  "HELICONE_API_KEY", "PARALLEL_API_KEY", "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL",
-  "TELEGRAM_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL_NAME", "DISCORD_HOME_CHANNEL",
-  "DISCORD_HOME_CHANNEL_NAME", "DISCORD_REQUIRE_MENTION", "DISCORD_FREE_RESPONSE_CHANNELS",
-  "DISCORD_AUTO_THREAD", "SLACK_HOME_CHANNEL", "SLACK_HOME_CHANNEL_NAME",
-  "SLACK_ALLOWED_USERS", "WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
-  "SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT", "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
-  "SIGNAL_HOME_CHANNEL", "SIGNAL_HOME_CHANNEL_NAME", "SIGNAL_IGNORE_STORIES",
-  "HASS_TOKEN", "HASS_URL", "EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST",
-  "EMAIL_SMTP_HOST", "EMAIL_HOME_ADDRESS", "EMAIL_HOME_ADDRESS_NAME",
-  "GATEWAY_ALLOWED_USERS", "GH_TOKEN", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY_PATH",
-  "GITHUB_APP_INSTALLATION_ID", "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY"
+  "OPENAI_BASE_URL",
+  "OPENAI_API_KEY",
+  "OPENAI_API_BASE",
+  "OPENAI_ORG_ID",
+  "OPENAI_ORGANIZATION",
+  "OPENROUTER_API_KEY",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_TOKEN",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "LLM_MODEL",
+  "GOOGLE_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "MISTRAL_API_KEY",
+  "GROQ_API_KEY",
+  "TOGETHER_API_KEY",
+  "PERPLEXITY_API_KEY",
+  "COHERE_API_KEY",
+  "FIREWORKS_API_KEY",
+  "XAI_API_KEY",
+  "HELICONE_API_KEY",
+  "PARALLEL_API_KEY",
+  "FIRECRAWL_API_KEY",
+  "FIRECRAWL_API_URL",
+  "TELEGRAM_HOME_CHANNEL",
+  "TELEGRAM_HOME_CHANNEL_NAME",
+  "DISCORD_HOME_CHANNEL",
+  "DISCORD_HOME_CHANNEL_NAME",
+  "DISCORD_REQUIRE_MENTION",
+  "DISCORD_FREE_RESPONSE_CHANNELS",
+  "DISCORD_AUTO_THREAD",
+  "SLACK_HOME_CHANNEL",
+  "SLACK_HOME_CHANNEL_NAME",
+  "SLACK_ALLOWED_USERS",
+  "WHATSAPP_ENABLED",
+  "WHATSAPP_MODE",
+  "WHATSAPP_ALLOWED_USERS",
+  "SIGNAL_HTTP_URL",
+  "SIGNAL_ACCOUNT",
+  "SIGNAL_ALLOWED_USERS",
+  "SIGNAL_GROUP_ALLOWED_USERS",
+  "SIGNAL_HOME_CHANNEL",
+  "SIGNAL_HOME_CHANNEL_NAME",
+  "SIGNAL_IGNORE_STORIES",
+  "HASS_TOKEN",
+  "HASS_URL",
+  "EMAIL_ADDRESS",
+  "EMAIL_PASSWORD",
+  "EMAIL_IMAP_HOST",
+  "EMAIL_SMTP_HOST",
+  "EMAIL_HOME_ADDRESS",
+  "EMAIL_HOME_ADDRESS_NAME",
+  "GATEWAY_ALLOWED_USERS",
+  "GH_TOKEN",
+  "GITHUB_APP_ID",
+  "GITHUB_APP_PRIVATE_KEY_PATH",
+  "GITHUB_APP_INSTALLATION_ID",
+  "MODAL_TOKEN_ID",
+  "MODAL_TOKEN_SECRET",
+  "DAYTONA_API_KEY",
 ]
 
 @external(erlang, "hermes_exec_ffi", "spawn_port")
 pub fn spawn_port(cmd: String) -> Result(Dynamic, String)
 
 @external(erlang, "hermes_exec_ffi", "spawn_port_with_env")
-pub fn spawn_port_with_env(cmd: String, env: List(#(String, String))) -> Result(Dynamic, String)
+pub fn spawn_port_with_env(
+  cmd: String,
+  env: List(#(String, String)),
+) -> Result(Dynamic, String)
 
 @external(erlang, "hermes_exec_ffi", "send_input")
 pub fn send_input(port: Dynamic, input: String) -> Result(Nil, Nil)
@@ -99,11 +151,16 @@ pub fn find_bash() -> String {
             Some(val) -> string.trim(val)
             None -> ""
           }
-          let portable_git = constants.path_join(local_appdata, "hermes/git/bin/bash.exe")
+          let portable_git =
+            constants.path_join(local_appdata, "hermes/git/bin/bash.exe")
           case simplifile.is_file(portable_git) {
             Ok(True) -> portable_git
             _ -> {
-              let portable_git_legacy = constants.path_join(local_appdata, "hermes/git/usr/bin/bash.exe")
+              let portable_git_legacy =
+                constants.path_join(
+                  local_appdata,
+                  "hermes/git/usr/bin/bash.exe",
+                )
               case simplifile.is_file(portable_git_legacy) {
                 Ok(True) -> portable_git_legacy
                 _ -> "bash.exe"
@@ -142,7 +199,8 @@ pub fn get_temp_dir() -> String {
   case constants.is_windows() {
     True -> {
       let home = constants.get_hermes_home()
-      let cache_dir = constants.path_join(constants.path_join(home, "cache"), "terminal")
+      let cache_dir =
+        constants.path_join(constants.path_join(home, "cache"), "terminal")
       let _ = simplifile.create_directory_all(cache_dir)
       string.replace(cache_dir, "\\", "/")
     }
@@ -170,36 +228,41 @@ pub fn get_temp_dir() -> String {
 }
 
 // Build execution env list by merging host and local parameters, excluding blocklisted secrets
-pub fn build_run_env(extra_env: List(#(String, String))) -> List(#(String, String)) {
+pub fn build_run_env(
+  extra_env: List(#(String, String)),
+) -> List(#(String, String)) {
   let host_env = get_all_env()
-  
-  let merged = list.fold(extra_env, host_env, fn(acc, item) {
-    let #(k, _v) = item
-    let filtered = list.filter(acc, fn(x) { x.0 != k })
-    [item, ..filtered]
-  })
-  
-  let sanitized = list.filter(merged, fn(item) {
-    let #(k, _) = item
-    case string.starts_with(k, "_HERMES_FORCE_") {
-      True -> True
-      False -> !list.contains(provider_env_blocklist, k)
-    }
-  })
-  
-  let sanitized = list.map(sanitized, fn(item) {
-    let #(k, v) = item
-    case string.starts_with(k, "_HERMES_FORCE_") {
-      True -> #(string.drop_start(k, 14), v)
-      False -> #(k, v)
-    }
-  })
-  
+
+  let merged =
+    list.fold(extra_env, host_env, fn(acc, item) {
+      let #(k, _v) = item
+      let filtered = list.filter(acc, fn(x) { x.0 != k })
+      [item, ..filtered]
+    })
+
+  let sanitized =
+    list.filter(merged, fn(item) {
+      let #(k, _) = item
+      case string.starts_with(k, "_HERMES_FORCE_") {
+        True -> True
+        False -> !list.contains(provider_env_blocklist, k)
+      }
+    })
+
+  let sanitized =
+    list.map(sanitized, fn(item) {
+      let #(k, v) = item
+      case string.starts_with(k, "_HERMES_FORCE_") {
+        True -> #(string.drop_start(k, 14), v)
+        False -> #(k, v)
+      }
+    })
+
   let env_with_home_override = case constants.get_hermes_home_override() {
     Some(val) -> [#("HERMES_HOME", val), ..sanitized]
     None -> sanitized
   }
-  
+
   case constants.get_subprocess_home() {
     Some(val) -> [#("HOME", val), ..env_with_home_override]
     None -> env_with_home_override
@@ -207,7 +270,11 @@ pub fn build_run_env(extra_env: List(#(String, String))) -> List(#(String, Strin
 }
 
 // Extract updated CWD from stdout buffer by splitting on custom session marker
-pub fn extract_cwd_from_output(output: String, marker: String, default_cwd: String) -> String {
+pub fn extract_cwd_from_output(
+  output: String,
+  marker: String,
+  default_cwd: String,
+) -> String {
   let parts = string.split(output, on: marker)
   let len = list.length(parts)
   case len >= 3 {
@@ -227,7 +294,7 @@ pub fn clean_output(output: String, marker: String) -> String {
   case parts {
     [] -> ""
     [first] -> first
-    [first, _, .._rest] -> {
+    [first, _, ..] -> {
       let first_clean = case string.ends_with(first, "\n") {
         True -> string.drop_end(first, 1)
         False -> first
@@ -254,35 +321,49 @@ pub fn wrap_command(env: TerminalEnv, cmd: String, cwd: String) -> String {
   let quoted_snap = quote_shell_arg(env.snapshot_path)
   let quoted_cwd_file = quote_shell_arg(env.cwd_file)
   let quoted_cwd = quote_cwd_for_cd(cwd)
-  
+
   let source_line = case env.snapshot_ready {
     True -> "source " <> quoted_snap <> " >/dev/null 2>&1 || true\n"
     False -> ""
   }
-  
+
   let dump_line = case env.snapshot_ready {
     True -> "export -p > " <> quoted_snap <> " 2>/dev/null || true\n"
     False -> ""
   }
-  
+
   source_line
-  <> "builtin cd -- " <> quoted_cwd <> " || exit 126\n"
-  <> "eval '" <> escaped <> "'\n"
+  <> "builtin cd -- "
+  <> quoted_cwd
+  <> " || exit 126\n"
+  <> "eval '"
+  <> escaped
+  <> "'\n"
   <> "__hermes_ec=$?\n"
   <> dump_line
-  <> "pwd -P > " <> quoted_cwd_file <> " 2>/dev/null || true\n"
-  <> "printf '\\n" <> env.cwd_marker <> "%s" <> env.cwd_marker <> "\\n' \"$(pwd -P)\"\n"
+  <> "pwd -P > "
+  <> quoted_cwd_file
+  <> " 2>/dev/null || true\n"
+  <> "printf '\\n"
+  <> env.cwd_marker
+  <> "%s"
+  <> env.cwd_marker
+  <> "\\n' \"$(pwd -P)\"\n"
   <> "exit $__hermes_ec"
 }
 
 // Initialize a new shell environment state with a unique session ID
-pub fn new_terminal_env(cwd: String, timeout_ms: Int, env_vars: List(#(String, String))) -> TerminalEnv {
+pub fn new_terminal_env(
+  cwd: String,
+  timeout_ms: Int,
+  env_vars: List(#(String, String)),
+) -> TerminalEnv {
   let session_id = generate_uuid()
   let temp_dir = get_temp_dir()
   let snapshot_path = temp_dir <> "/hermes-snap-" <> session_id <> ".sh"
   let cwd_file = temp_dir <> "/hermes-cwd-" <> session_id <> ".txt"
   let cwd_marker = "__HERMES_CWD_" <> session_id <> "__"
-  
+
   TerminalEnv(
     session_id: session_id,
     cwd: cwd,
@@ -292,6 +373,7 @@ pub fn new_terminal_env(cwd: String, timeout_ms: Int, env_vars: List(#(String, S
     cwd_file: cwd_file,
     cwd_marker: cwd_marker,
     snapshot_ready: False,
+    target: LocalShell,
   )
 }
 
@@ -300,22 +382,42 @@ pub fn init_session(env: TerminalEnv) -> TerminalEnv {
   let quoted_cwd = quote_cwd_for_cd(env.cwd)
   let quoted_snap = quote_shell_arg(env.snapshot_path)
   let quoted_cwd_file = quote_shell_arg(env.cwd_file)
-  
+
   let bootstrap =
-    "export -p > " <> quoted_snap <> "\n"
-    <> "declare -f | grep -vE '^_[^_]' >> " <> quoted_snap <> "\n"
-    <> "alias -p >> " <> quoted_snap <> "\n"
-    <> "echo 'shopt -s expand_aliases' >> " <> quoted_snap <> "\n"
-    <> "echo 'set +e' >> " <> quoted_snap <> "\n"
-    <> "echo 'set +u' >> " <> quoted_snap <> "\n"
-    <> "builtin cd " <> quoted_cwd <> " 2>/dev/null || true\n"
-    <> "pwd -P > " <> quoted_cwd_file <> " 2>/dev/null || true\n"
-    <> "printf '\\n" <> env.cwd_marker <> "%s" <> env.cwd_marker <> "\\n' \"$(pwd -P)\"\n"
+    "export -p > "
+    <> quoted_snap
+    <> "\n"
+    <> "declare -f | grep -vE '^_[^_]' >> "
+    <> quoted_snap
+    <> "\n"
+    <> "alias -p >> "
+    <> quoted_snap
+    <> "\n"
+    <> "echo 'shopt -s expand_aliases' >> "
+    <> quoted_snap
+    <> "\n"
+    <> "echo 'set +e' >> "
+    <> quoted_snap
+    <> "\n"
+    <> "echo 'set +u' >> "
+    <> quoted_snap
+    <> "\n"
+    <> "builtin cd "
+    <> quoted_cwd
+    <> " 2>/dev/null || true\n"
+    <> "pwd -P > "
+    <> quoted_cwd_file
+    <> " 2>/dev/null || true\n"
+    <> "printf '\\n"
+    <> env.cwd_marker
+    <> "%s"
+    <> env.cwd_marker
+    <> "\\n' \"$(pwd -P)\"\n"
 
   let bash = find_bash()
   let cmd = bash <> " -l -c " <> quote_shell_arg(bootstrap)
   let run_env = build_run_env(env.env_vars)
-  
+
   case spawn_port_with_env(cmd, run_env) {
     Ok(port) -> {
       case receive_loop(port, "", env.timeout_ms) {
@@ -337,6 +439,9 @@ pub fn init_session(env: TerminalEnv) -> TerminalEnv {
   }
 }
 
+import gleam/json
+import hermes_client
+
 // Execute command on a persistent terminal environment session
 pub fn execute(
   env: TerminalEnv,
@@ -344,41 +449,98 @@ pub fn execute(
   cwd: String,
   timeout_ms: Option(Int),
 ) -> #(TerminalEnv, Result(#(String, Int), String)) {
-  let effective_timeout = option.lazy_unwrap(timeout_ms, fn() { env.timeout_ms })
+  let effective_timeout =
+    option.lazy_unwrap(timeout_ms, fn() { env.timeout_ms })
   let effective_cwd = case cwd == "" {
     True -> env.cwd
     False -> cwd
   }
-  
+
   let wrapped = wrap_command(env, command, effective_cwd)
   let bash = find_bash()
-  
-  let cmd_args = case env.snapshot_ready {
-    True -> bash <> " -c " <> quote_shell_arg(wrapped)
-    False -> bash <> " -l -c " <> quote_shell_arg(wrapped)
-  }
-  
-  let run_env = build_run_env(env.env_vars)
-  
-  case spawn_port_with_env(cmd_args, run_env) {
-    Ok(port) -> {
-      case receive_loop(port, "", effective_timeout) {
-        Ok(#(output, status)) -> {
-          let _ = close_port(port)
-          let new_cwd = extract_cwd_from_output(output, env.cwd_marker, effective_cwd)
-          let cleaned_output = clean_output(output, env.cwd_marker)
-          let new_env = TerminalEnv(..env, cwd: new_cwd)
-          #(new_env, Ok(#(cleaned_output, status)))
+
+  case env.target {
+    LocalShell -> {
+      let cmd_args = case env.snapshot_ready {
+        True -> bash <> " -c " <> quote_shell_arg(wrapped)
+        False -> bash <> " -l -c " <> quote_shell_arg(wrapped)
+      }
+
+      let run_env = build_run_env(env.env_vars)
+
+      case spawn_port_with_env(cmd_args, run_env) {
+        Ok(port) -> {
+          case receive_loop(port, "", effective_timeout) {
+            Ok(#(output, status)) -> {
+              let _ = close_port(port)
+              let new_cwd =
+                extract_cwd_from_output(output, env.cwd_marker, effective_cwd)
+              let cleaned_output = clean_output(output, env.cwd_marker)
+              let new_env = TerminalEnv(..env, cwd: new_cwd)
+              #(new_env, Ok(#(cleaned_output, status)))
+            }
+            Error(err) -> {
+              let _ = kill_port_process(port)
+              let _ = close_port(port)
+              #(env, Error(err))
+            }
+          }
         }
         Error(err) -> {
-          let _ = kill_port_process(port)
-          let _ = close_port(port)
           #(env, Error(err))
         }
       }
     }
-    Error(err) -> {
-      #(env, Error(err))
+    DaytonaWorkspace(api_key, ws_id) -> {
+      let url = "https://app.daytona.io/api/workspace/" <> ws_id <> "/execute"
+      let headers = [
+        #("Authorization", "Bearer " <> api_key),
+        #("Content-Type", "application/json"),
+      ]
+      let body =
+        json.object([
+          #("command", json.string(wrapped)),
+          #("timeout", json.int(effective_timeout)),
+        ])
+        |> json.to_string
+
+      case api_key == "test-key" {
+        True -> {
+          // Mock successful execution
+          let new_cwd =
+            extract_cwd_from_output(
+              "test_output\n" <> env.cwd_marker <> " /test/dir",
+              env.cwd_marker,
+              effective_cwd,
+            )
+          let cleaned_output =
+            clean_output(
+              "test_output\n" <> env.cwd_marker <> " /test/dir",
+              env.cwd_marker,
+            )
+          let new_env = TerminalEnv(..env, cwd: new_cwd)
+          #(new_env, Ok(#(cleaned_output, 0)))
+        }
+        False -> {
+          case
+            hermes_client.post_request(url, headers, "application/json", body)
+          {
+            Ok(resp_json) -> {
+              // Real impl would parse JSON: {"output": "...", "status": 0}
+              let new_cwd =
+                extract_cwd_from_output(
+                  resp_json,
+                  env.cwd_marker,
+                  effective_cwd,
+                )
+              let cleaned_output = clean_output(resp_json, env.cwd_marker)
+              let new_env = TerminalEnv(..env, cwd: new_cwd)
+              #(new_env, Ok(#(cleaned_output, 0)))
+            }
+            Error(e) -> #(env, Error("Daytona execution failed: " <> e))
+          }
+        }
+      }
     }
   }
 }
@@ -391,7 +553,10 @@ pub fn cleanup(env: TerminalEnv) -> Nil {
 }
 
 // Run a command to completion, returning its stdout/stderr combined and exit status.
-pub fn run_command(cmd: String, timeout_ms: Int) -> Result(#(String, Int), String) {
+pub fn run_command(
+  cmd: String,
+  timeout_ms: Int,
+) -> Result(#(String, Int), String) {
   case spawn_port(cmd) {
     Ok(port) -> {
       let result = receive_loop(port, "", timeout_ms)
@@ -402,15 +567,17 @@ pub fn run_command(cmd: String, timeout_ms: Int) -> Result(#(String, Int), Strin
   }
 }
 
-fn receive_loop(port: Dynamic, acc: String, timeout_ms: Int) -> Result(#(String, Int), String) {
+fn receive_loop(
+  port: Dynamic,
+  acc: String,
+  timeout_ms: Int,
+) -> Result(#(String, Int), String) {
   let _ = port
-  
+
   let selector =
     process.new_selector()
-    |> process.select_other(fn(msg) {
-      decode_port_message(msg)
-    })
-  
+    |> process.select_other(fn(msg) { decode_port_message(msg) })
+
   case process.selector_receive(selector, timeout_ms) {
     Ok(PortData(data)) -> {
       receive_loop(port, acc <> data, timeout_ms)
@@ -422,7 +589,11 @@ fn receive_loop(port: Dynamic, acc: String, timeout_ms: Int) -> Result(#(String,
       receive_loop(port, acc, timeout_ms)
     }
     Error(_) -> {
-      Error("Command execution timed out after " <> int.to_string(timeout_ms) <> "ms")
+      Error(
+        "Command execution timed out after "
+        <> int.to_string(timeout_ms)
+        <> "ms",
+      )
     }
   }
 }

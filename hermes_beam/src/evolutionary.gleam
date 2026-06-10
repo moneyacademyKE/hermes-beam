@@ -1,10 +1,13 @@
+import datom.{type Datom, type Rule, Datom, Rule}
 import gleam/dict.{type Dict}
-import gleam/list
-import gleam/int
-import gleam/string
-import gleam/result
-import gleamdb.{type Datom, type Rule, Datom, Rule}
 import gleam/dynamic/decode
+import gleam/int
+import gleam/json
+import gleam/list
+import gleam/result
+import gleam/string
+import hermes_exec
+import simplifile
 import skill.{type Skill, Skill}
 import sqlight
 
@@ -68,7 +71,8 @@ pub fn datoms_to_rules(datoms: List(Datom)) -> List(Rule) {
 
   dict.values(grouped)
   |> list.filter_map(fn(entity_datoms) {
-    let has_head = list.any(entity_datoms, fn(d) { d.attribute == "rule/head_0" })
+    let has_head =
+      list.any(entity_datoms, fn(d) { d.attribute == "rule/head_0" })
     case has_head {
       True -> {
         let head_0 = find_value(entity_datoms, "rule/head_0")
@@ -86,52 +90,100 @@ pub fn verify_skill(
   skill: Skill,
   checks: List(#(List(#(String, String, String)), List(Dict(String, String)))),
 ) -> Result(Nil, String) {
-  let db =
-    gleamdb.new()
-    |> gleamdb.transact(skill.facts)
-    |> gleamdb.evaluate_rules(skill.rules)
+  let datoms_json =
+    json.array(skill.facts, of: fn(d) {
+      json.object([
+        #("entity", json.string(d.entity)),
+        #("attribute", json.string(d.attribute)),
+        #("value", json.string(d.value)),
+      ])
+    })
+
+  let rules_json =
+    json.array(skill.rules, of: fn(r) {
+      let head =
+        json.array(
+          [json.string(r.head.0), json.string(r.head.1), json.string(r.head.2)],
+          of: fn(x) { x },
+        )
+      let body =
+        list.map(r.body, fn(c) {
+          json.array(
+            [json.string(c.0), json.string(c.1), json.string(c.2)],
+            of: fn(x) { x },
+          )
+        })
+      json.array([head, ..body], of: fn(x) { x })
+    })
 
   list.try_each(checks, fn(check) {
     let #(query_clauses, expected_bindings) = check
-    let actual_bindings = gleamdb.query(db, query_clauses)
 
-    let len_actual = list.length(actual_bindings)
-    let len_expected = list.length(expected_bindings)
+    let where_json =
+      json.array(query_clauses, of: fn(c) {
+        json.array(
+          [json.string(c.0), json.string(c.1), json.string(c.2)],
+          of: fn(x) { x },
+        )
+      })
 
-    case len_actual == len_expected {
-      True -> {
-        let all_matched =
-          list.all(expected_bindings, fn(expected) {
-            list.contains(actual_bindings, expected)
-          })
-        case all_matched {
-          True -> Ok(Nil)
+    let vars =
+      list.flat_map(query_clauses, fn(c) { [c.0, c.1, c.2] })
+      |> list.filter(fn(s) { string.starts_with(s, "?") })
+      |> list.unique
+
+    let find_json = json.array(vars, of: json.string)
+
+    let query_json = json.object([#("find", find_json), #("where", where_json)])
+
+    let payload =
+      json.object([
+        #("datoms", datoms_json),
+        #("rules", rules_json),
+        #("query", query_json),
+      ])
+      |> json.to_string
+
+    let tmp_file = "/tmp/hermes_evo_" <> hermes_exec.generate_uuid() <> ".json"
+    let _ = simplifile.write(tmp_file, payload)
+
+    let cmd =
+      "bb /Users/moe/Desktop/ayncoder/babashka_workers/src/worker.clj --datalog-query < "
+      <> tmp_file
+    let cmd_res = hermes_exec.run_command(cmd, 5000)
+
+    let _ = simplifile.delete(tmp_file)
+
+    case cmd_res {
+      Ok(#(out, 0)) -> {
+        let is_empty_expected = list.is_empty(expected_bindings)
+        let is_empty_actual = string.contains(out, "\"results\":[]")
+
+        case is_empty_expected {
+          True -> {
+            case is_empty_actual {
+              True -> Ok(Nil)
+              False -> Error("Expected empty, but got results.")
+            }
+          }
           False -> {
-            let msg =
-              "Verification failed. Query: "
-              <> string.inspect(query_clauses)
-              <> "\nExpected: "
-              <> string.inspect(expected_bindings)
-              <> "\nActual: "
-              <> string.inspect(actual_bindings)
-            Error(msg)
+            let all_found =
+              list.all(expected_bindings, fn(b) {
+                let expected_json =
+                  json.object(
+                    list.map(dict.to_list(b), fn(t) { #(t.0, json.string(t.1)) }),
+                  )
+                  |> json.to_string
+                string.contains(out, expected_json)
+              })
+            case all_found {
+              True -> Ok(Nil)
+              False -> Error("Missing expected bindings.")
+            }
           }
         }
       }
-      False -> {
-        let msg =
-          "Verification failed. Binding count mismatch. Query: "
-          <> string.inspect(query_clauses)
-          <> "\nExpected length: "
-          <> int.to_string(len_expected)
-          <> ", got: "
-          <> int.to_string(len_actual)
-          <> "\nExpected: "
-          <> string.inspect(expected_bindings)
-          <> "\nActual: "
-          <> string.inspect(actual_bindings)
-        Error(msg)
-      }
+      _ -> Error("Failed to execute babashka")
     }
   })
 }
@@ -151,7 +203,8 @@ pub fn persist_skill(
   let all_datoms = list.append(skill.facts, rule_datoms)
 
   let _ = sqlight.exec("BEGIN TRANSACTION;", conn)
-  let query = "
+  let query =
+    "
     INSERT OR REPLACE INTO datoms (entity, attribute, value, tx)
     VALUES (?, ?, ?, ?);
   "
@@ -278,4 +331,3 @@ pub fn optimize_skill(
     }
   })
 }
-

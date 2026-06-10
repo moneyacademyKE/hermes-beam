@@ -1,25 +1,27 @@
+import argv
 import constants
+import context_engine
+import datom.{type Datom, Datom, Rule}
+import discord_gateway
+import evolutionary
+import gleam/dynamic/decode
+import gleam/erlang/process
 import gleam/int
 import gleam/io
+import gleam/json
+import gleam/list
 import gleam/option.{None, Some}
-import iteration_budget
 import gleam/string
 import hermes_agent
-import mcp_client
 import hermes_exec
 import hermes_state
-import utils
-import evolutionary
-import skill.{Skill}
-import gleamdb.{Datom, Rule}
+import mcp_client
 import simplifile
-import gleam/list
-import gleam/erlang/process
-import argv
-import state_actor
+import skill.{Skill}
 import skill_compiler
+import state_actor
 import subagent_supervisor
-import discord_gateway
+import utils
 
 @external(erlang, "erlang", "system_time")
 fn system_time() -> Int
@@ -33,7 +35,14 @@ pub fn get_tools_prompt() -> String {
 }
 
 pub fn get_goal_prompt(goal: String) -> String {
-  "GOAL MODE ENGAGED. You must act completely autonomously. Do not ask for user input. Continue calling tools until the goal is completely achieved. If you hit a roadblock, keep trying different approaches. CRITICAL RULE: You MUST default to using Babashka (bb) for any task that requires scripting. NO PYTHON SHOULD EVER BE INVOKED. Perform a thorough and comprehensive Rich Hickey Gap Analysis. Search the web to learn all the capabilities including those of latest versions. Use tables to show feature set differences. Explain each feature difference. Show benefits and trade offs. Show complexity vs utility tables. End with actionable recommendation based on weighted power/new capabilites vs speed vs complexity vs tradeoffs analysis. Use its recomended actions next for implementation. when having open questions use rich hickey path. red/green tdd. When implementing ensure Rich Hickey quality and completeness at every step. finish by ensuring rich hickey certification. add new content to docs , git and learnings.md and patterns as .md when done. learnings and patterns should be constantly updated and refered to when dealing with similar problems.\n\nGoal: " <> goal
+  let dynamic_context =
+    context_engine.execute_all(context_engine.default_plugins())
+  let prompt_with_context = case dynamic_context {
+    "" -> goal
+    ctx -> goal <> "\n\n<context>\n" <> ctx <> "\n</context>"
+  }
+  "GOAL MODE ENGAGED. You must act completely autonomously. Do not ask for user input. Continue calling tools until the goal is completely achieved. If you hit a roadblock, keep trying different approaches. CRITICAL RULE: You MUST default to using Babashka (bb) for any task that requires scripting. NO PYTHON SHOULD EVER BE INVOKED. Perform a thorough and comprehensive Rich Hickey Gap Analysis. Search the web to learn all the capabilities including those of latest versions. Use tables to show feature set differences. Explain each feature difference. Show benefits and trade offs. Show complexity vs utility tables. End with actionable recommendation based on weighted power/new capabilites vs speed vs complexity vs tradeoffs analysis. Use its recomended actions next for implementation. when having open questions use rich hickey path. red/green tdd. When implementing ensure Rich Hickey quality and completeness at every step. finish by ensuring rich hickey certification. add new content to docs , git and learnings.md and patterns as .md when done. learnings and patterns should be constantly updated and refered to when dealing with similar problems.\n\nGoal: "
+  <> prompt_with_context
 }
 
 // ─── REPL State ───────────────────────────────────────────────────────────────
@@ -57,29 +66,27 @@ pub fn sleep_ms(ms: Int) -> Nil
 // ─── Credential Resolution ─────────────────────────────────────────────────────
 
 pub fn resolve_api_credentials() -> #(String, String) {
-  let key =
-    case constants.get_env("HERMES_API_KEY") {
-      Some(val) -> val
-      None ->
-        case constants.get_env("OPENROUTER_API_KEY") {
-          Some(val) -> val
-          None ->
-            case constants.get_env("OPENAI_API_KEY") {
-              Some(val) -> val
-              None -> ""
-            }
-        }
-    }
+  let key = case constants.get_env("HERMES_API_KEY") {
+    Some(val) -> val
+    None ->
+      case constants.get_env("OPENROUTER_API_KEY") {
+        Some(val) -> val
+        None ->
+          case constants.get_env("OPENAI_API_KEY") {
+            Some(val) -> val
+            None -> ""
+          }
+      }
+  }
 
-  let url =
-    case constants.get_env("HERMES_BASE_URL") {
-      Some(val) -> val
-      None ->
-        case constants.get_env("OPENAI_BASE_URL") {
-          Some(val) -> val
-          None -> "https://openrouter.ai/api/v1"
-        }
-    }
+  let url = case constants.get_env("HERMES_BASE_URL") {
+    Some(val) -> val
+    None ->
+      case constants.get_env("OPENAI_BASE_URL") {
+        Some(val) -> val
+        None -> "https://openrouter.ai/api/v1"
+      }
+  }
 
   #(key, url)
 }
@@ -90,16 +97,28 @@ pub fn print_help() -> Nil {
   io.println("\nHermes BEAM interactive REPL commands:")
   io.println("  /help          - Show this help message")
   io.println("  /quit, /exit   - Close the session and exit")
-  io.println("  /model <model> - Switch the current model (resets agent history)")
+  io.println(
+    "  /model <model> - Switch the current model (resets agent history)",
+  )
   io.println("  /cwd <path>    - Switch the working directory")
-  io.println("  /run <cmd>     - Execute a terminal command directly (bypasses LLM)")
-  io.println("  /file <path>   - Load a prompt from a file and send to LLM agent")
+  io.println(
+    "  /run <cmd>     - Execute a terminal command directly (bypasses LLM)",
+  )
+  io.println(
+    "  /file <path>   - Load a prompt from a file and send to LLM agent",
+  )
   io.println("  /clear         - Clear the conversation history")
   io.println("  /sessions      - List recent sessions for resumability")
   io.println("  /resume <id>   - Resume a past session")
-  io.println("  /rollback <n>  - Undo the last N messages from memory and database")
-  io.println("  /search <term> - Search past messages across all sessions (FTS5)")
-  io.println("  /goal <prompt> - Run an autonomous long-running task until finished")
+  io.println(
+    "  /rollback <n>  - Undo the last N messages from memory and database",
+  )
+  io.println(
+    "  /search <term> - Search past messages across all sessions (FTS5)",
+  )
+  io.println(
+    "  /goal <prompt> - Run an autonomous long-running task until finished",
+  )
   io.println("  <message>      - Chat with the LLM agent (tools available)")
 }
 
@@ -139,12 +158,7 @@ pub fn log_event(msg: String) -> Nil {
 // ─── REPL Loop ────────────────────────────────────────────────────────────────
 
 pub fn repl_loop(state: REPLState) -> Nil {
-  let prompt =
-    "\nhermes_beam ["
-    <> state.model
-    <> "] ("
-    <> state.cwd
-    <> ") > "
+  let prompt = "\nhermes_beam [" <> state.model <> "] (" <> state.cwd <> ") > "
 
   case utils.read_line(prompt) {
     Ok(line) -> {
@@ -218,9 +232,12 @@ pub fn repl_loop(state: REPLState) -> Nil {
           case state_actor.list_sessions(state.db_conn) {
             Ok(sessions) -> {
               io.println("Recent Sessions:")
-              list.each(list.take(sessions, 10), fn(s) { io.println("  - " <> s) })
+              list.each(list.take(sessions, 10), fn(s) {
+                io.println("  - " <> s)
+              })
             }
-            Error(err) -> io.println("Error listing sessions: " <> string.inspect(err))
+            Error(err) ->
+              io.println("Error listing sessions: " <> string.inspect(err))
           }
           repl_loop(state)
         }
@@ -232,8 +249,19 @@ pub fn repl_loop(state: REPLState) -> Nil {
             Ok(history_strings) -> {
               io.println("Resuming session: " <> resume_id)
               // Note history from DB is oldest-first, so we reverse it for the in-memory state which expects newest-first list head
-              let new_agent = hermes_agent.AgentState(..state.agent_state, session_id: resume_id, history: list.reverse(history_strings))
-              repl_loop(REPLState(..state, session_id: resume_id, agent_state: new_agent))
+              let new_agent =
+                hermes_agent.AgentState(
+                  ..state.agent_state,
+                  session_id: resume_id,
+                  history: list.reverse(history_strings),
+                )
+              repl_loop(
+                REPLState(
+                  ..state,
+                  session_id: resume_id,
+                  agent_state: new_agent,
+                ),
+              )
             }
             Error(err) -> {
               io.println("Failed to load session: " <> string.inspect(err))
@@ -247,10 +275,15 @@ pub fn repl_loop(state: REPLState) -> Nil {
           let count_str = string.trim(string.drop_start(trimmed, 10))
           case int.parse(count_str) {
             Ok(n) -> {
-              let _ = state_actor.rollback_session(state.db_conn, state.session_id, n)
+              let _ =
+                state_actor.rollback_session(state.db_conn, state.session_id, n)
               let new_history = list.drop(state.agent_state.history, n)
               io.println("Rolled back " <> int.to_string(n) <> " messages.")
-              let new_agent = hermes_agent.AgentState(..state.agent_state, history: new_history)
+              let new_agent =
+                hermes_agent.AgentState(
+                  ..state.agent_state,
+                  history: new_history,
+                )
               repl_loop(REPLState(..state, agent_state: new_agent))
             }
             Error(_) -> {
@@ -268,9 +301,20 @@ pub fn repl_loop(state: REPLState) -> Nil {
               case matches {
                 [] -> io.println("No results for: " <> term)
                 results -> {
-                  io.println("Found " <> int.to_string(list.length(results)) <> " result(s):")
+                  io.println(
+                    "Found "
+                    <> int.to_string(list.length(results))
+                    <> " result(s):",
+                  )
                   list.each(list.take(results, 10), fn(m) {
-                    io.println("  [" <> m.session_id <> "] " <> m.role <> ": " <> string.slice(m.content, 0, 120))
+                    io.println(
+                      "  ["
+                      <> m.session_id
+                      <> "] "
+                      <> m.role
+                      <> ": "
+                      <> string.slice(m.content, 0, 120),
+                    )
                   })
                 }
               }
@@ -284,14 +328,21 @@ pub fn repl_loop(state: REPLState) -> Nil {
         _ if is_goal -> {
           let goal_prompt = string.trim(string.drop_start(trimmed, 6))
           let full_prompt = get_goal_prompt(goal_prompt)
-          
+
           io.println("🚀 GOAL MODE: " <> goal_prompt)
-          io.println("Delegating goal to Babashka subagent. Telemetry will print in the background...")
+          io.println(
+            "Delegating goal to Babashka subagent. Telemetry will print in the background...",
+          )
 
           let worker_id = "goal_worker_" <> state.session_id
-          let datom = gleamdb.Datom(entity: worker_id, attribute: "spawn_worker", value: full_prompt)
+          let datom =
+            Datom(
+              entity: worker_id,
+              attribute: "spawn_worker",
+              value: full_prompt,
+            )
           let _ = state_actor.transact(state.db_conn, [datom], 1)
-          
+
           repl_loop(state)
         }
 
@@ -324,11 +375,9 @@ pub fn repl_loop(state: REPLState) -> Nil {
             )
           case new_agent_state {
             Ok(new_agent) ->
-              repl_loop(REPLState(
-                ..state,
-                model: new_model,
-                agent_state: new_agent,
-              ))
+              repl_loop(
+                REPLState(..state, model: new_model, agent_state: new_agent),
+              )
             Error(_) -> repl_loop(REPLState(..state, model: new_model))
           }
         }
@@ -406,12 +455,19 @@ pub fn repl_loop(state: REPLState) -> Nil {
                 False -> {
                   let full_prompt = get_goal_prompt(content)
                   io.println("🚀 GOAL MODE (Default - from file): " <> path)
-                  io.println("Delegating goal to Babashka subagent. Telemetry will print in the background...")
+                  io.println(
+                    "Delegating goal to Babashka subagent. Telemetry will print in the background...",
+                  )
 
                   let worker_id = "goal_worker_" <> state.session_id
-                  let datom = gleamdb.Datom(entity: worker_id, attribute: "spawn_worker", value: full_prompt)
+                  let datom =
+                    Datom(
+                      entity: worker_id,
+                      attribute: "spawn_worker",
+                      value: full_prompt,
+                    )
                   let _ = state_actor.transact(state.db_conn, [datom], 1)
-                  
+
                   repl_loop(state)
                 }
               }
@@ -433,12 +489,19 @@ pub fn repl_loop(state: REPLState) -> Nil {
             False -> {
               let full_prompt = get_goal_prompt(trimmed)
               io.println("🚀 GOAL MODE (Default): " <> trimmed)
-              io.println("Delegating goal to Babashka subagent. Telemetry will print in the background...")
+              io.println(
+                "Delegating goal to Babashka subagent. Telemetry will print in the background...",
+              )
 
               let worker_id = "goal_worker_" <> state.session_id
-              let datom = gleamdb.Datom(entity: worker_id, attribute: "spawn_worker", value: full_prompt)
+              let datom =
+                Datom(
+                  entity: worker_id,
+                  attribute: "spawn_worker",
+                  value: full_prompt,
+                )
               let _ = state_actor.transact(state.db_conn, [datom], 1)
-              
+
               repl_loop(state)
             }
           }
@@ -471,8 +534,7 @@ pub fn load_env_file() -> Nil {
                   string.starts_with(clean_val, "\"")
                   && string.ends_with(clean_val, "\"")
                 {
-                  True ->
-                    string.drop_start(clean_val, 1) |> string.drop_end(1)
+                  True -> string.drop_start(clean_val, 1) |> string.drop_end(1)
                   False ->
                     case
                       string.starts_with(clean_val, "'")
@@ -526,35 +588,31 @@ pub fn run_repl_resuming(target_session_id: String) -> Nil {
   io.println("  Hermes BEAM — Pure Gleam Agentic Runner v2.0.0")
   io.println("  🔄 RESUMING SESSION: " <> target_session_id)
   io.println("══════════════════════════════════════════════════")
-  
+
   utils.set_expand_fun()
 
   let db_path = constants.path_join(constants.get_hermes_home(), "state.db")
   let assert Ok(conn) = hermes_state.connect(db_path)
   let assert Ok(Nil) = hermes_state.init_schema(conn)
-  let intent_subj: process.Subject(gleamdb.Datom) = process.new_subject()
+  let intent_subj: process.Subject(Datom) = process.new_subject()
   let assert Ok(actor) = state_actor.start(conn, [intent_subj])
 
   let #(api_key, base_url) = resolve_api_credentials()
-  let model =
-    case constants.get_env("HERMES_MODEL") {
-      Some(val) -> val
-      None -> "meta-llama/llama-3-8b-instruct:free"
-    }
-
-  let socket_path = constants.path_join(constants.get_hermes_home(), "subagents.sock")
-  let assert Ok(supervisor_subj) = subagent_supervisor.start_supervisor(socket_path, actor)
-  let _ = process.spawn(fn() {
-    let selector = process.new_selector() |> process.select(intent_subj)
-    intent_loop(selector, None, supervisor_subj, api_key, base_url)
-  })
+  let model = case constants.get_env("HERMES_MODEL") {
+    Some(val) -> val
+    None -> "meta-llama/llama-3-8b-instruct:free"
+  }
 
   // Restore session history and CWD from DB
-  let restored_history = case state_actor.get_session_history(actor, target_session_id) {
+  let restored_history = case
+    state_actor.get_session_history(actor, target_session_id)
+  {
     Ok(msgs) -> msgs
     Error(_) -> []
   }
-  let restored_cwd = case state_actor.get_session_cwd(actor, target_session_id) {
+  let restored_cwd = case
+    state_actor.get_session_cwd(actor, target_session_id)
+  {
     Ok(cwd) if cwd != "" -> cwd
     _ -> hermes_exec.get_temp_dir()
   }
@@ -565,47 +623,83 @@ pub fn run_repl_resuming(target_session_id: String) -> Nil {
   io.println("Session ID : " <> target_session_id <> " (resumed)")
   io.println("Database   : " <> db_path)
   io.println("Model      : " <> model)
-  io.println("Restored   : " <> int.to_string(list.length(restored_history)) <> " messages from history")
+  io.println(
+    "Restored   : "
+    <> int.to_string(list.length(restored_history))
+    <> " messages from history",
+  )
   io.println("CWD        : " <> restored_cwd)
   io.println("\nType /help to see commands. Press Ctrl+D or /quit to exit.")
 
-  case hermes_agent.new_agent_state(
-    target_session_id, model, restored_cwd, actor, exec_env,
-    api_key, base_url, get_tools_prompt(), 90, None,
-  ) {
+  case
+    hermes_agent.new_agent_state(
+      target_session_id,
+      model,
+      restored_cwd,
+      actor,
+      exec_env,
+      api_key,
+      base_url,
+      get_tools_prompt(),
+      90,
+      None,
+    )
+  {
     Error(err) -> io.println("Failed to initialise agent: " <> err)
     Ok(base_agent) -> {
       // Restore message history into agent state
-      let resumed_agent = hermes_agent.AgentState(..base_agent, history: list.reverse(restored_history))
-      let state = REPLState(
-        session_id: target_session_id,
-        model: model,
-        cwd: restored_cwd,
-        db_conn: actor,
-        exec_env: exec_env,
-        api_key: api_key,
-        base_url: base_url,
-        agent_state: resumed_agent,
-      )
+      let resumed_agent =
+        hermes_agent.AgentState(
+          ..base_agent,
+          history: list.reverse(restored_history),
+        )
+
+      let socket_path =
+        constants.path_join(constants.get_hermes_home(), "subagents.sock")
+      let assert Ok(supervisor_subj) =
+        subagent_supervisor.start_supervisor(socket_path, actor)
+      let _ =
+        process.spawn(fn() {
+          let selector = process.new_selector() |> process.select(intent_subj)
+          intent_loop(
+            selector,
+            None,
+            supervisor_subj,
+            api_key,
+            base_url,
+            resumed_agent,
+          )
+        })
+
+      let state =
+        REPLState(
+          session_id: target_session_id,
+          model: model,
+          cwd: restored_cwd,
+          db_conn: actor,
+          exec_env: exec_env,
+          api_key: api_key,
+          base_url: base_url,
+          agent_state: resumed_agent,
+        )
       repl_loop(state)
     }
   }
 }
 
 pub fn run_repl() -> Nil {
-
   io.println("══════════════════════════════════════════════════")
   io.println("  Press Ctrl+C twice to exit. Type /help for commands.")
   io.println("══════════════════════════════════════════════════\n")
-  
+
   utils.set_expand_fun()
 
   // 1. Initialize database
   let db_path = constants.path_join(constants.get_hermes_home(), "state.db")
   let assert Ok(conn) = hermes_state.connect(db_path)
   let assert Ok(Nil) = hermes_state.init_schema(conn)
-  let intent_subj: process.Subject(gleamdb.Datom) = process.new_subject()
-  
+  let intent_subj: process.Subject(Datom) = process.new_subject()
+
   let subjects = [intent_subj]
 
   let assert Ok(actor) = state_actor.start(conn, subjects)
@@ -616,14 +710,13 @@ pub fn run_repl() -> Nil {
       name: "network-routing",
       description: "Calculates paths between network nodes",
       rules: [
-        Rule(
-          head: #("?x", "route/path", "?y"),
-          body: [#("?x", "route/link", "?y")],
-        ),
-        Rule(
-          head: #("?x", "route/path", "?y"),
-          body: [#("?x", "route/path", "?z"), #("?z", "route/link", "?y")],
-        ),
+        Rule(head: #("?x", "route/path", "?y"), body: [
+          #("?x", "route/link", "?y"),
+        ]),
+        Rule(head: #("?x", "route/path", "?y"), body: [
+          #("?x", "route/path", "?z"),
+          #("?z", "route/link", "?y"),
+        ]),
       ],
       facts: [
         Datom("A", "route/link", "B"),
@@ -637,17 +730,13 @@ pub fn run_repl() -> Nil {
       name: "user-permissions",
       description: "Calculates recursive group permission membership rules",
       rules: [
-        Rule(
-          head: #("?user", "user/member-of-recursive", "?group"),
-          body: [#("?user", "user/member-of", "?group")],
-        ),
-        Rule(
-          head: #("?user", "user/member-of-recursive", "?group"),
-          body: [
-            #("?user", "user/member-of-recursive", "?subgroup"),
-            #("?subgroup", "group/subgroup-of", "?group"),
-          ],
-        ),
+        Rule(head: #("?user", "user/member-of-recursive", "?group"), body: [
+          #("?user", "user/member-of", "?group"),
+        ]),
+        Rule(head: #("?user", "user/member-of-recursive", "?group"), body: [
+          #("?user", "user/member-of-recursive", "?subgroup"),
+          #("?subgroup", "group/subgroup-of", "?group"),
+        ]),
       ],
       facts: [
         Datom("alice", "user/member-of", "engineering"),
@@ -671,7 +760,8 @@ pub fn run_repl() -> Nil {
 
   let rule_datoms_2 =
     list.index_map(permission_skill.rules, fn(rule, idx) {
-      let rule_name = "rule/" <> permission_skill.name <> "/" <> int.to_string(idx)
+      let rule_name =
+        "rule/" <> permission_skill.name <> "/" <> int.to_string(idx)
       evolutionary.rule_to_datoms(rule_name, rule)
     })
     |> list.flatten
@@ -697,25 +787,26 @@ pub fn run_repl() -> Nil {
     Error(_) -> Nil
   }
 
-
   // 2. Load credentials
   let #(api_key, base_url) = resolve_api_credentials()
-  let model =
-    case constants.get_env("HERMES_MODEL") {
-      Some(val) -> val
-      None -> "meta-llama/llama-3-8b-instruct:free"
-    }
+  let model = case constants.get_env("HERMES_MODEL") {
+    Some(val) -> val
+    None -> "meta-llama/llama-3-8b-instruct:free"
+  }
 
   // Start MCP Client if HERMES_MCP_CMD is set
   let mcp_client_opt = case constants.get_env("HERMES_MCP_CMD") {
     Some(cmd) -> {
-      let notif_subj: process.Subject(mcp_client.JsonRpcNotification) = process.new_subject()
-      let _ = process.spawn(fn() {
-        let selector = process.new_selector()
-          |> process.select(notif_subj)
-        notification_loop(selector, actor)
-      })
-      
+      let notif_subj: process.Subject(mcp_client.JsonRpcNotification) =
+        process.new_subject()
+      let _ =
+        process.spawn(fn() {
+          let selector =
+            process.new_selector()
+            |> process.select(notif_subj)
+          notification_loop(selector, actor)
+        })
+
       case mcp_client.start(cmd, Some(notif_subj)) {
         Ok(client) -> {
           let _ = mcp_client.initialize(client)
@@ -731,15 +822,10 @@ pub fn run_repl() -> Nil {
     None -> None
   }
 
-  let socket_path = constants.path_join(constants.get_hermes_home(), "subagents.sock")
-  let assert Ok(supervisor_subj) = subagent_supervisor.start_supervisor(socket_path, actor)
-
-  // Always spawn intent_loop to process side effects (e.g. running tools)
-  let _ = process.spawn(fn() {
-    let selector = process.new_selector()
-      |> process.select(intent_subj)
-    intent_loop(selector, mcp_client_opt, supervisor_subj, api_key, base_url)
-  })
+  let socket_path =
+    constants.path_join(constants.get_hermes_home(), "subagents.sock")
+  let assert Ok(supervisor_subj) =
+    subagent_supervisor.start_supervisor(socket_path, actor)
 
   // 3. Create session
   let session_id = hermes_exec.generate_uuid()
@@ -753,61 +839,77 @@ pub fn run_repl() -> Nil {
       int.to_float(system_time()) /. 1_000_000_000.0,
     )
 
-      // 4. Initialize sandbox exec environment
-      let initial_cwd = hermes_exec.get_temp_dir()
-      let exec_env = hermes_exec.new_terminal_env(initial_cwd, 120_000, [])
-      let exec_env = hermes_exec.init_session(exec_env)
+  // 4. Initialize sandbox exec environment
+  let initial_cwd = hermes_exec.get_temp_dir()
+  let exec_env = hermes_exec.new_terminal_env(initial_cwd, 120_000, [])
+  let exec_env = hermes_exec.init_session(exec_env)
 
-      io.println("Session ID : " <> session_id)
-      io.println("Database   : " <> db_path)
-      io.println("Model      : " <> model)
-      io.println("Base URL   : " <> base_url)
-      io.println(
-        "API Key    : "
-        <> case api_key == "" {
-          True -> "(none — mock mode)"
-          False -> "[configured]"
-        },
-      )
-      io.println("CWD        : " <> exec_env.cwd)
-      io.println("\nType /help to see commands. Press Ctrl+D or /quit to exit.")
+  io.println("Session ID : " <> session_id)
+  io.println("Database   : " <> db_path)
+  io.println("Model      : " <> model)
+  io.println("Base URL   : " <> base_url)
+  io.println(
+    "API Key    : "
+    <> case api_key == "" {
+      True -> "(none — mock mode)"
+      False -> "[configured]"
+    },
+  )
+  io.println("CWD        : " <> exec_env.cwd)
+  io.println("\nType /help to see commands. Press Ctrl+D or /quit to exit.")
 
-      // 5. Build initial AgentState (max 90 iterations per conversation turn)
-      let agent_result =
-        hermes_agent.new_agent_state(
-          session_id,
-          model,
-          exec_env.cwd,
-          actor,
-          exec_env,
-          api_key,
-          base_url,
-          get_tools_prompt(),
-          90,
-          mcp_client_opt,
+  // 5. Build initial AgentState (max 90 iterations per conversation turn)
+  let agent_result =
+    hermes_agent.new_agent_state(
+      session_id,
+      model,
+      exec_env.cwd,
+      actor,
+      exec_env,
+      api_key,
+      base_url,
+      get_tools_prompt(),
+      90,
+      mcp_client_opt,
+    )
+
+  case agent_result {
+    Error(err) -> {
+      io.println("Failed to initialise agent: " <> err)
+      Nil
+    }
+    Ok(agent_state) -> {
+      // Always spawn intent_loop to process side effects (e.g. running tools)
+      let _ =
+        process.spawn(fn() {
+          let selector =
+            process.new_selector()
+            |> process.select(intent_subj)
+          intent_loop(
+            selector,
+            mcp_client_opt,
+            supervisor_subj,
+            api_key,
+            base_url,
+            agent_state,
+          )
+        })
+
+      let state =
+        REPLState(
+          session_id: session_id,
+          model: model,
+          cwd: exec_env.cwd,
+          db_conn: actor,
+          exec_env: exec_env,
+          api_key: api_key,
+          base_url: base_url,
+          agent_state: agent_state,
         )
 
-      case agent_result {
-        Error(err) -> {
-          io.println("Failed to initialise agent: " <> err)
-          Nil
-        }
-        Ok(agent_state) -> {
-          let state =
-            REPLState(
-              session_id: session_id,
-              model: model,
-              cwd: exec_env.cwd,
-              db_conn: actor,
-              exec_env: exec_env,
-              api_key: api_key,
-              base_url: base_url,
-              agent_state: agent_state,
-            )
-
-          repl_loop(state)
-        }
-      }
+      repl_loop(state)
+    }
+  }
 }
 
 fn notification_loop(
@@ -820,25 +922,51 @@ fn notification_loop(
         Some(p) -> string.inspect(p)
         None -> "{}"
       }
-      let _ = state_actor.handle_mcp_notification(actor, notif.method, params_str)
+      let _ =
+        state_actor.handle_mcp_notification(actor, notif.method, params_str)
       notification_loop(selector, actor)
     }
     Error(_) -> notification_loop(selector, actor)
   }
 }
 
+pub type ToolCallRequest {
+  ToolCallRequest(id: Int, name: String, arguments: String)
+}
+
+pub fn decode_tool_call_request(
+  json_str: String,
+) -> Result(ToolCallRequest, String) {
+  let decoder = {
+    use id <- decode.field("id", decode.int)
+    use params <- decode.field("params", {
+      use name <- decode.field("name", decode.string)
+      use arguments <- decode.field("arguments", decode.string)
+      decode.success(#(name, arguments))
+    })
+    decode.success(ToolCallRequest(id: id, name: params.0, arguments: params.1))
+  }
+  case json.parse(from: json_str, using: decoder) {
+    Ok(req) -> Ok(req)
+    Error(_) -> Error("Invalid tool call request payload")
+  }
+}
+
 fn intent_loop(
-  selector: process.Selector(gleamdb.Datom),
+  selector: process.Selector(Datom),
   mcp_client_opt: option.Option(mcp_client.McpClient),
   supervisor_subj: process.Subject(subagent_supervisor.SupervisorMessage),
   api_key: String,
   base_url: String,
+  agent_state: hermes_agent.AgentState,
 ) -> Nil {
   case process.selector_receive(selector, 600_000) {
     Ok(datom) -> {
       case datom.attribute {
         "call_tool" -> {
-          let msg = "[Side Effect] Reactive gleamdb intent to call tool: " <> datom.value
+          let msg =
+            "[Side Effect] Reactive Datalog intent to call tool: "
+            <> datom.value
           io.println(msg)
           log_event(msg)
           case mcp_client_opt {
@@ -848,32 +976,157 @@ fn intent_loop(
             }
             option.None -> Nil
           }
+          intent_loop(
+            selector,
+            mcp_client_opt,
+            supervisor_subj,
+            api_key,
+            base_url,
+            agent_state,
+          )
         }
         "spawn_worker" -> {
           let msg = "[Side Effect] Spawning subagent worker: " <> datom.entity
           io.println(msg)
           log_event(msg)
-          process.send(supervisor_subj, subagent_supervisor.StartSubagent(datom.entity, datom.value, api_key, base_url))
-          Nil
+          let tools = hermes_agent.all_tool_schemas(mcp_client_opt)
+          process.send(
+            supervisor_subj,
+            subagent_supervisor.StartSubagent(
+              datom.entity,
+              datom.value,
+              api_key,
+              base_url,
+              tools,
+            ),
+          )
+          intent_loop(
+            selector,
+            mcp_client_opt,
+            supervisor_subj,
+            api_key,
+            base_url,
+            agent_state,
+          )
         }
         "llm_request" -> {
-          let msg = "[Side Effect] Sending LLM request to babashka worker: " <> datom.entity
+          let msg =
+            "[Side Effect] Sending LLM request to babashka worker: "
+            <> datom.entity
           io.println(msg)
           log_event(msg)
-          let msg_str = "{\"jsonrpc\":\"2.0\",\"method\":\"execute_task\",\"params\":" <> datom.value <> "}"
-          process.send(supervisor_subj, subagent_supervisor.SendSubagentMsg(datom.entity, msg_str))
-          Nil
+          let msg_str =
+            "{\"jsonrpc\":\"2.0\",\"method\":\"execute_task\",\"params\":"
+            <> datom.value
+            <> "}"
+          process.send(
+            supervisor_subj,
+            subagent_supervisor.SendSubagentMsg(datom.entity, msg_str),
+          )
+          intent_loop(
+            selector,
+            mcp_client_opt,
+            supervisor_subj,
+            api_key,
+            base_url,
+            agent_state,
+          )
         }
         "telemetry" -> {
           let msg = "\n[Babashka Telemetry] " <> datom.value
           io.println(msg)
           log_event(msg)
-          Nil
+          intent_loop(
+            selector,
+            mcp_client_opt,
+            supervisor_subj,
+            api_key,
+            base_url,
+            agent_state,
+          )
         }
-        _ -> Nil
+        "call_tool_request" -> {
+          let msg =
+            "[Side Effect] Subagent requested tool execution: " <> datom.value
+          io.println(msg)
+          log_event(msg)
+          case decode_tool_call_request(datom.value) {
+            Ok(req) -> {
+              let call =
+                hermes_agent.ToolCall(
+                  id: int.to_string(req.id),
+                  name: req.name,
+                  arguments: req.arguments,
+                )
+              // Execute tool on Gleam side!
+              let #(next_env, result) =
+                hermes_agent.dispatch_tool(agent_state, call, False)
+
+              // Build JSON-RPC response
+              let response_payload =
+                "{\"jsonrpc\":\"2.0\",\"id\":"
+                <> int.to_string(req.id)
+                <> ",\"result\":"
+                <> result
+                <> "}\n"
+
+              // Forward response back to the supervisor to send to the worker socket
+              process.send(
+                supervisor_subj,
+                subagent_supervisor.SendSubagentMsg(
+                  datom.entity,
+                  response_payload,
+                ),
+              )
+
+              // Recurse with updated exec_env in agent_state
+              let next_agent_state =
+                hermes_agent.AgentState(
+                  ..agent_state,
+                  exec_env: next_env,
+                  cwd: next_env.cwd,
+                )
+              intent_loop(
+                selector,
+                mcp_client_opt,
+                supervisor_subj,
+                api_key,
+                base_url,
+                next_agent_state,
+              )
+            }
+            Error(e) -> {
+              io.println("Error decoding tool request: " <> e)
+              intent_loop(
+                selector,
+                mcp_client_opt,
+                supervisor_subj,
+                api_key,
+                base_url,
+                agent_state,
+              )
+            }
+          }
+        }
+        _ ->
+          intent_loop(
+            selector,
+            mcp_client_opt,
+            supervisor_subj,
+            api_key,
+            base_url,
+            agent_state,
+          )
       }
-      intent_loop(selector, mcp_client_opt, supervisor_subj, api_key, base_url)
     }
-    Error(_) -> intent_loop(selector, mcp_client_opt, supervisor_subj, api_key, base_url)
+    Error(_) ->
+      intent_loop(
+        selector,
+        mcp_client_opt,
+        supervisor_subj,
+        api_key,
+        base_url,
+        agent_state,
+      )
   }
 }

@@ -1,9 +1,8 @@
+import datom.{type Datom, Datom}
 import gleam/dynamic/decode
 import gleam/list
 import gleam/result
-import gleamdb.{type Database, type Datom, Datom}
 import sqlight
-import evolutionary
 
 pub const schema_sql = "
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -212,19 +211,19 @@ pub fn connect(db_path: String) -> Result(sqlight.Connection, sqlight.Error) {
 pub fn init_schema(conn: sqlight.Connection) -> Result(Nil, sqlight.Error) {
   let _ = sqlight.exec("PRAGMA foreign_keys=ON;", conn)
   let _ = sqlight.exec("PRAGMA journal_mode=WAL;", conn)
-  
+
   let _ = sqlight.exec(schema_sql, conn)
-  
+
   // Try to add raw_json column to existing databases
   let _ = sqlight.exec("ALTER TABLE messages ADD COLUMN raw_json TEXT;", conn)
-  
+
   let _ = sqlight.exec(deferred_index_sql, conn)
   let _ = sqlight.exec(fts_sql, conn)
   let _ = sqlight.exec(fts_trigram_sql, conn)
-  
+
   // Auto-migrate legacy tables into unified datoms
   let _ = sqlight.exec(auto_migrate_datoms_sql, conn)
-  
+
   Ok(Nil)
 }
 
@@ -237,7 +236,8 @@ pub fn create_session(
   system_prompt: String,
   started_at: Float,
 ) -> Result(Nil, sqlight.Error) {
-  let query = "
+  let query =
+    "
     INSERT OR IGNORE INTO sessions (id, source, model, system_prompt, started_at)
     VALUES (?, ?, ?, ?, ?);
   "
@@ -263,7 +263,8 @@ pub fn end_session(
   end_reason: String,
   ended_at: Float,
 ) -> Result(Nil, sqlight.Error) {
-  let query = "
+  let query =
+    "
     UPDATE sessions SET ended_at = ?, end_reason = ?
     WHERE id = ? AND ended_at IS NULL;
   "
@@ -286,7 +287,8 @@ pub fn update_session_cwd(
   id: String,
   cwd: String,
 ) -> Result(Nil, sqlight.Error) {
-  let query = "
+  let query =
+    "
     UPDATE sessions SET cwd = ? WHERE id = ?;
   "
   sqlight.query(
@@ -298,12 +300,32 @@ pub fn update_session_cwd(
   |> result.map(fn(_) { Nil })
 }
 
+// Update the title of a session
+pub fn update_session_title(
+  conn: sqlight.Connection,
+  id: String,
+  title: String,
+) -> Result(Nil, sqlight.Error) {
+  let query =
+    "
+    UPDATE sessions SET title = ? WHERE id = ?;
+  "
+  sqlight.query(
+    query,
+    on: conn,
+    with: [sqlight.text(title), sqlight.text(id)],
+    expecting: decode.dynamic,
+  )
+  |> result.map(fn(_) { Nil })
+}
+
 // Reopen a ended session
 pub fn reopen_session(
   conn: sqlight.Connection,
   id: String,
 ) -> Result(Nil, sqlight.Error) {
-  let query = "
+  let query =
+    "
     UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?;
   "
   sqlight.query(
@@ -324,7 +346,8 @@ pub fn insert_message(
   raw_json: String,
   timestamp: Float,
 ) -> Result(Nil, sqlight.Error) {
-  let query = "
+  let query =
+    "
     INSERT INTO messages (session_id, role, content, raw_json, timestamp)
     VALUES (?, ?, ?, ?, ?);
   "
@@ -352,21 +375,26 @@ pub fn search_messages(
   conn: sqlight.Connection,
   search_term: String,
 ) -> Result(List(SearchMatch), sqlight.Error) {
-  let query = "
+  let query =
+    "
     SELECT m.session_id, m.role, m.content
     FROM messages m
     JOIN messages_fts f ON m.id = f.rowid
     WHERE messages_fts MATCH ?
     ORDER BY rank;
   "
-  
+
   let match_decoder = {
     use session_id <- decode.field(0, decode.string)
     use role <- decode.field(1, decode.string)
     use content <- decode.field(2, decode.string)
-    decode.success(SearchMatch(session_id: session_id, role: role, content: content))
+    decode.success(SearchMatch(
+      session_id: session_id,
+      role: role,
+      content: content,
+    ))
   }
-  
+
   sqlight.query(
     query,
     on: conn,
@@ -381,26 +409,28 @@ pub fn save_datoms(
   tx: Int,
 ) -> Result(Nil, sqlight.Error) {
   let _ = sqlight.exec("BEGIN TRANSACTION;", conn)
-  let query = "
+  let query =
+    "
     INSERT OR REPLACE INTO datoms (entity, attribute, value, tx)
     VALUES (?, ?, ?, ?);
   "
-  
-  let res = list.try_each(datoms, fn(datom) {
-    sqlight.query(
-      query,
-      on: conn,
-      with: [
-        sqlight.text(datom.entity),
-        sqlight.text(datom.attribute),
-        sqlight.text(datom.value),
-        sqlight.int(tx),
-      ],
-      expecting: decode.dynamic,
-    )
-    |> result.map(fn(_) { Nil })
-  })
-  
+
+  let res =
+    list.try_each(datoms, fn(datom) {
+      sqlight.query(
+        query,
+        on: conn,
+        with: [
+          sqlight.text(datom.entity),
+          sqlight.text(datom.attribute),
+          sqlight.text(datom.value),
+          sqlight.int(tx),
+        ],
+        expecting: decode.dynamic,
+      )
+      |> result.map(fn(_) { Nil })
+    })
+
   case res {
     Ok(_) -> {
       let _ = sqlight.exec("COMMIT;", conn)
@@ -413,60 +443,83 @@ pub fn save_datoms(
   }
 }
 
-pub fn load_database(conn: sqlight.Connection) -> Result(Database, sqlight.Error) {
+pub fn load_database(
+  conn: sqlight.Connection,
+) -> Result(List(Datom), sqlight.Error) {
   let query = "SELECT entity, attribute, value FROM datoms ORDER BY tx ASC;"
-  
+
   let datom_decoder = {
     use entity <- decode.field(0, decode.string)
     use attribute <- decode.field(1, decode.string)
     use value <- decode.field(2, decode.string)
     decode.success(Datom(entity: entity, attribute: attribute, value: value))
   }
-  
+
   case sqlight.query(query, on: conn, with: [], expecting: datom_decoder) {
     Ok(datoms) -> {
-      let rules = evolutionary.datoms_to_rules(datoms)
-      let db =
-        gleamdb.new()
-        |> gleamdb.transact(datoms)
-        |> gleamdb.evaluate_rules(rules)
-      Ok(db)
+      Ok(datoms)
     }
     Error(err) -> Error(err)
   }
 }
 
-pub fn list_sessions(conn: sqlight.Connection) -> Result(List(String), sqlight.Error) {
+pub fn list_sessions(
+  conn: sqlight.Connection,
+) -> Result(List(String), sqlight.Error) {
   let query = "SELECT id FROM sessions ORDER BY started_at DESC;"
-  sqlight.query(
-    query,
-    on: conn,
-    with: [],
-    expecting: decode.string,
-  )
+  sqlight.query(query, on: conn, with: [], expecting: {
+    use val <- decode.field(0, decode.string)
+    decode.success(val)
+  })
 }
 
-pub fn get_session_cwd(conn: sqlight.Connection, id: String) -> Result(String, sqlight.Error) {
+pub fn get_session_cwd(
+  conn: sqlight.Connection,
+  id: String,
+) -> Result(String, sqlight.Error) {
   let query = "SELECT COALESCE(cwd, '') FROM sessions WHERE id = ?;"
-  case sqlight.query(
-    query,
-    on: conn,
-    with: [sqlight.text(id)],
-    expecting: decode.string,
-  ) {
+  case
+    sqlight.query(query, on: conn, with: [sqlight.text(id)], expecting: {
+      use val <- decode.field(0, decode.string)
+      decode.success(val)
+    })
+  {
     Ok([cwd, ..]) -> Ok(cwd)
-    Ok([]) -> Error(sqlight.SqlightError(code: sqlight.Notfound, message: "Session not found", offset: -1))
+    Ok([]) ->
+      Error(sqlight.SqlightError(
+        code: sqlight.Notfound,
+        message: "Session not found",
+        offset: -1,
+      ))
     Error(err) -> Error(err)
   }
 }
 
-pub fn get_session_history(conn: sqlight.Connection, id: String) -> Result(List(String), sqlight.Error) {
-  let query = "SELECT raw_json FROM messages WHERE session_id = ? AND active = 1 AND raw_json IS NOT NULL ORDER BY timestamp ASC;"
-  sqlight.query(query, on: conn, with: [sqlight.text(id)], expecting: decode.string)
+pub fn get_session_history(
+  conn: sqlight.Connection,
+  id: String,
+) -> Result(List(String), sqlight.Error) {
+  let query =
+    "SELECT raw_json FROM messages WHERE session_id = ? AND active = 1 AND raw_json IS NOT NULL ORDER BY timestamp ASC;"
+  let string_decoder = {
+    use val <- decode.field(0, decode.string)
+    decode.success(val)
+  }
+  sqlight.query(
+    query,
+    on: conn,
+    with: [sqlight.text(id)],
+    expecting: string_decoder,
+  )
 }
 
-pub fn rollback_session(conn: sqlight.Connection, id: String, n: Int) -> Result(Nil, sqlight.Error) {
-  let query = "
+pub fn rollback_session(
+  conn: sqlight.Connection,
+  id: String,
+  n: Int,
+) -> Result(Nil, sqlight.Error) {
+  let query =
+    "
     UPDATE messages SET active = 0 
     WHERE id IN (
       SELECT id FROM messages 
@@ -475,10 +528,14 @@ pub fn rollback_session(conn: sqlight.Connection, id: String, n: Int) -> Result(
       LIMIT ?
     );
   "
-  sqlight.query(query, on: conn, with: [sqlight.text(id), sqlight.int(n)], expecting: decode.dynamic)
+  sqlight.query(
+    query,
+    on: conn,
+    with: [sqlight.text(id), sqlight.int(n)],
+    expecting: decode.dynamic,
+  )
   |> result.map(fn(_) { Nil })
 }
-
 
 pub fn insert_telemetry(
   conn: sqlight.Connection,
@@ -488,7 +545,8 @@ pub fn insert_telemetry(
   metadata: String,
   timestamp: Float,
 ) -> Result(Nil, sqlight.Error) {
-  let query = "
+  let query =
+    "
     INSERT INTO telemetry (session_id, log_level, message, metadata, timestamp)
     VALUES (?, ?, ?, ?, ?);
   "
@@ -505,4 +563,17 @@ pub fn insert_telemetry(
     expecting: decode.dynamic,
   )
   |> result.map(fn(_) { Nil })
+}
+
+pub fn get_all_datoms(
+  conn: sqlight.Connection,
+) -> Result(List(Datom), sqlight.Error) {
+  let query = "SELECT entity, attribute, value FROM datoms;"
+  let datom_decoder = {
+    use entity <- decode.field(0, decode.string)
+    use attribute <- decode.field(1, decode.string)
+    use value <- decode.field(2, decode.string)
+    decode.success(Datom(entity: entity, attribute: attribute, value: value))
+  }
+  sqlight.query(query, on: conn, with: [], expecting: datom_decoder)
 }

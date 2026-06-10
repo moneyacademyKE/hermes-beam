@@ -13,7 +13,7 @@ This walkthrough details the additions and refactoring completed to bring pure G
 
 ### 1.2 Datalog Skill Compiler & Loader
 - **Created Skill Compiler (`src/skill_compiler.gleam`)**: Implemented a parser `parse_skill_file` to parse YAML frontmatter and compile markdown prompt files to EAV facts `[Datom(name, "skill/prompt", prompt)]`. Implemented `load_skills_from_dir` to read all `SKILL.md` documents nested inside the `<hermes_home>/skills/` directory.
-- **Integrated Loader (`src/hermes_beam.gleam`)**: Automatically loads and transacts dynamic skills to the SQLite database via the `StateActor` at startup, making their capabilities available to `gleamdb`.
+- **Integrated Loader (`src/hermes_beam.gleam`)**: Automatically loads and transacts dynamic skills to the SQLite database via the `StateActor` at startup, making their capabilities available to the Babashka micro-Datalog engine.
 
 ### 1.3 JSON-RPC TUI Gateway
 - **Created JSON-RPC Gateway (`src/tui_gateway.gleam`)**: Built a stdio JSON-RPC server with a recursive loop reading inputs. Implemented methods like `session.create`, `session.resume`, `session.list`, `config.get`, `config.set`, and `prompt.submit`.

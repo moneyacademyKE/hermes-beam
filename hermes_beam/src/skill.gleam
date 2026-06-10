@@ -1,12 +1,12 @@
+import datom.{type Datom, type Rule, Datom}
 import gleam/list
-import gleamdb.{type Database, type Rule, type Datom}
 
 pub type Skill {
   Skill(
     name: String,
     description: String,
     rules: List(Rule),
-    facts: List(Datom)
+    facts: List(Datom),
   )
 }
 
@@ -22,20 +22,40 @@ pub fn register(registry: Registry, skill: Skill) -> Registry {
   Registry([skill, ..registry.skills])
 }
 
-pub fn compile_db(registry: Registry) -> Database {
-  // Aggregate all base facts from registered skills
-  let base_facts =
-    list.flat_map(registry.skills, fn(skill) { skill.facts })
+import gleam/int
 
-  // Initialize a fresh database with base facts
-  let db =
-    gleamdb.new()
-    |> gleamdb.transact(base_facts)
+pub fn rule_to_datoms(rule_name: String, rule: Rule) -> List(Datom) {
+  let head_datoms = [
+    Datom(rule_name, "rule/head_0", rule.head.0),
+    Datom(rule_name, "rule/head_1", rule.head.1),
+    Datom(rule_name, "rule/head_2", rule.head.2),
+  ]
 
-  // Aggregate all rules from registered skills
-  let all_rules =
-    list.flat_map(registry.skills, fn(skill) { skill.rules })
+  let body_datoms =
+    list.index_map(rule.body, fn(clause, idx) {
+      let prefix = "rule/body_" <> int.to_string(idx) <> "_"
+      [
+        Datom(rule_name, prefix <> "0", clause.0),
+        Datom(rule_name, prefix <> "1", clause.1),
+        Datom(rule_name, prefix <> "2", clause.2),
+      ]
+    })
+    |> list.flatten
 
-  // Evaluate rules to a fixed point
-  gleamdb.evaluate_rules(db, all_rules)
+  list.append(head_datoms, body_datoms)
+}
+
+pub fn compile_db(registry: Registry) -> List(Datom) {
+  let base_facts = list.flat_map(registry.skills, fn(skill) { skill.facts })
+
+  let rule_datoms =
+    list.flat_map(registry.skills, fn(skill) {
+      list.index_map(skill.rules, fn(rule, idx) {
+        let rule_name = "rule/" <> skill.name <> "/" <> int.to_string(idx)
+        rule_to_datoms(rule_name, rule)
+      })
+      |> list.flatten
+    })
+
+  list.append(base_facts, rule_datoms)
 }

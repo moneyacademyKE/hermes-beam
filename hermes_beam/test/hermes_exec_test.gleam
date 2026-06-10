@@ -20,33 +20,31 @@ pub fn run_command_timeout_test() {
 
 pub fn terminal_env_init_and_execute_test() {
   let initial_cwd = hermes_exec.get_temp_dir()
-  let env = hermes_exec.new_terminal_env(
-    initial_cwd,
-    5000,
-    [
+  let env =
+    hermes_exec.new_terminal_env(initial_cwd, 5000, [
       #("MY_CUSTOM_VAR", "my_value"),
       #("OPENAI_API_KEY", "should_be_stripped"),
       #("_HERMES_FORCE_OPENAI_API_KEY", "should_be_preserved"),
-    ]
-  )
-  
+    ])
+
   let env = hermes_exec.init_session(env)
   let assert True = env.snapshot_ready
-  
+
   // Test custom environment variables
   let #(env, result) = hermes_exec.execute(env, "echo $MY_CUSTOM_VAR", "", None)
   let assert Ok(#(output, 0)) = result
   let assert "my_value" = string.trim(output)
-  
+
   // Test blocklisted key behavior: stripped but force-key survives
-  let #(env, result) = hermes_exec.execute(env, "echo $OPENAI_API_KEY", "", None)
+  let #(env, result) =
+    hermes_exec.execute(env, "echo $OPENAI_API_KEY", "", None)
   let assert Ok(#(output2, 0)) = result
   let assert "should_be_preserved" = string.trim(output2)
-  
+
   // Test navigation and CWD tracking
   let #(env, result) = hermes_exec.execute(env, "cd / && pwd", "", None)
   let assert Ok(#(_, 0)) = result
   let assert "/" = env.cwd
-  
+
   hermes_exec.cleanup(env)
 }

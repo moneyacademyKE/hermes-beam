@@ -12,7 +12,7 @@ We solved this by establishing a pure dataflow boundary via local Unix Domain So
 
 1. **Subagent Supervisor (Gleam):** 
    - Uses native Erlang `gen_tcp` bindings (`uds_native.erl`) to establish an ephemeral socket.
-   - Monitors an `intent_loop` listening to pure Gleamdb Datoms (e.g. `llm_request`, `spawn_worker`).
+   - Monitors an `intent_loop` listening to pure SQLite-backed `Datom` facts (e.g. `llm_request`, `spawn_worker`).
    - Spawns independent Clojure/Babashka worker binaries, injecting secrets locally over the UDS boundary.
 
 2. **Subagent Worker (Babashka):**

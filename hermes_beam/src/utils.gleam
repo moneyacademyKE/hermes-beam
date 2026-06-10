@@ -1,10 +1,10 @@
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
-import gleam/string
-import gleam/option.{type Option, Some, None}
-import gleam/list
 import gleam/int
 import gleam/json
+import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/string
 import simplifile
 
 pub type YamlData {
@@ -24,7 +24,10 @@ pub fn is_truthy_value(value: Dynamic, default: Bool) -> Bool {
       case decode.run(value, decode.string) {
         Ok(s) -> {
           let s_lower = string.lowercase(string.trim(s))
-          s_lower == "1" || s_lower == "true" || s_lower == "yes" || s_lower == "on"
+          s_lower == "1"
+          || s_lower == "true"
+          || s_lower == "yes"
+          || s_lower == "on"
         }
         Error(_) -> {
           case is_null(value) {
@@ -97,7 +100,7 @@ pub fn base_url_hostname(base_url: String) -> String {
         Ok(#(before, _)) -> before
         Error(_) -> host_part
       }
-      
+
       string.lowercase(host_only)
       |> trim_trailing_dot
     }
@@ -119,9 +122,7 @@ pub fn base_url_host_matches(base_url: String, domain: String) -> Bool {
 pub fn yaml_to_json(data: YamlData) -> json.Json {
   case data {
     YamlMap(pairs) -> {
-      json.object(list.map(pairs, fn(pair) {
-        #(pair.0, yaml_to_json(pair.1))
-      }))
+      json.object(list.map(pairs, fn(pair) { #(pair.0, yaml_to_json(pair.1)) }))
     }
     YamlString(s) -> json.string(s)
     YamlInt(i) -> json.int(i)
@@ -136,7 +137,10 @@ pub fn yaml_to_string(data: YamlData, indent: Int) -> String {
         let key = pair.0
         case pair.1 {
           YamlMap(nested_pairs) -> {
-            spacing <> key <> ":\n" <> yaml_to_string(YamlMap(nested_pairs), indent + 2)
+            spacing
+            <> key
+            <> ":\n"
+            <> yaml_to_string(YamlMap(nested_pairs), indent + 2)
           }
           YamlString(s) -> {
             spacing <> key <> ": " <> s
@@ -153,7 +157,11 @@ pub fn yaml_to_string(data: YamlData, indent: Int) -> String {
   }
 }
 
-pub fn atomic_json_write(path: String, data: YamlData, mode: Option(Int)) -> Result(Nil, simplifile.FileError) {
+pub fn atomic_json_write(
+  path: String,
+  data: YamlData,
+  mode: Option(Int),
+) -> Result(Nil, simplifile.FileError) {
   let content = json.to_string(yaml_to_json(data))
   let temp_path = path <> ".tmp"
   case simplifile.write(temp_path, content) {
@@ -177,7 +185,11 @@ pub fn atomic_json_write(path: String, data: YamlData, mode: Option(Int)) -> Res
   }
 }
 
-pub fn atomic_yaml_write(path: String, data: YamlData, mode: Option(Int)) -> Result(Nil, simplifile.FileError) {
+pub fn atomic_yaml_write(
+  path: String,
+  data: YamlData,
+  mode: Option(Int),
+) -> Result(Nil, simplifile.FileError) {
   let content = yaml_to_string(data, 0)
   let temp_path = path <> ".tmp"
   case simplifile.write(temp_path, content) {
@@ -210,4 +222,5 @@ pub fn read_line(prompt: String) -> Result(String, Dynamic)
 @external(erlang, "utils_ffi", "get_cwd")
 pub fn get_cwd() -> Result(String, Dynamic)
 
-
+@external(erlang, "utils_ffi", "set_expand_fun")
+pub fn set_expand_fun() -> Nil

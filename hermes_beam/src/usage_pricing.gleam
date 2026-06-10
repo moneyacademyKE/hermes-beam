@@ -1,10 +1,10 @@
-import gleam/option.{type Option, Some, None}
-import gleam/string
-import gleam/int
-import gleam/float
-import gleam/list
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
+import gleam/float
+import gleam/int
+import gleam/list
+import gleam/option.{type Option, None, Some}
+import gleam/string
 import utils
 
 pub type CanonicalUsage {
@@ -70,7 +70,8 @@ fn get_field_dynamic(data: Dynamic, field_name: String) -> Dynamic {
 }
 
 fn get_output_reasoning_tokens(response_usage: Dynamic) -> Int {
-  let output_details = get_field_dynamic(response_usage, "output_tokens_details")
+  let output_details =
+    get_field_dynamic(response_usage, "output_tokens_details")
   get_int_field(output_details, "reasoning_tokens")
 }
 
@@ -92,12 +93,18 @@ pub fn resolve_billing_route(
   let base_raw = option.unwrap(base_url, "")
   let base = string.lowercase(string.trim(base_raw))
   let model = string.trim(model_name)
-  
-  let #(provider_name, model) = case provider_name == "" && string.contains(model, "/") {
+
+  let #(provider_name, model) = case
+    provider_name == "" && string.contains(model, "/")
+  {
     True -> {
       case string.split_once(model, "/") {
         Ok(#(inferred, bare)) -> {
-          case inferred == "anthropic" || inferred == "openai" || inferred == "google" {
+          case
+            inferred == "anthropic"
+            || inferred == "openai"
+            || inferred == "google"
+          {
             True -> #(inferred, bare)
             False -> #(provider_name, model)
           }
@@ -161,7 +168,9 @@ pub fn resolve_billing_route(
         billing_mode: "official_docs_snapshot",
       )
     }
-    _ if provider_name == "custom" || provider_name == "local" || is_localhost -> {
+    _
+      if provider_name == "custom" || provider_name == "local" || is_localhost
+    -> {
       let prov = case provider_name {
         "" -> "custom"
         p -> p
@@ -214,28 +223,33 @@ pub fn normalize_anthropic_model_name(model: String) -> String {
   |> string.replace("3.5", "3-5")
 }
 
-pub fn lookup_official_docs_pricing(provider: String, model: String) -> Option(PricingEntry) {
+pub fn lookup_official_docs_pricing(
+  provider: String,
+  model: String,
+) -> Option(PricingEntry) {
   let pair = #(provider, model)
   case pair {
     #("anthropic", "claude-opus-4-8") -> {
       Some(PricingEntry(
-        input_cost_per_million: Some(5.00),
-        output_cost_per_million: Some(25.00),
-        cache_read_cost_per_million: Some(0.50),
+        input_cost_per_million: Some(5.0),
+        output_cost_per_million: Some(25.0),
+        cache_read_cost_per_million: Some(0.5),
         cache_write_cost_per_million: Some(6.25),
         request_cost: None,
         source: "official_docs_snapshot",
-        source_url: Some("https://platform.claude.com/docs/en/about-claude/pricing"),
+        source_url: Some(
+          "https://platform.claude.com/docs/en/about-claude/pricing",
+        ),
         pricing_version: Some("anthropic-pricing-2026-05"),
         fetched_at: None,
       ))
     }
     #("anthropic", "claude-opus-4-8-fast") -> {
       Some(PricingEntry(
-        input_cost_per_million: Some(10.00),
-        output_cost_per_million: Some(50.00),
-        cache_read_cost_per_million: Some(1.00),
-        cache_write_cost_per_million: Some(12.50),
+        input_cost_per_million: Some(10.0),
+        output_cost_per_million: Some(50.0),
+        cache_read_cost_per_million: Some(1.0),
+        cache_write_cost_per_million: Some(12.5),
         request_cost: None,
         source: "official_docs_snapshot",
         source_url: Some("https://openrouter.ai/anthropic/claude-opus-4-8-fast"),
@@ -249,13 +263,15 @@ pub fn lookup_official_docs_pricing(provider: String, model: String) -> Option(P
     | #("anthropic", "claude-opus-4-6-20250414")
     | #("anthropic", "claude-opus-4-5") -> {
       Some(PricingEntry(
-        input_cost_per_million: Some(5.00),
-        output_cost_per_million: Some(25.00),
-        cache_read_cost_per_million: Some(0.50),
+        input_cost_per_million: Some(5.0),
+        output_cost_per_million: Some(25.0),
+        cache_read_cost_per_million: Some(0.5),
         cache_write_cost_per_million: Some(6.25),
         request_cost: None,
         source: "official_docs_snapshot",
-        source_url: Some("https://platform.claude.com/docs/en/about-claude/pricing"),
+        source_url: Some(
+          "https://platform.claude.com/docs/en/about-claude/pricing",
+        ),
         pricing_version: Some("anthropic-pricing-2026-05"),
         fetched_at: None,
       ))
@@ -264,60 +280,68 @@ pub fn lookup_official_docs_pricing(provider: String, model: String) -> Option(P
     | #("anthropic", "claude-sonnet-4-6-20250414")
     | #("anthropic", "claude-sonnet-4-5") -> {
       Some(PricingEntry(
-        input_cost_per_million: Some(3.00),
-        output_cost_per_million: Some(15.00),
-        cache_read_cost_per_million: Some(0.30),
+        input_cost_per_million: Some(3.0),
+        output_cost_per_million: Some(15.0),
+        cache_read_cost_per_million: Some(0.3),
         cache_write_cost_per_million: Some(3.75),
         request_cost: None,
         source: "official_docs_snapshot",
-        source_url: Some("https://platform.claude.com/docs/en/about-claude/pricing"),
+        source_url: Some(
+          "https://platform.claude.com/docs/en/about-claude/pricing",
+        ),
         pricing_version: Some("anthropic-pricing-2026-05"),
         fetched_at: None,
       ))
     }
     #("anthropic", "claude-haiku-4-5") -> {
       Some(PricingEntry(
-        input_cost_per_million: Some(1.00),
-        output_cost_per_million: Some(5.00),
-        cache_read_cost_per_million: Some(0.10),
+        input_cost_per_million: Some(1.0),
+        output_cost_per_million: Some(5.0),
+        cache_read_cost_per_million: Some(0.1),
         cache_write_cost_per_million: Some(1.25),
         request_cost: None,
         source: "official_docs_snapshot",
-        source_url: Some("https://platform.claude.com/docs/en/about-claude/pricing"),
+        source_url: Some(
+          "https://platform.claude.com/docs/en/about-claude/pricing",
+        ),
         pricing_version: Some("anthropic-pricing-2026-05"),
         fetched_at: None,
       ))
     }
     #("anthropic", "claude-opus-4-20250514") -> {
       Some(PricingEntry(
-        input_cost_per_million: Some(15.00),
-        output_cost_per_million: Some(75.00),
-        cache_read_cost_per_million: Some(1.50),
+        input_cost_per_million: Some(15.0),
+        output_cost_per_million: Some(75.0),
+        cache_read_cost_per_million: Some(1.5),
         cache_write_cost_per_million: Some(18.75),
         request_cost: None,
         source: "official_docs_snapshot",
-        source_url: Some("https://platform.claude.com/docs/en/about-claude/pricing"),
+        source_url: Some(
+          "https://platform.claude.com/docs/en/about-claude/pricing",
+        ),
         pricing_version: Some("anthropic-pricing-2026-05"),
         fetched_at: None,
       ))
     }
     #("anthropic", "claude-sonnet-4-20250514") -> {
       Some(PricingEntry(
-        input_cost_per_million: Some(3.00),
-        output_cost_per_million: Some(15.00),
-        cache_read_cost_per_million: Some(0.30),
+        input_cost_per_million: Some(3.0),
+        output_cost_per_million: Some(15.0),
+        cache_read_cost_per_million: Some(0.3),
         cache_write_cost_per_million: Some(3.75),
         request_cost: None,
         source: "official_docs_snapshot",
-        source_url: Some("https://platform.claude.com/docs/en/about-claude/pricing"),
+        source_url: Some(
+          "https://platform.claude.com/docs/en/about-claude/pricing",
+        ),
         pricing_version: Some("anthropic-pricing-2026-05"),
         fetched_at: None,
       ))
     }
     #("openai", "gpt-4o") -> {
       Some(PricingEntry(
-        input_cost_per_million: Some(2.50),
-        output_cost_per_million: Some(10.00),
+        input_cost_per_million: Some(2.5),
+        output_cost_per_million: Some(10.0),
         cache_read_cost_per_million: Some(1.25),
         cache_write_cost_per_million: None,
         request_cost: None,
@@ -330,7 +354,7 @@ pub fn lookup_official_docs_pricing(provider: String, model: String) -> Option(P
     #("openai", "gpt-4o-mini") -> {
       Some(PricingEntry(
         input_cost_per_million: Some(0.15),
-        output_cost_per_million: Some(0.60),
+        output_cost_per_million: Some(0.6),
         cache_read_cost_per_million: Some(0.075),
         cache_write_cost_per_million: None,
         request_cost: None,
@@ -342,9 +366,9 @@ pub fn lookup_official_docs_pricing(provider: String, model: String) -> Option(P
     }
     #("openai", "gpt-4.1") -> {
       Some(PricingEntry(
-        input_cost_per_million: Some(2.00),
-        output_cost_per_million: Some(8.00),
-        cache_read_cost_per_million: Some(0.50),
+        input_cost_per_million: Some(2.0),
+        output_cost_per_million: Some(8.0),
+        cache_read_cost_per_million: Some(0.5),
         cache_write_cost_per_million: None,
         request_cost: None,
         source: "official_docs_snapshot",
@@ -355,9 +379,9 @@ pub fn lookup_official_docs_pricing(provider: String, model: String) -> Option(P
     }
     #("openai", "gpt-4.1-mini") -> {
       Some(PricingEntry(
-        input_cost_per_million: Some(0.40),
-        output_cost_per_million: Some(1.60),
-        cache_read_cost_per_million: Some(0.10),
+        input_cost_per_million: Some(0.4),
+        output_cost_per_million: Some(1.6),
+        cache_read_cost_per_million: Some(0.1),
         cache_write_cost_per_million: None,
         request_cost: None,
         source: "official_docs_snapshot",
@@ -368,8 +392,8 @@ pub fn lookup_official_docs_pricing(provider: String, model: String) -> Option(P
     }
     #("openai", "gpt-4.1-nano") -> {
       Some(PricingEntry(
-        input_cost_per_million: Some(0.10),
-        output_cost_per_million: Some(0.40),
+        input_cost_per_million: Some(0.1),
+        output_cost_per_million: Some(0.4),
         cache_read_cost_per_million: Some(0.025),
         cache_write_cost_per_million: None,
         request_cost: None,
@@ -381,9 +405,9 @@ pub fn lookup_official_docs_pricing(provider: String, model: String) -> Option(P
     }
     #("openai", "o3") -> {
       Some(PricingEntry(
-        input_cost_per_million: Some(10.00),
-        output_cost_per_million: Some(40.00),
-        cache_read_cost_per_million: Some(2.50),
+        input_cost_per_million: Some(10.0),
+        output_cost_per_million: Some(40.0),
+        cache_read_cost_per_million: Some(2.5),
         cache_write_cost_per_million: None,
         request_cost: None,
         source: "official_docs_snapshot",
@@ -394,8 +418,8 @@ pub fn lookup_official_docs_pricing(provider: String, model: String) -> Option(P
     }
     #("openai", "o3-mini") -> {
       Some(PricingEntry(
-        input_cost_per_million: Some(1.10),
-        output_cost_per_million: Some(4.40),
+        input_cost_per_million: Some(1.1),
+        output_cost_per_million: Some(4.4),
         cache_read_cost_per_million: Some(0.55),
         cache_write_cost_per_million: None,
         request_cost: None,
@@ -407,39 +431,45 @@ pub fn lookup_official_docs_pricing(provider: String, model: String) -> Option(P
     }
     #("anthropic", "claude-3-5-sonnet-20241022") -> {
       Some(PricingEntry(
-        input_cost_per_million: Some(3.00),
-        output_cost_per_million: Some(15.00),
-        cache_read_cost_per_million: Some(0.30),
+        input_cost_per_million: Some(3.0),
+        output_cost_per_million: Some(15.0),
+        cache_read_cost_per_million: Some(0.3),
         cache_write_cost_per_million: Some(3.75),
         request_cost: None,
         source: "official_docs_snapshot",
-        source_url: Some("https://platform.claude.com/docs/en/about-claude/pricing"),
+        source_url: Some(
+          "https://platform.claude.com/docs/en/about-claude/pricing",
+        ),
         pricing_version: Some("anthropic-pricing-2026-05"),
         fetched_at: None,
       ))
     }
     #("anthropic", "claude-3-5-haiku-20241022") -> {
       Some(PricingEntry(
-        input_cost_per_million: Some(0.80),
-        output_cost_per_million: Some(4.00),
+        input_cost_per_million: Some(0.8),
+        output_cost_per_million: Some(4.0),
         cache_read_cost_per_million: Some(0.08),
-        cache_write_cost_per_million: Some(1.00),
+        cache_write_cost_per_million: Some(1.0),
         request_cost: None,
         source: "official_docs_snapshot",
-        source_url: Some("https://platform.claude.com/docs/en/about-claude/pricing"),
+        source_url: Some(
+          "https://platform.claude.com/docs/en/about-claude/pricing",
+        ),
         pricing_version: Some("anthropic-pricing-2026-05"),
         fetched_at: None,
       ))
     }
     #("anthropic", "claude-3-opus-20240229") -> {
       Some(PricingEntry(
-        input_cost_per_million: Some(15.00),
-        output_cost_per_million: Some(75.00),
-        cache_read_cost_per_million: Some(1.50),
+        input_cost_per_million: Some(15.0),
+        output_cost_per_million: Some(75.0),
+        cache_read_cost_per_million: Some(1.5),
         cache_write_cost_per_million: Some(18.75),
         request_cost: None,
         source: "official_docs_snapshot",
-        source_url: Some("https://platform.claude.com/docs/en/about-claude/pricing"),
+        source_url: Some(
+          "https://platform.claude.com/docs/en/about-claude/pricing",
+        ),
         pricing_version: Some("anthropic-pricing-2026-05"),
         fetched_at: None,
       ))
@@ -449,10 +479,12 @@ pub fn lookup_official_docs_pricing(provider: String, model: String) -> Option(P
         input_cost_per_million: Some(0.25),
         output_cost_per_million: Some(1.25),
         cache_read_cost_per_million: Some(0.03),
-        cache_write_cost_per_million: Some(0.30),
+        cache_write_cost_per_million: Some(0.3),
         request_cost: None,
         source: "official_docs_snapshot",
-        source_url: Some("https://platform.claude.com/docs/en/about-claude/pricing"),
+        source_url: Some(
+          "https://platform.claude.com/docs/en/about-claude/pricing",
+        ),
         pricing_version: Some("anthropic-pricing-2026-05"),
         fetched_at: None,
       ))
@@ -499,7 +531,7 @@ pub fn lookup_official_docs_pricing(provider: String, model: String) -> Option(P
     #("google", "gemini-2.5-pro") -> {
       Some(PricingEntry(
         input_cost_per_million: Some(1.25),
-        output_cost_per_million: Some(10.00),
+        output_cost_per_million: Some(10.0),
         cache_read_cost_per_million: None,
         cache_write_cost_per_million: None,
         request_cost: None,
@@ -512,7 +544,7 @@ pub fn lookup_official_docs_pricing(provider: String, model: String) -> Option(P
     #("google", "gemini-2.5-flash") -> {
       Some(PricingEntry(
         input_cost_per_million: Some(0.15),
-        output_cost_per_million: Some(0.60),
+        output_cost_per_million: Some(0.6),
         cache_read_cost_per_million: None,
         cache_write_cost_per_million: None,
         request_cost: None,
@@ -524,8 +556,8 @@ pub fn lookup_official_docs_pricing(provider: String, model: String) -> Option(P
     }
     #("google", "gemini-2.0-flash") -> {
       Some(PricingEntry(
-        input_cost_per_million: Some(0.10),
-        output_cost_per_million: Some(0.40),
+        input_cost_per_million: Some(0.1),
+        output_cost_per_million: Some(0.4),
         cache_read_cost_per_million: None,
         cache_write_cost_per_million: None,
         request_cost: None,
@@ -537,8 +569,8 @@ pub fn lookup_official_docs_pricing(provider: String, model: String) -> Option(P
     }
     #("bedrock", "anthropic.claude-opus-4-6") -> {
       Some(PricingEntry(
-        input_cost_per_million: Some(15.00),
-        output_cost_per_million: Some(75.00),
+        input_cost_per_million: Some(15.0),
+        output_cost_per_million: Some(75.0),
         cache_read_cost_per_million: None,
         cache_write_cost_per_million: None,
         request_cost: None,
@@ -551,8 +583,8 @@ pub fn lookup_official_docs_pricing(provider: String, model: String) -> Option(P
     #("bedrock", "anthropic.claude-sonnet-4-6")
     | #("bedrock", "anthropic.claude-sonnet-4-5") -> {
       Some(PricingEntry(
-        input_cost_per_million: Some(3.00),
-        output_cost_per_million: Some(15.00),
+        input_cost_per_million: Some(3.0),
+        output_cost_per_million: Some(15.0),
         cache_read_cost_per_million: None,
         cache_write_cost_per_million: None,
         request_cost: None,
@@ -564,8 +596,8 @@ pub fn lookup_official_docs_pricing(provider: String, model: String) -> Option(P
     }
     #("bedrock", "anthropic.claude-haiku-4-5") -> {
       Some(PricingEntry(
-        input_cost_per_million: Some(0.80),
-        output_cost_per_million: Some(4.00),
+        input_cost_per_million: Some(0.8),
+        output_cost_per_million: Some(4.0),
         cache_read_cost_per_million: None,
         cache_write_cost_per_million: None,
         request_cost: None,
@@ -577,8 +609,8 @@ pub fn lookup_official_docs_pricing(provider: String, model: String) -> Option(P
     }
     #("bedrock", "amazon.nova-pro") -> {
       Some(PricingEntry(
-        input_cost_per_million: Some(0.80),
-        output_cost_per_million: Some(3.20),
+        input_cost_per_million: Some(0.8),
+        output_cost_per_million: Some(3.2),
         cache_read_cost_per_million: None,
         cache_write_cost_per_million: None,
         request_cost: None,
@@ -616,8 +648,8 @@ pub fn lookup_official_docs_pricing(provider: String, model: String) -> Option(P
     }
     #("minimax", "minimax-m2.7") | #("minimax-cn", "minimax-m2.7") -> {
       Some(PricingEntry(
-        input_cost_per_million: Some(0.30),
-        output_cost_per_million: Some(1.20),
+        input_cost_per_million: Some(0.3),
+        output_cost_per_million: Some(1.2),
         cache_read_cost_per_million: None,
         cache_write_cost_per_million: None,
         request_cost: None,
@@ -631,7 +663,9 @@ pub fn lookup_official_docs_pricing(provider: String, model: String) -> Option(P
   }
 }
 
-fn lookup_official_docs_pricing_route(route: BillingRoute) -> Option(PricingEntry) {
+fn lookup_official_docs_pricing_route(
+  route: BillingRoute,
+) -> Option(PricingEntry) {
   let model = string.lowercase(route.model)
   case lookup_official_docs_pricing(route.provider, model) {
     Some(entry) -> Some(entry)
@@ -655,7 +689,8 @@ pub fn get_pricing_entry(
   provider provider: Option(String),
   base_url base_url: Option(String),
 ) -> Option(PricingEntry) {
-  let route = resolve_billing_route(model_name, provider: provider, base_url: base_url)
+  let route =
+    resolve_billing_route(model_name, provider: provider, base_url: base_url)
   case route.billing_mode {
     "subscription_included" -> {
       Some(PricingEntry(
@@ -688,10 +723,12 @@ pub fn normalize_usage(
     True -> {
       let input_tokens = get_int_field(response_usage, "input_tokens")
       let output_tokens = get_int_field(response_usage, "output_tokens")
-      let cache_read_tokens = get_int_field(response_usage, "cache_read_input_tokens")
-      let cache_write_tokens = get_int_field(response_usage, "cache_creation_input_tokens")
+      let cache_read_tokens =
+        get_int_field(response_usage, "cache_read_input_tokens")
+      let cache_write_tokens =
+        get_int_field(response_usage, "cache_creation_input_tokens")
       let reasoning_tokens = get_output_reasoning_tokens(response_usage)
-      
+
       CanonicalUsage(
         input_tokens: input_tokens,
         output_tokens: output_tokens,
@@ -706,10 +743,13 @@ pub fn normalize_usage(
         True -> {
           let input_total = get_int_field(response_usage, "input_tokens")
           let output_tokens = get_int_field(response_usage, "output_tokens")
-          let details = get_field_dynamic(response_usage, "input_tokens_details")
+          let details =
+            get_field_dynamic(response_usage, "input_tokens_details")
           let cache_read_tokens = get_int_field(details, "cached_tokens")
-          let cache_write_tokens = get_int_field(details, "cache_creation_tokens")
-          let input_tokens = int.max(0, input_total - cache_read_tokens - cache_write_tokens)
+          let cache_write_tokens =
+            get_int_field(details, "cache_creation_tokens")
+          let input_tokens =
+            int.max(0, input_total - cache_read_tokens - cache_write_tokens)
           let reasoning_tokens = get_output_reasoning_tokens(response_usage)
 
           CanonicalUsage(
@@ -724,17 +764,21 @@ pub fn normalize_usage(
         False -> {
           let prompt_total = get_int_field(response_usage, "prompt_tokens")
           let output_tokens = get_int_field(response_usage, "completion_tokens")
-          let details = get_field_dynamic(response_usage, "prompt_tokens_details")
-          
+          let details =
+            get_field_dynamic(response_usage, "prompt_tokens_details")
+
           let cache_read_tokens = case get_int_field(details, "cached_tokens") {
             0 -> get_int_field(response_usage, "cache_read_input_tokens")
             val -> val
           }
-          let cache_write_tokens = case get_int_field(details, "cache_write_tokens") {
+          let cache_write_tokens = case
+            get_int_field(details, "cache_write_tokens")
+          {
             0 -> get_int_field(response_usage, "cache_creation_input_tokens")
             val -> val
           }
-          let input_tokens = int.max(0, prompt_total - cache_read_tokens - cache_write_tokens)
+          let input_tokens =
+            int.max(0, prompt_total - cache_read_tokens - cache_write_tokens)
           let reasoning_tokens = get_output_reasoning_tokens(response_usage)
 
           CanonicalUsage(
@@ -757,7 +801,8 @@ pub fn estimate_usage_cost(
   provider provider: Option(String),
   base_url base_url: Option(String),
 ) -> CostResult {
-  let route = resolve_billing_route(model_name, provider: provider, base_url: base_url)
+  let route =
+    resolve_billing_route(model_name, provider: provider, base_url: base_url)
   case route.billing_mode {
     "subscription_included" -> {
       CostResult(
@@ -771,16 +816,19 @@ pub fn estimate_usage_cost(
       )
     }
     _ -> {
-      case get_pricing_entry(model_name, provider: provider, base_url: base_url) {
-        None -> CostResult(
-          amount_usd: None,
-          status: "unknown",
-          source: "none",
-          label: "n/a",
-          fetched_at: None,
-          pricing_version: None,
-          notes: [],
-        )
+      case
+        get_pricing_entry(model_name, provider: provider, base_url: base_url)
+      {
+        None ->
+          CostResult(
+            amount_usd: None,
+            status: "unknown",
+            source: "none",
+            label: "n/a",
+            fetched_at: None,
+            pricing_version: None,
+            notes: [],
+          )
         Some(entry) -> {
           let has_input_cost = case usage.input_tokens > 0 {
             True -> option.is_some(entry.input_cost_per_million)
@@ -799,7 +847,12 @@ pub fn estimate_usage_cost(
             False -> True
           }
 
-          case has_input_cost, has_output_cost, has_cache_read_cost, has_cache_write_cost {
+          case
+            has_input_cost,
+            has_output_cost,
+            has_cache_read_cost,
+            has_cache_write_cost
+          {
             False, _, _, _ | _, False, _, _ -> {
               CostResult(
                 amount_usd: None,
@@ -836,23 +889,40 @@ pub fn estimate_usage_cost(
             True, True, True, True -> {
               let amount = 0.0
               let amount = case entry.input_cost_per_million {
-                Some(cost) -> amount +. int.to_float(usage.input_tokens) *. cost /. 1_000_000.0
+                Some(cost) ->
+                  amount
+                  +. int.to_float(usage.input_tokens)
+                  *. cost
+                  /. 1_000_000.0
                 None -> amount
               }
               let amount = case entry.output_cost_per_million {
-                Some(cost) -> amount +. int.to_float(usage.output_tokens) *. cost /. 1_000_000.0
+                Some(cost) ->
+                  amount
+                  +. int.to_float(usage.output_tokens)
+                  *. cost
+                  /. 1_000_000.0
                 None -> amount
               }
               let amount = case entry.cache_read_cost_per_million {
-                Some(cost) -> amount +. int.to_float(usage.cache_read_tokens) *. cost /. 1_000_000.0
+                Some(cost) ->
+                  amount
+                  +. int.to_float(usage.cache_read_tokens)
+                  *. cost
+                  /. 1_000_000.0
                 None -> amount
               }
               let amount = case entry.cache_write_cost_per_million {
-                Some(cost) -> amount +. int.to_float(usage.cache_write_tokens) *. cost /. 1_000_000.0
+                Some(cost) ->
+                  amount
+                  +. int.to_float(usage.cache_write_tokens)
+                  *. cost
+                  /. 1_000_000.0
                 None -> amount
               }
               let amount = case entry.request_cost, usage.request_count > 0 {
-                Some(cost), True -> amount +. int.to_float(usage.request_count) *. cost
+                Some(cost), True ->
+                  amount +. int.to_float(usage.request_count) *. cost
                 _, _ -> amount
               }
 
@@ -868,7 +938,9 @@ pub fn estimate_usage_cost(
               }
 
               let notes = case route.provider == "openrouter" {
-                True -> ["OpenRouter cost is estimated from the models API until reconciled."]
+                True -> [
+                  "OpenRouter cost is estimated from the models API until reconciled.",
+                ]
                 False -> []
               }
 
@@ -894,11 +966,16 @@ pub fn has_known_pricing(
   provider provider: Option(String),
   base_url base_url: Option(String),
 ) -> Bool {
-  let route = resolve_billing_route(model_name, provider: provider, base_url: base_url)
+  let route =
+    resolve_billing_route(model_name, provider: provider, base_url: base_url)
   case route.billing_mode {
     "subscription_included" -> True
     _ -> {
-      option.is_some(get_pricing_entry(model_name, provider: provider, base_url: base_url))
+      option.is_some(get_pricing_entry(
+        model_name,
+        provider: provider,
+        base_url: base_url,
+      ))
     }
   }
 }
@@ -922,7 +999,11 @@ pub fn format_duration_compact(seconds: Float) -> String {
               let hrs = float.round(hours)
               case remaining_min {
                 0 -> int.to_string(hrs) <> "h"
-                _ -> int.to_string(hrs) <> "h " <> int.to_string(remaining_min) <> "m"
+                _ ->
+                  int.to_string(hrs)
+                  <> "h "
+                  <> int.to_string(remaining_min)
+                  <> "m"
               }
             }
             False -> {
@@ -946,7 +1027,7 @@ pub fn format_token_count_compact(value: Int) -> String {
         True -> "-"
         False -> ""
       }
-      
+
       let #(scaled, suffix) = case abs_value >= 1_000_000_000 {
         True -> #(int.to_float(abs_value) /. 1_000_000_000.0, "B")
         False -> {
@@ -956,7 +1037,7 @@ pub fn format_token_count_compact(value: Int) -> String {
           }
         }
       }
-      
+
       let text = case scaled <. 10.0 {
         True -> {
           strip_trailing(utils.format_float(scaled))

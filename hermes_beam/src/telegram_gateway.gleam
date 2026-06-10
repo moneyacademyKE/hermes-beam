@@ -1,17 +1,14 @@
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
+import gleam/erlang/process
 import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/erlang/process
+import gleam/string
 
 pub type State {
-  State(
-    token: String,
-    offset: Int,
-    run_agent: fn(String) -> String,
-  )
+  State(token: String, offset: Int, run_agent: fn(String, String) -> String)
 }
 
 pub type TelegramMessage {
@@ -36,10 +33,27 @@ pub fn post_request(
   body: String,
 ) -> Result(String, Dynamic)
 
-pub fn start(token: String, run_agent: fn(String) -> String) -> process.Pid {
-  process.spawn(
-    fn() { poll_loop(State(token: token, offset: 0, run_agent: run_agent)) },
-  )
+pub fn send_typing(token: String, chat_id: Int) -> Nil {
+  let url = "https://api.telegram.org/bot" <> token <> "/sendChatAction"
+  let body =
+    "{\"chat_id\": " <> int.to_string(chat_id) <> ", \"action\": \"typing\"}"
+  let _ =
+    post_request(
+      url,
+      [#("Content-Type", "application/json")],
+      "application/json",
+      body,
+    )
+  Nil
+}
+
+pub fn start(
+  token: String,
+  run_agent: fn(String, String) -> String,
+) -> process.Pid {
+  process.spawn(fn() {
+    poll_loop(State(token: token, offset: 0, run_agent: run_agent))
+  })
 }
 
 fn poll_loop(state: State) -> Nil {
@@ -56,27 +70,32 @@ fn poll_loop(state: State) -> Nil {
 
       // Route each message in a separate BEAM process (actor) to avoid blocking the polling loop
       list.each(messages, fn(msg) {
-        process.spawn(
-          fn() {
-            let reply = state.run_agent(msg.text)
-            let send_url =
-              "https://api.telegram.org/bot" <> state.token <> "/sendMessage"
-            let body =
-              "{\"chat_id\": "
-              <> int.to_string(msg.chat_id)
-              <> ", \"text\": \""
-              <> reply
-              <> "\"}"
-            let _ =
-              post_request(
-                send_url,
-                [#("Content-Type", "application/json")],
-                "application/json",
-                body,
-              )
-            Nil
-          },
-        )
+        process.spawn(fn() {
+          send_typing(state.token, msg.chat_id)
+          let session_id = "tg_" <> int.to_string(msg.chat_id)
+          let reply = state.run_agent(msg.text, session_id)
+          let send_url =
+            "https://api.telegram.org/bot" <> state.token <> "/sendMessage"
+
+          // Basic JSON escaping for strings
+          let escaped_reply = string.replace(reply, "\"", "\\\"")
+          let escaped_reply = string.replace(escaped_reply, "\n", "\\n")
+
+          let body =
+            "{\"chat_id\": "
+            <> int.to_string(msg.chat_id)
+            <> ", \"text\": \""
+            <> escaped_reply
+            <> "\"}"
+          let _ =
+            post_request(
+              send_url,
+              [#("Content-Type", "application/json")],
+              "application/json",
+              body,
+            )
+          Nil
+        })
       })
 
       let next_offset = case next_offset {

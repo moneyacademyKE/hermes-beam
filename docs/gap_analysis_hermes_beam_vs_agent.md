@@ -1,5 +1,9 @@
 # Rich Hickey Gap Analysis: `hermes_beam` (Current) vs. `hermes-agent` (Legacy)
 
+> [!NOTE]
+> **Post-Implementation Update (June 2026)**
+> Since this gap analysis was performed, the custom functional Datalog engine `gleamdb.gleam` has been completely removed. We transitioned logic reasoning (like permissions checking and evolutionary code optimization) out-of-process to the Babashka worker (`worker.clj`) using a custom JVM-free micro-Datalog interpreter. State tracking remains simple and value-oriented through SQLite-backed append-only EAV Datom logs, but we have eliminated duplicate Datalog evaluation environments.
+
 This document provides a deconstructed, de-serialized architectural comparison of the new Gleam/BEAM-based implementation (`hermes_beam`) against the legacy Python-based implementation (`hermes-agent`). Guided by Rich Hickey's principles of simplicity, state deconstruction, and avoiding complection, this analysis details where the implementations diverge, the architectural trade-offs, and actionable next steps.
 
 ---

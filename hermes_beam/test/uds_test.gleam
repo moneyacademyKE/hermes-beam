@@ -1,6 +1,5 @@
-
-import uds_ffi
 import gleam/io
+import uds_ffi
 
 pub fn uds_listen_test() {
   let path = "/tmp/hermes_test.sock"

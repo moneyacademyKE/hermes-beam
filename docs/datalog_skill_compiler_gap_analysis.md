@@ -1,5 +1,9 @@
 # Rich Hickey Gap Analysis: Datalog Skill Compiler & Loader
 
+> [!NOTE]
+> **Post-Implementation Update (June 2026)**
+> Since this gap analysis was performed, the custom functional Datalog engine `gleamdb.gleam` was completely removed from the repository. The parsed EAV skill facts are still transacted to the SQLite database via the `StateActor` process, but rule evaluation is now delegated out-of-process to the custom JVM-free micro-Datalog interpreter running inside the Babashka worker (`worker.clj`), consolidating all logic resolution and unification in a single engine.
+
 This document provides a thorough, deconstructed architectural comparison of the new Gleam/BEAM-based Datalog Skill Compiler and Loader (`hermes_beam`) against the legacy Python-based prompt-injection skill loading system (`hermes-agent`). Guided by Rich Hickey's principles of simplicity, state deconstruction, and avoiding complection, this analysis details where the implementations diverge, the architectural trade-offs, and actionable next steps.
 
 ---

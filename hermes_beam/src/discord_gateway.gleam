@@ -9,10 +9,7 @@ pub type DiscordMessage {
 }
 
 pub type DiscordState {
-  DiscordState(
-    token: String,
-    session_id: String,
-  )
+  DiscordState(token: String, session_id: String)
 }
 
 pub opaque type DiscordActor {
@@ -22,17 +19,23 @@ pub opaque type DiscordActor {
 pub fn start(token: String) -> Result(DiscordActor, actor.StartError) {
   let session_id = "discord_stub"
   hermes_logger.info(session_id, "Starting Discord Gateway process")
-  
+
   actor.new(DiscordState(token, session_id))
   |> actor.on_message(loop)
   |> actor.start
   |> result.map(fn(started) { DiscordActor(started.data) })
 }
 
-fn loop(state: DiscordState, msg: DiscordMessage) -> actor.Next(DiscordState, DiscordMessage) {
+fn loop(
+  state: DiscordState,
+  msg: DiscordMessage,
+) -> actor.Next(DiscordState, DiscordMessage) {
   case msg {
     Connect -> {
-      hermes_logger.info(state.session_id, "Connecting to wss://gateway.discord.gg (Stubbed)")
+      hermes_logger.info(
+        state.session_id,
+        "Connecting to wss://gateway.discord.gg (Stubbed)",
+      )
       actor.continue(state)
     }
     Shutdown -> {

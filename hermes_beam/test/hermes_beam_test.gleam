@@ -13,15 +13,16 @@ pub fn hello_world_test() {
 
 pub fn extract_delta_content_openai_test() {
   let json_str = "{\"choices\":[{\"delta\":{\"content\":\"Hello choices!\"}}]}"
-  let assert "Hello choices!" = hermes_agent.extract_delta_content(json_str)
+  let assert #("Hello choices!", "") =
+    hermes_agent.extract_delta_content(json_str)
 }
 
 pub fn extract_delta_content_anthropic_test() {
   let json_str = "{\"delta\":{\"text\":\"Hello text!\"}}"
-  let assert "Hello text!" = hermes_agent.extract_delta_content(json_str)
+  let assert #("Hello text!", "") = hermes_agent.extract_delta_content(json_str)
 }
 
 pub fn extract_delta_content_empty_test() {
   let json_str = "{\"choices\":[{\"delta\":{}}]}"
-  let assert "" = hermes_agent.extract_delta_content(json_str)
+  let assert #("", "") = hermes_agent.extract_delta_content(json_str)
 }
