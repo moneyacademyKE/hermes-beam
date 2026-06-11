@@ -916,4 +916,51 @@ Prevent diagnostic prints and traces from polluting structured command-line outp
 2. **Redirect Tracing/Debug to stderr**: Wrap all diagnostic print statements so they execute under standard error streams (`stderr`). In Clojure, bind `*out*` to `*err*` during printing: `(binding [*out* *err*] (println ...))`.
 3. **Safe Parsing**: Decoders on the host side can now safely parse standard output as clean JSON without needing to strip out debug text.
 
+---
+
+## 47. Index-Driven Datalog Pattern Matching
+
+### Intent
+Replace linear O(N) fact scans in Datalog query evaluation with index-driven O(1) lookups, ported from aarondb's EAVT/AEVT/AVET indexing architecture.
+
+### Pattern
+1. **Single-Pass Index Build**: On database initialization, run a single `reduce` over all `[e a v]` triples to construct three complementary hash-map indexes:
+   - `EAV {entity → {attr → #{values}}}` — primary entity lookup
+   - `AVE {attr → {value → #{entities}}}` — reverse value lookup
+   - `AEV {attr → {entity → #{values}}}` — attribute-first scan
+2. **Selectivity-Driven Lookup**: At query time, `index-lookup` inspects which pattern positions are bound (ground) after resolving variables through the binding environment, then selects the most selective index:
+   - Both entity+attr bound → EAV (O(1) set membership or iteration)
+   - Attr+value bound → AVE (O(1))
+   - Attr-only bound → AEV (O(entities for that attr))
+   - Entity-only bound → EAV (O(attrs for that entity))
+   - Nothing bound → full-scan fallback
+3. **Clean Unification Layer**: Separate `variable?` predicate, `resolve-term` (chase bindings), and `unify` (extend or reject) as distinct, composable functions.
+4. **Index Rebuild on Mutation**: After `transact_datalog`, rebuild indexes from the complete fact set to maintain consistency without incremental update bugs.
+
+### Example (Clojure)
+```clojure
+;; Build indexes in O(N)
+(defn build-indexes [facts]
+  (reduce
+   (fn [{:keys [eav ave aev] :as acc} [e a v]]
+     (-> acc
+         (assoc-in [:eav e a] (conj (get-in eav [e a] #{}) v))
+         (assoc-in [:ave a v] (conj (get-in ave [a v] #{}) e))
+         (assoc-in [:aev a e] (conj (get-in aev [a e] #{}) v))))
+   {:eav {} :ave {} :aev {} :facts facts}
+   facts))
+
+;; Select index at query time
+(defn index-lookup [db pe pa pv env]
+  (let [re (resolve-term pe env)
+        ra (resolve-term pa env)
+        e-bound? (not (variable? re))
+        a-bound? (not (variable? ra))]
+    (cond
+      (and e-bound? a-bound?) (get-in (:eav db) [re ra])  ;; O(1)
+      (and a-bound? v-bound?) (get-in (:ave db) [ra rv])  ;; O(1)
+      a-bound?                (get (:aev db) ra)           ;; O(entities)
+      :else                   (:facts db))))               ;; O(N) fallback
+```
+
 

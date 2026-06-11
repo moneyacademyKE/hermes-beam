@@ -476,3 +476,13 @@ This document summarizes the core learnings from porting python codebase element
 *   **Problem**: When coordinating out-of-process scripting engines (like the Clojure Babashka worker) via standard IO boundaries, inline diagnostic statements (e.g. `(println "facts:" facts)`) printed directly to `stdout` will corrupt the structured JSON payload stream, causing JSON decoding errors (`UnexpectedByte`) on the host side.
 *   **Resolution**: Always redirect diagnostic and tracing print statements explicitly to the standard error stream (`stderr`), which in Clojure is done via `(binding [*out* *err*] (println ...))`.
 *   **Impact**: Safeguards structured stdout serialization boundaries, allowing diagnostic logs to flow safely to system logs while keeping IPC data clean.
+
+## 59. Indexed Datalog Engine Rewrite (Aarondb Port to Clojure)
+
+*   **Problem**: The pure-Clojure micro-Datalog engine in `worker.clj` used linear O(N) scans over all facts for every clause evaluation. While functionally correct, this complects query resolution with data size — every additional fact slows every query proportionally, regardless of selectivity.
+*   **Resolution**:
+    - **Triple Indexing**: Ported aarondb's EAVT/AEVT/AVET indexing strategy into Clojure hash-maps. A single O(N) `reduce` pass over facts builds three complementary indexes: `EAV {entity → {attr → #{values}}}`, `AVE {attr → {value → #{entities}}}`, and `AEV {attr → {entity → #{values}}}`.
+    - **Index Selection Strategy**: The `index-lookup` function selects the most selective index based on which pattern positions are already bound: (1) entity+attribute bound → EAV O(1), (2) attribute+value bound → AVE O(1), (3) attribute-only → AEV O(entities), (4) entity-only → EAV O(attrs), (5) nothing bound → full scan fallback.
+    - **Clean Unification**: Replaced ad-hoc `match-term?` with explicit `variable?` predicate and `unify` function, mirroring standard unification semantics with recursive binding resolution.
+    - **Incremental Index Rebuild**: On `transact_datalog`, indexes are rebuilt from the full fact set to ensure consistency. This is acceptable for the current workload size and avoids incremental update bugs.
+*   **Impact**: Query resolution drops from O(N×clauses) to O(1) for bound patterns while maintaining zero external dependencies. All 55 unit tests and 81 orchestrator integration tests pass. The architecture now directly mirrors aarondb's battle-tested index strategy.

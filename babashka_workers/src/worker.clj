@@ -149,7 +149,21 @@
                                gleam-tools)]
     (vec (concat tool-schemas filtered-gleam))))
 
-;; ─── Micro-Datalog Engine ────────────────────────────────────────────────────
+;; ─── Indexed Datalog Engine (ported from aarondb) ─────────────────────────────
+;;
+;; Architecture:
+;;   1. Triple Indexing  — EAV, AVE, AEV hash-maps for O(1) lookups
+;;   2. Term Unification — explicit variable? / constant? with recursive binding
+;;   3. Index Lookup     — pattern-driven index selection (aarondb strategy)
+;;   4. Rule Evaluation  — fresh-var renaming + cycle-guarded recursion
+;;
+;; Zero external dependencies. Runs natively on Babashka.
+;; ──────────────────────────────────────────────────────────────────────────────
+
+;; ── helpers ──────────────────────────────────────────────────────────────────
+
+(defn- variable? [x]
+  (and (symbol? x) (clojure.string/starts-with? (name x) "?")))
 
 (defn- clean-symbol [s]
   (if (and (string? s) (clojure.string/starts-with? s "?"))
@@ -158,6 +172,8 @@
 
 (defn- rule-name-for [attr]
   (symbol (clojure.string/replace attr #"/" "-")))
+
+;; ── query parser ─────────────────────────────────────────────────────────────
 
 (defn parse-query [query-str]
   (let [q (edn/read-string query-str)]
@@ -169,47 +185,162 @@
             (recur (rest rem) x acc)
             (recur (rest rem) current-kw (if current-kw (update acc current-kw conj x) acc))))))))
 
-(defn resolve-term [term env]
+;; ── triple indexing (ported from aarondb/index.gleam) ────────────────────────
+;;
+;; build-indexes takes a flat vector of [e a v] triples and builds three
+;; hash-map indexes that mirror aarondb's EAVT / AEVT / AVET strategy:
+;;
+;;   :eav  — {entity → {attr → #{values}}}      (primary entity lookup)
+;;   :ave  — {attr → {value → #{entities}}}      (reverse value lookup)
+;;   :aev  — {attr → {entity → #{values}}}       (attribute-first scan)
+;;   :facts — the raw triples vector              (fallback linear scan)
+;;
+;; All three are built in a single O(N) pass over the facts.
+
+(defn build-indexes
+  "Build EAV/AVE/AEV triple indexes from a flat vector of [e a v] triples.
+   Returns {:eav {...} :ave {...} :aev {...} :facts facts}."
+  [facts]
+  (reduce
+   (fn [{:keys [eav ave aev] :as acc} [e a v]]
+     (-> acc
+         ;; EAV: entity → attr → #{values}
+         (assoc-in [:eav e a] (conj (get-in eav [e a] #{}) v))
+         ;; AVE: attr → value → #{entities}
+         (assoc-in [:ave a v] (conj (get-in ave [a v] #{}) e))
+         ;; AEV: attr → entity → #{values}
+         (assoc-in [:aev a e] (conj (get-in aev [a e] #{}) v))))
+   {:eav {} :ave {} :aev {} :facts facts}
+   facts))
+
+;; ── term unification ─────────────────────────────────────────────────────────
+
+(defn resolve-term
+  "Chase a variable through the binding environment until it reaches
+   a ground value or an unbound variable. Cycle-safe via `seen` set."
+  [term env]
   (loop [t term seen #{}]
-    (if (and (symbol? t) (clojure.string/starts-with? (name t) "?"))
+    (if (variable? t)
       (if (seen t) t
           (if-let [bound (get env t)]
             (recur bound (conj seen t))
             t))
       t)))
 
-(defn match-term? [pattern term env]
-  (let [p (resolve-term pattern env)
-        t (resolve-term term env)]
+(defn unify
+  "Attempt to unify pattern `p` with term `t` under environment `env`.
+   Returns extended env on success, nil on failure."
+  [p t env]
+  (let [p' (resolve-term p env)
+        t' (resolve-term t env)]
     (cond
-      (and (symbol? p) (clojure.string/starts-with? (name p) "?"))
-      (assoc env p t)
-      
-      (and (symbol? t) (clojure.string/starts-with? (name t) "?"))
-      (assoc env t p)
-      
-      (= p t) env
-      :else nil)))
+      (variable? p') (assoc env p' t')
+      (variable? t') (assoc env t' p')
+      (= p' t')      env
+      :else           nil)))
 
-(declare solve-clause)
-(defn match-fact [clause facts env]
+;; ── index-driven pattern matching (aarondb strategy) ─────────────────────────
+;;
+;; Instead of scanning all facts for every clause, `index-lookup` selects the
+;; most selective index based on which parts of the pattern are already bound:
+;;
+;;   Pattern shape              Index used           Complexity
+;;   ─────────────────────────  ───────────────────  ──────────
+;;   [bound-e  bound-a  ?v]     EAV[e][a]            O(1)
+;;   [?e       bound-a  bound-v] AVE[a][v]           O(1)
+;;   [?e       bound-a  ?v]     AEV[a]               O(entities)
+;;   [bound-e  ?a       ?v]     EAV[e]               O(attrs)
+;;   [?e       ?a       ?v]     full scan            O(N)
+
+(defn- match-from-triples
+  "Unify pattern [pe pa pv] against each triple, returning extended envs."
+  [pe pa pv triples env]
+  (keep (fn [[e a v]]
+          (when-let [env1 (unify pe e env)]
+            (when-let [env2 (unify pa a env1)]
+              (if (= pv '_)
+                env2
+                (unify pv v env2)))))
+        triples))
+
+(defn index-lookup
+  "Use the most selective index to resolve a [pe pa pv] pattern."
+  [db pe pa pv env]
+  (let [re (resolve-term pe env)
+        ra (resolve-term pa env)
+        rv (if (= pv '_) '_ (resolve-term pv env))
+        e-bound? (not (variable? re))
+        a-bound? (not (variable? ra))
+        v-bound? (and (not= rv '_) (not (variable? rv)))]
+    (cond
+      ;; Case 1: entity + attribute bound → EAV[e][a] → set of values
+      (and e-bound? a-bound?)
+      (let [vals (get-in (:eav db) [re ra])]
+        (if vals
+          (if v-bound?
+            ;; Check membership O(1) in the set
+            (if (contains? vals rv)
+              [env]  ;; all three match, env is already complete
+              [])
+            ;; v is a variable — bind it to each value
+            (keep (fn [v] (unify pv v env)) vals))
+          []))
+
+      ;; Case 2: attribute + value bound → AVE[a][v] → set of entities
+      (and a-bound? v-bound?)
+      (let [entities (get-in (:ave db) [ra rv])]
+        (if entities
+          (keep (fn [e] (unify pe e env)) entities)
+          []))
+
+      ;; Case 3: attribute bound → AEV[a] → {entity → values}
+      a-bound?
+      (let [e-map (get (:aev db) ra)]
+        (if e-map
+          (mapcat (fn [[e vals]]
+                    (when-let [env1 (unify pe e env)]
+                      (if (= pv '_)
+                        [env1]
+                        (keep (fn [v] (unify pv v env1)) vals))))
+                  e-map)
+          []))
+
+      ;; Case 4: entity bound → EAV[e] → {attr → values}
+      e-bound?
+      (let [a-map (get (:eav db) re)]
+        (if a-map
+          (mapcat (fn [[a vals]]
+                    (when-let [env1 (unify pa a env)]
+                      (if (= pv '_)
+                        [env1]
+                        (keep (fn [v] (unify pv v env1)) vals))))
+                  a-map)
+          []))
+
+      ;; Case 5: nothing bound → full scan
+      :else
+      (match-from-triples pe pa pv (:facts db) env))))
+
+(defn match-fact
+  "Match a clause pattern against the indexed database.
+   Falls back to linear scan only when no index can help."
+  [clause db env]
   (if (< (count clause) 2)
-    [] ; invalid clause shape, return empty match
-    (let [pe (first clause) 
-          pa (second clause) 
+    []
+    (let [pe (first clause)
+          pa (second clause)
           pv (if (>= (count clause) 3) (nth clause 2) '_)]
-      (keep (fn [[e a v]]
-              (when-let [env1 (match-term? pe e env)]
-                (when-let [env2 (match-term? pa a env1)]
-                  (if (= pv '_)
-                    env2
-                    (match-term? pv v env2)))))
-            facts))))
+      (index-lookup db pe pa pv env))))
 
-(defn rename-vars [rule suffix]
+;; ── rule evaluation ──────────────────────────────────────────────────────────
+
+(defn rename-vars
+  "Alpha-rename all variables in a rule to avoid capture.
+   Each variable ?x becomes ?x_<suffix>."
+  [rule suffix]
   (clojure.walk/postwalk
    (fn [x]
-     (if (and (symbol? x) (clojure.string/starts-with? (name x) "?"))
+     (if (variable? x)
        (symbol (str (name x) "_" suffix))
        x))
    rule))
@@ -218,38 +349,63 @@
 
 (declare solve-clause)
 
-(defn solve-rule [clause rules facts env visited]
+(defn solve-rule
+  "Evaluate a rule-application clause against all matching rules.
+   Uses cycle detection via the `visited` set to prevent infinite loops."
+  [clause rules db env visited]
   (if (< (count clause) 3)
-    [] ; invalid rule application shape, rules need at least name, input, output
+    []
     (let [rname (first clause)
-          re (second clause)
-          rv (nth clause 2)
-          evaluated-re (resolve-term re env)
-          evaluated-rv (resolve-term rv env)
-          goal [rname evaluated-re evaluated-rv]]
+          re    (second clause)
+          rv    (nth clause 2)
+          evaled-re (resolve-term re env)
+          evaled-rv (resolve-term rv env)
+          goal  [rname evaled-re evaled-rv]]
       (if (contains? visited goal)
         []
-        (let [visited (conj visited goal)
-              matching-rules (filter (fn [[head & _]] (and (= (first head) rname) (= (count head) 3))) rules)]
-          (mapcat (fn [rule]
-                    (let [renamed-rule (rename-vars rule (swap! rule-counter inc))
-                          [_ he hv] (first renamed-rule)
-                          body (rest renamed-rule)]
-                      (if-let [env1 (match-term? he re env)]
-                        (if-let [env2 (match-term? hv rv env1)]
-                          (reduce (fn [envs body-clause] (mapcat #(solve-clause body-clause rules facts % visited) envs)) [env2] body)
-                          []) [])))
-                  matching-rules))))))
+        (let [visited' (conj visited goal)
+              matching (filter (fn [[head & _]]
+                                 (and (= (first head) rname)
+                                      (= (count head) 3)))
+                               rules)]
+          (mapcat
+           (fn [rule]
+             (let [renamed (rename-vars rule (swap! rule-counter inc))
+                   [_ he hv] (first renamed)
+                   body (rest renamed)]
+               (if-let [env1 (unify he re env)]
+                 (if-let [env2 (unify hv rv env1)]
+                   (reduce (fn [envs body-clause]
+                             (mapcat #(solve-clause body-clause rules db % visited')
+                                     envs))
+                           [env2] body)
+                   [])
+                 [])))
+           matching))))))
 
-(defn solve-clause [clause rules facts env visited]
+(defn solve-clause
+  "Dispatch a clause — rule applications (seqs) go to solve-rule,
+   triple patterns (vectors) go to index-driven match-fact."
+  [clause rules db env visited]
   (if (seq? clause)
-    (solve-rule clause rules facts env visited)
-    (match-fact clause facts env)))
+    (solve-rule clause rules db env visited)
+    (match-fact clause db env)))
 
-(defn query-datalog [q-map facts rules inputs-map]
+(defn query-datalog
+  "Top-level query driver. Threads the initial environment through each
+   where-clause sequentially, collecting all valid binding environments,
+   then projects the :find variables."
+  [q-map db rules inputs-map]
   (let [initial-env inputs-map
-        envs (reduce (fn [envs clause] (mapcat #(solve-clause clause rules facts % #{}) envs)) [initial-env] (:where q-map))]
-    (mapv (fn [env] (mapv #(resolve-term % env) (:find q-map))) (distinct envs))))
+        envs (reduce (fn [envs clause]
+                       (mapcat #(solve-clause clause rules db % #{})
+                               envs))
+                     [initial-env]
+                     (:where q-map))]
+    (mapv (fn [env] (mapv #(resolve-term % env) (:find q-map)))
+          (distinct envs))))
+
+;; ── datom ingestion & rule compilation ───────────────────────────────────────
 
 (defn- extract-rule-from-entity-datoms [entity-datoms rule-attrs]
   (let [find-val (fn [attr] (:value (first (filter #(= (:attribute %) attr) entity-datoms))))
@@ -257,10 +413,10 @@
         head-1 (find-val "rule/head_1")
         head-2 (find-val "rule/head_2")
         head-expr (when (and head-1 head-0)
-                    (list (rule-name-for head-1) 
-                          (clean-symbol head-0) 
+                    (list (rule-name-for head-1)
+                          (clean-symbol head-0)
                           (if head-2 (clean-symbol head-2) '_)))
-        
+
         clauses (loop [idx 0 acc []]
                   (let [e-attr (str "rule/body_" idx "_0")
                         a-attr (str "rule/body_" idx "_1")
@@ -281,28 +437,34 @@
       (vec (cons head-expr compiled-clauses))
       (vec compiled-clauses))))
 
-(defn init-datascript [datoms]
+(defn init-datascript
+  "Initialize the indexed database from raw datom payloads.
+   Separates rule-datoms from fact-datoms, compiles rules, builds indexes."
+  [datoms]
   (let [is-rule? (fn [d] (clojure.string/starts-with? (:attribute d) "rule/"))
         rule-datoms (filter is-rule? datoms)
         fact-datoms (filter #(not (is-rule? %)) datoms)
-        
+
         grouped-rules (group-by :entity rule-datoms)
         rule-attrs (set (keep (fn [[_ ds]]
                                 (some #(when (= (:attribute %) "rule/head_1") (:value %)) ds))
                               grouped-rules))
         compiled-rules (mapv (fn [[_ ds]] (extract-rule-from-entity-datoms ds rule-attrs))
                              grouped-rules)
-        
+
         entities (set (map :entity datoms))
         ref-values (set (keep (fn [d] (when (contains? entities (:value d)) (:value d))) fact-datoms))
         all-nodes (set/union entities ref-values)
         name-facts (mapv (fn [n] [n :name n]) all-nodes)
-        
+
         base-facts (mapv (fn [d]
                            [(:entity d) (keyword (:attribute d)) (:value d)])
-                         fact-datoms)]
-    {:facts (atom (vec (concat name-facts base-facts)))
-     :rules compiled-rules}))
+                         fact-datoms)
+        all-facts (vec (concat name-facts base-facts))
+        indexes (build-indexes all-facts)]
+    {:facts   (atom all-facts)
+     :indexes (atom indexes)
+     :rules   compiled-rules}))
 
 (defn resolve-query-input [facts v]
   (if (string? v)
@@ -403,9 +565,10 @@
                                              inputs)
                          facts @(:facts ds-db)
                          rules (:rules ds-db)
+                         idx-db @(:indexes ds-db)
                          resolved-inputs (mapv #(resolve-query-input facts %) parsed-inputs)
                          inputs-map (zipmap in-vars resolved-inputs)
-                         results (query-datalog q-map facts rules inputs-map)
+                         results (query-datalog q-map idx-db rules inputs-map)
                          resolved-results (resolve-entity-names facts results)]
                      (json/generate-string resolved-results))
 
@@ -413,6 +576,8 @@
                    (let [new-facts (:facts args)
                          tx-data (mapv (fn [[e a v]] [(if (string? e) e e) (keyword a) v]) new-facts)]
                      (swap! (:facts ds-db) into tx-data)
+                     ;; Rebuild indexes to include new facts
+                     (reset! (:indexes ds-db) (build-indexes @(:facts ds-db)))
                      "Facts transacted successfully.")
 
                     "run_sandboxed_command"
@@ -564,15 +729,16 @@
         
         all-rules (vec (concat (:rules db) extra-rules))
         facts @(:facts db)
-        
+        idx-db @(:indexes db)
+
         q-map {:find (mapv clean-symbol (:find q))
                :where (mapv parse-clause (:where q))}
         _ (binding [*out* *err*]
             (println "facts:" facts)
             (println "all-rules:" all-rules)
             (println "q-map:" q-map))
-               
-        results (query-datalog q-map facts all-rules {})
+
+        results (query-datalog q-map idx-db all-rules {})
         resolved (resolve-entity-names facts results)
         find-vars (map str (:find q-map))
         mapped-results (map (fn [res-vec] (zipmap find-vars res-vec)) resolved)]
