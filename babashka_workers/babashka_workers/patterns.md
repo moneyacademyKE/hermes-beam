@@ -5,3 +5,4 @@
 
 ## Implementation Guidelines
 - Maintain uniformity in the way functions are defined across all future scripts to enhance clarity and maintainability.
+- Document all findings and updates regularly in `learnings.md` and each iteration of the code based on TDD.
