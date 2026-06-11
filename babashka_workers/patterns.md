@@ -1,6 +1,4 @@
-# Patterns for HTTP Requests and File Writing in Babashka
-
-## Pattern: Fetching and Writing Headers
-1. Use `babashka.curl` for HTTP requests.
-2. Extract the desired parts of the response (e.g., headers).
-3. Use `spit` for writing data to files.
+### Patterns for Subprocess Management
+- Use Babashka for managing subprocesses in Erlang runtime environments.
+- Ensure proper error handling for subprocess signals.
+- Leverage git commands to fetch project history and format structured documentation (e.g., changelogs) in markdown for better tracking.

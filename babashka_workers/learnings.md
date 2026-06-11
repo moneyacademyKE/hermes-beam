@@ -1,11 +1,5 @@
-## Fetching HTTP Headers with Babashka
-
-This document outlines the process of fetching HTTP headers using Babashka.
-
-### Implementation Summary
-- Used `babashka.curl` for making a GET request.
-- Extracted headers from the response and wrote them to `headers.txt`.
-
-### Key Learnings
-- Babashka allows for straightforward HTTP requests.
-- File I/O operations are simple and easy to implement.
+### Learnings from Subprocess Management in Gleam OTP
+- Implemented subprocess creation and signal handling in Babashka.
+- Successfully sent SIGTERM and verified termination exit status.
+- Parsed git log history to create a formatted changelog using Babashka, ensuring documentation is up to date with recent changes.
+- Utilized git log command effectively to retrieve last 5 commits.
