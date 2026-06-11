@@ -559,4 +559,12 @@ This document summarizes the core learnings from porting python codebase element
     - Any string matching a known operator name or starting with `?` is dynamically converted to a Clojure symbol at runtime before rule/query compilation.
 *   **Impact**: Simplifies serialization on the host side while maintaining complete compatibility with standard Clojure Datalog syntax and unification rules.
 
+## 68. Paid Tier Model Transition and Configuration Alignment
+
+*   **Problem**: Using different model IDs in `.env` (environment overrides) versus `config.yaml` can cause inconsistencies across sub-processes, where the Python CLI reads one configuration and the Gleam BEAM backend (using `constants.get_env`) resolves another. Additionally, free-tier models complect core execution loops with network-level public traffic limits (429 errors).
+*   **Resolution**:
+    - Aligned both `config.yaml` (`models.primary`, `models.fallback`, and `models.auxiliary`) and the `.env` overrides (`HERMES_MODEL` and `HERMES_FALLBACK_MODELS`) to point to the unified paid tier `deepseek/deepseek-v4-flash` endpoint.
+*   **Impact**: Ensures model consistency across CLI interfaces, cron executors, and subagents while de-complecting availability from public shared request queues.
+
+
 

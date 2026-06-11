@@ -1079,3 +1079,16 @@ Maintain strict Datalog symbolic semantics when serializing AST queries from a s
     ))
 ```
 
+---
+
+## 55. Environment-to-Config Model Alignment Pattern
+
+### Intent
+Ensure consistent model configuration across multi-runtime applications (e.g., Python agent CLI, Gleam/BEAM backend) by aligning process-level environment overrides and static configuration files, avoiding routing mismatches or fallback discrepancies.
+
+### Pattern
+1. **Define Source of Truth**: Map the primary execution models dynamically. If process-level overrides (such as `HERMES_MODEL`) are present, they take precedence but must align exactly with the default values specified in the static configuration (`config.yaml`).
+2. **Synchronize Overrides**: Update environment configuration scripts/files (`.env`) and static configuration declarations (`config.yaml`) to reference the identical canonical model ID (`deepseek/deepseek-v4-flash`), avoiding hybrid execution states where different system boundaries make calls to mismatched endpoints.
+3. **Validate Fallbacks**: Align primary, fallback, and auxiliary keys concurrently to prevent the application from degrading to a low-performance or mismatched model type during error recovery.
+
+
