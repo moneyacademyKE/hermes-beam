@@ -458,22 +458,30 @@
 
 (defn read-loop [channel]
   (let [buf (ByteBuffer/allocate 65536)]
-    (loop []
-      (.clear buf)
-      (let [bytes-read (.read channel buf)]
-        (when (pos? bytes-read)
-          (.flip buf)
-          (let [bytes (byte-array (.remaining buf))
-                _ (.get buf bytes)
-                msg-str (String. bytes "UTF-8")]
+    (loop [acc ""]
+      (if (clojure.string/includes? acc "\n")
+        (let [lines (clojure.string/split acc #"\n")
+              line (first lines)
+              remaining (clojure.string/join "\n" (rest lines))]
+          (when-not (clojure.string/blank? line)
             (try
-              (let [msg (json/parse-string msg-str true)]
+              (let [msg (json/parse-string line true)]
                 (when (= (:method msg) "execute_task")
                   (handle-task channel (:params msg))))
               (catch Exception e
-                (println "Error parsing msg:" msg-str)))))
-        (when-not (= bytes-read -1)
-          (recur))))))
+                (println "Error parsing msg:" line))))
+          (recur remaining))
+        (do
+          (.clear buf)
+          (let [bytes-read (.read channel buf)]
+            (if (pos? bytes-read)
+              (do
+                (.flip buf)
+                (let [bytes (byte-array (.remaining buf))]
+                  (.get buf bytes)
+                  (recur (str acc (String. bytes "UTF-8")))))
+              (when-not (= bytes-read -1)
+                (recur acc)))))))))
 
 (defn telemetry-loop [channel]
   (async/go-loop []
@@ -521,6 +529,29 @@
         mapped-results (map (fn [res-vec] (zipmap find-vars res-vec)) resolved)]
     (println (json/generate-string {:status "success" :results mapped-results}))))
 
+(defn diagnose-uds-failure [path exception]
+  (try
+    (println "--- UDS Connection Diagnostics ---")
+    (println "Target Path:" path)
+    (let [file (java.io.File. path)
+          parent (.getParentFile file)]
+      (println "Socket file exists?:" (.exists file))
+      (when (.exists file)
+        (println "Is directory?:" (.isDirectory file))
+        (println "Is readable?:" (.canRead file))
+        (println "Is writable?:" (.canWrite file))
+        (println "Length (bytes):" (.length file)))
+      (println "Parent directory exists?:" (if parent (.exists parent) false))
+      (when (and parent (.exists parent))
+        (println "Parent path:" (.getAbsolutePath parent))
+        (println "Parent is readable?:" (.canRead parent))
+        (println "Parent is writable?:" (.canWrite parent)))
+      (println "Exception type:" (.getName (class exception)))
+      (println "Exception message:" (.getMessage exception))
+      (println "----------------------------------"))
+    (catch Exception e
+      (println "Failed to run diagnostics:" (.getMessage e)))))
+
 (defn -main [& args]
   (let [cmd (first args)]
     (cond
@@ -531,19 +562,30 @@
       :else
       (let [path cmd]
         (println "Worker started, targeting UDS path:" path)
-        (loop []
-          (try
-            (let [channel (connect-uds path)]
-              (println "Connected to UDS.")
-              (send-msg channel "{\"jsonrpc\":\"2.0\",\"method\":\"init\",\"params\":{\"status\":\"ready\"}}")
-              (telemetry-loop channel)
-              (read-loop channel)
-              (println "Read loop exited. Disconnected."))
-            (catch Exception e
-              (println "Connection error:" (.getMessage e))))
-          (println "Auto-healing UDS connection in 1s...")
-          (Thread/sleep 1000)
-          (recur))))))
+        (loop [attempt 1
+               last-exception nil]
+          (let [res (try
+                      (let [channel (connect-uds path)]
+                        (println "Connected to UDS.")
+                        (send-msg channel "{\"jsonrpc\":\"2.0\",\"method\":\"init\",\"params\":{\"status\":\"ready\"}}")
+                        (telemetry-loop channel)
+                        (read-loop channel)
+                        (println "Read loop exited. Disconnected.")
+                        {:ok true})
+                      (catch Exception e
+                        (println (str "Connection attempt " attempt "/3 failed targeting UDS: " (.getMessage e)))
+                        {:error e}))]
+            (if (:ok res)
+              (recur 1 nil)
+              (if (< attempt 3)
+                (do
+                  (println "Auto-healing UDS connection in 1s...")
+                  (Thread/sleep 1000)
+                  (recur (inc attempt) (:error res)))
+                (do
+                  (println "Error: UDS connection auto-healing exhausted. Maximum retries (3) reached. Exiting worker process.")
+                  (diagnose-uds-failure path (:error res))
+                  (System/exit 1))))))))))
 
 (when (= *file* (System/getProperty "babashka.file"))
   (apply -main *command-line-args*))
