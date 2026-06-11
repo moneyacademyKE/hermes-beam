@@ -1,1 +1,11 @@
-{"date" "Thu, 11 Jun 2026 04:23:43 GMT", "content-type" "application/json", "content-length" "294", "server" "gunicorn/19.9.0", "access-control-allow-origin" "*", "access-control-allow-credentials" "true"}
+{
+  "args": {}, 
+  "headers": {
+    "Accept": "*/*", 
+    "Host": "httpbin.org", 
+    "User-Agent": "Java/25", 
+    "X-Amzn-Trace-Id": "Root=1-6a2a7c07-4f19a701229729d35c9086c2"
+  }, 
+  "origin": "41.90.209.39", 
+  "url": "https://httpbin.org/get"
+}

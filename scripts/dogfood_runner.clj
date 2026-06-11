@@ -95,8 +95,8 @@
   (println "Starting Goal" id ":" name)
   (println "Prompt:" prompt)
   (println "==================================================")
-  (let [proc (p/process {:out :inherit
-                         :err :inherit
+  (let [proc (p/process {:out :discard
+                         :err :discard
                          :in :pipe}
                         "./hermes" "repl")
         in (:in proc)]
@@ -112,7 +112,7 @@
       ;; or monitor stdout. Since we inherited stdout/stderr, the output
       ;; will print directly to the console in real-time.
       ;; We will wait up to 75 seconds for each goal.
-      (let [timeout-ms 75000
+      (let [timeout-ms 30000
             start-time (System/currentTimeMillis)]
         (loop []
           (let [elapsed (- (System/currentTimeMillis) start-time)]

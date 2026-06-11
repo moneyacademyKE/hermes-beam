@@ -1,28 +1,83 @@
-diff --git a/babashka_workers/learnings.md b/babashka_workers/learnings.md
-index 0adc3b412..978ab83fd 100644
---- a/babashka_workers/learnings.md
-+++ b/babashka_workers/learnings.md
-@@ -1,4 +1,18 @@
--# Learnings from Secrets Analysis
-+# Learnings from Rich Hickey Gap Analysis
- 
--- Ensuring secrets are not exposed in environment variables is crucial for maintaining security within applications.
--- Utilizing patterns to identify sensitive information can streamline the auditing process.
+diff --git a/babashka_workers/changelog.md b/babashka_workers/changelog.md
+index 9fbad0f7e..4c1d27463 100644
+--- a/babashka_workers/changelog.md
++++ b/babashka_workers/changelog.md
+@@ -1,9 +1,7 @@
+-# Changelog
+-
+ | Commit Hash | Commit Message |
+-|-------------|----------------|
+-| a24ba0271   | Update learnings and patterns documentation |
+-| 2518acae5   | Add header fetcher script and documentation |
+-| de077163f   | Updated learnings and patterns for Datalog obsolescence management |
+-| 8b4d6f972   | Added Git diff generation script and documentation updates |
+-| 993950bbd   | Add final report on secrets analysis |
++| ----------- | ---------------- |
++| 0304ba332 | docs: perform rich hickey gap analysis and update model settings to deepseek-v4-flash |
++| 4aad0b766 | Include selected Rich Hickey TDD and quality instructions back in system prompts |
++| 4cff0fbd2 | Remove unnecessary Rich Hickey analysis instructions from system prompts |
++| 5c12a6022 | Implement prompt and schema recommendations from Datalog dogfooding report |
++| ae42205dd | Wire and integrate new Datalog and graph features from worker.clj into hermes_beam |
 \ No newline at end of file
-+## Latest Babashka Version
-+- Version: **1.12.218**
-+- Key changes:
-+  - Bumped Jline, prepared for Jline 4.
-+  - Fixed warnings with `:as-alias`.
-+  - Added HexFormat interop support.
-+  - Bumped Jline to 4.0.10.
-+  - Exposed more `data.xml` functions.
-+  - Added classes for `java.net.Proxy`.
-+
-+## New Contributors
-+- @kovan
-+- @jeeger
-+
-+## Recommendation
-+- Consider leveraging the new features such as improved Jline support and HexFormat interop for enhanced performance and interoperability.
+diff --git a/babashka_workers/errors.txt b/babashka_workers/errors.txt
+index 2afdd09e7..51ec8f673 100644
+--- a/babashka_workers/errors.txt
++++ b/babashka_workers/errors.txt
+@@ -1 +1 @@
+-https://nonexistent-url.com
 \ No newline at end of file
++https://nonexistent-url.comhttps://nonexistent-url.com
+diff --git a/babashka_workers/headers.txt b/babashka_workers/headers.txt
+index b2d779959..b57569418 100644
+--- a/babashka_workers/headers.txt
++++ b/babashka_workers/headers.txt
+@@ -1 +1,11 @@
+-{"date" "Thu, 11 Jun 2026 04:23:43 GMT", "content-type" "application/json", "content-length" "294", "server" "gunicorn/19.9.0", "access-control-allow-origin" "*", "access-control-allow-credentials" "true"}
+\ No newline at end of file
++{
++  "args": {}, 
++  "headers": {
++    "Accept": "*/*", 
++    "Host": "httpbin.org", 
++    "User-Agent": "Java/25", 
++    "X-Amzn-Trace-Id": "Root=1-6a2a7c07-4f19a701229729d35c9086c2"
++  }, 
++  "origin": "41.90.209.39", 
++  "url": "https://httpbin.org/get"
++}
+diff --git a/babashka_workers/path.txt b/babashka_workers/path.txt
+index c972bdf58..1f30c63d7 100644
+--- a/babashka_workers/path.txt
++++ b/babashka_workers/path.txt
+@@ -1 +1,4 @@
+-A -> C -> D
+\ No newline at end of file
++A
++B
++C
++D
+\ No newline at end of file
+diff --git a/scripts/dogfood_runner.clj b/scripts/dogfood_runner.clj
+index 36822d75d..0b10a283c 100755
+--- a/scripts/dogfood_runner.clj
++++ b/scripts/dogfood_runner.clj
+@@ -95,8 +95,8 @@
+   (println "Starting Goal" id ":" name)
+   (println "Prompt:" prompt)
+   (println "==================================================")
+-  (let [proc (p/process {:out :inherit
+-                         :err :inherit
++  (let [proc (p/process {:out :discard
++                         :err :discard
+                          :in :pipe}
+                         "./hermes" "repl")
+         in (:in proc)]
+@@ -112,7 +112,7 @@
+       ;; or monitor stdout. Since we inherited stdout/stderr, the output
+       ;; will print directly to the console in real-time.
+       ;; We will wait up to 75 seconds for each goal.
+-      (let [timeout-ms 75000
++      (let [timeout-ms 30000
+             start-time (System/currentTimeMillis)]
+         (loop []
+           (let [elapsed (- (System/currentTimeMillis) start-time)]

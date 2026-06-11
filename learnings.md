@@ -566,5 +566,12 @@ This document summarizes the core learnings from porting python codebase element
     - Aligned both `config.yaml` (`models.primary`, `models.fallback`, and `models.auxiliary`) and the `.env` overrides (`HERMES_MODEL` and `HERMES_FALLBACK_MODELS`) to point to the unified paid tier `deepseek/deepseek-v4-flash` endpoint.
 *   **Impact**: Ensures model consistency across CLI interfaces, cron executors, and subagents while de-complecting availability from public shared request queues.
 
+## 69. Dynamic CWD Resolution in Subagent Processes
+
+*   **Problem**: Subagents running in an isolated process tree (such as Babashka workers managed by an Erlang supervisor) run with their own configured working directory (e.g. `babashka_workers/`). If goal prompts specify writing output files using simple relative paths (e.g., `headers.txt`), the files are generated in the subagent's working directory rather than the workspace root, leading to apparent verification failure if the parent tool expects them in the root.
+*   **Resolution**: Update verification scripts and reporting tools to search for generated files under the subagent's execution folder, mapping paths relative to the subagent's active CWD (`babashka_workers/`).
+*   **Impact**: Eliminates false negatives in test suites and ensures accurate programmatic verification of multi-agent and sandboxed task executions.
+
+
 
 
