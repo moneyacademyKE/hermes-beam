@@ -1,4 +1,4 @@
-import datom.{Datom, Query, Rule}
+import datom.{Datom, Query, Rule, Triple}
 import gleam/dict
 import gleam/json
 import gleamdb_transpiler
@@ -15,7 +15,7 @@ pub fn transpiler_datoms_test() {
 pub fn transpiler_rule_test() {
   let r = Rule(
     head: #("?x", "route-path", "?y"),
-    body: [#("?x", "route/link", "?y")],
+    body: [Triple("?x", "route/link", "?y")],
   )
   let json_str = json.to_string(gleamdb_transpiler.rule_to_json(r))
   let assert True = json_str == "[[\"?x\",\"route-path\",\"?y\"],[\"?x\",\"route/link\",\"?y\"]]"
@@ -24,7 +24,7 @@ pub fn transpiler_rule_test() {
 pub fn transpiler_query_test() {
   let q = Query(
     find: ["?y"],
-    where: [#("?x", "route/link", "?y")],
+    where: [Triple("?x", "route/link", "?y")],
   )
   let json_str = json.to_string(gleamdb_transpiler.query_to_json(q))
   let assert True = json_str == "{\"find\":[\"?y\"],\"where\":[[\"?x\",\"route/link\",\"?y\"]]}"
@@ -38,19 +38,19 @@ pub fn client_query_execution_test() {
   let rules = [
     Rule(
       head: #("?x", "route-path", "?y"),
-      body: [#("?x", "route/link", "?y")],
+      body: [Triple("?x", "route/link", "?y")],
     ),
     Rule(
       head: #("?x", "route-path", "?z"),
       body: [
-        #("?x", "route/link", "?y"),
-        #("?y", "route-path", "?z"),
+        Triple("?x", "route/link", "?y"),
+        Triple("?y", "route-path", "?z"),
       ],
     ),
   ]
   let q = Query(
     find: ["?y"],
-    where: [#("A", "route-path", "?y")],
+    where: [Triple("A", "route-path", "?y")],
   )
 
   let res = gleamdb_client.run_query(datoms, rules, q)

@@ -1,4 +1,4 @@
-import datom.{type Datom, Query, Rule}
+import datom.{type Datom, Query, Rule, Triple}
 import gleam/list
 import gleamdb_client
 
@@ -13,13 +13,13 @@ pub fn check_permission(
   let rules = [
     Rule(
       head: #("?user", "user/member-of-recursive", "?group"),
-      body: [#("?user", "user/member-of", "?group")],
+      body: [Triple("?user", "user/member-of", "?group")],
     ),
     Rule(
       head: #("?user", "user/member-of-recursive", "?group"),
       body: [
-        #("?subgroup", "group/subgroup-of", "?group"),
-        #("?user", "user/member-of-recursive", "?subgroup"),
+        Triple("?subgroup", "group/subgroup-of", "?group"),
+        Triple("?user", "user/member-of-recursive", "?subgroup"),
       ],
     ),
   ]
@@ -28,8 +28,8 @@ pub fn check_permission(
     Query(
       find: ["?group"],
       where: [
-        #(user, "user/member-of-recursive", "?group"),
-        #("?group", "permission/grant", grant_str),
+        Triple(user, "user/member-of-recursive", "?group"),
+        Triple("?group", "permission/grant", grant_str),
       ],
     )
 

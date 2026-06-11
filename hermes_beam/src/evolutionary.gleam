@@ -1,4 +1,4 @@
-import datom.{type Datom, type Rule, Datom, Rule}
+import datom.{type Datom, type Rule, Datom, Rule, Triple}
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/int
@@ -19,11 +19,14 @@ pub fn rule_to_datoms(rule_name: String, rule: Rule) -> List(Datom) {
   let body_datoms =
     list.index_map(rule.body, fn(clause, idx) {
       let prefix = "rule/body_" <> int.to_string(idx) <> "_"
-      [
-        Datom(rule_name, prefix <> "0", clause.0),
-        Datom(rule_name, prefix <> "1", clause.1),
-        Datom(rule_name, prefix <> "2", clause.2),
-      ]
+      case clause {
+        Triple(e, a, v) -> [
+          Datom(rule_name, prefix <> "0", e),
+          Datom(rule_name, prefix <> "1", a),
+          Datom(rule_name, prefix <> "2", v),
+        ]
+        _ -> []
+      }
     })
     |> list.flatten
 
@@ -40,8 +43,8 @@ fn find_value(datoms: List(Datom), attr: String) -> String {
 fn extract_body(
   datoms: List(Datom),
   idx: Int,
-  acc: List(#(String, String, String)),
-) -> List(#(String, String, String)) {
+  acc: List(datom.Clause),
+) -> List(datom.Clause) {
   let e_attr = "rule/body_" <> int.to_string(idx) <> "_0"
   let a_attr = "rule/body_" <> int.to_string(idx) <> "_1"
   let v_attr = "rule/body_" <> int.to_string(idx) <> "_2"
@@ -49,7 +52,7 @@ fn extract_body(
   let has_clause = list.any(datoms, fn(d) { d.attribute == e_attr })
   case has_clause {
     True -> {
-      let clause = #(
+      let clause = Triple(
         find_value(datoms, e_attr),
         find_value(datoms, a_attr),
         find_value(datoms, v_attr),
@@ -96,7 +99,8 @@ pub fn verify_skill(
       |> list.filter(fn(s) { string.starts_with(s, "?") })
       |> list.unique
 
-    let q = datom.Query(find: vars, where: query_clauses)
+    let clauses = list.map(query_clauses, fn(c) { Triple(c.0, c.1, c.2) })
+    let q = datom.Query(find: vars, where: clauses)
 
     case gleamdb_client.run_query(skill.facts, skill.rules, q) {
       Ok(results) -> {

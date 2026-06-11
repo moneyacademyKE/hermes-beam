@@ -1,5 +1,6 @@
-import datom.{type Datom, type Rule, Datom}
+import datom.{type Datom, type Rule, Datom, Triple}
 import gleam/list
+import gleam/int
 
 pub type Skill {
   Skill(
@@ -22,8 +23,6 @@ pub fn register(registry: Registry, skill: Skill) -> Registry {
   Registry([skill, ..registry.skills])
 }
 
-import gleam/int
-
 pub fn rule_to_datoms(rule_name: String, rule: Rule) -> List(Datom) {
   let head_datoms = [
     Datom(rule_name, "rule/head_0", rule.head.0),
@@ -34,11 +33,14 @@ pub fn rule_to_datoms(rule_name: String, rule: Rule) -> List(Datom) {
   let body_datoms =
     list.index_map(rule.body, fn(clause, idx) {
       let prefix = "rule/body_" <> int.to_string(idx) <> "_"
-      [
-        Datom(rule_name, prefix <> "0", clause.0),
-        Datom(rule_name, prefix <> "1", clause.1),
-        Datom(rule_name, prefix <> "2", clause.2),
-      ]
+      case clause {
+        Triple(e, a, v) -> [
+          Datom(rule_name, prefix <> "0", e),
+          Datom(rule_name, prefix <> "1", a),
+          Datom(rule_name, prefix <> "2", v),
+        ]
+        _ -> []
+      }
     })
     |> list.flatten
 

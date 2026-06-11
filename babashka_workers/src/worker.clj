@@ -1298,34 +1298,47 @@
       (when ok (recur)))))
 
 (defn parse-clause-helper [c all-rule-attrs]
-  (cond
-    (or (and (seq? c) (= (first c) 'not))
-        (and (vector? c) (= (first c) 'not)))
-    (let [inner (second c)]
-      (list 'not (parse-clause-helper inner all-rule-attrs)))
+  (let [c (walk/postwalk
+           (fn [x]
+             (cond
+               (and (string? x) (contains? #{"not" "shortest-path" "reachable" "cycle-detect" "topological-sort" "pagerank" "scc" ">" "<" ">=" "<=" "=" "!=" "not=" "and" "or"} x))
+               (symbol x)
+               
+               (and (string? x) (clojure.string/starts-with? x "?"))
+               (symbol x)
+               
+               :else x))
+           c)]
+    (cond
+      (or (and (seq? c) (= (first c) 'not))
+          (and (vector? c) (= (first c) 'not)))
+      (let [inner (second c)]
+        (list 'not (parse-clause-helper inner all-rule-attrs)))
 
-    (or (and (seq? c) (contains? #{'> '< '>= '<= '= '!= 'not= 'and 'or} (first c)))
-        (and (vector? c)
-             (seq? (first c))
-             (contains? #{'> '< '>= '<= '= '!= 'not= 'and 'or} (first (first c)))))
-    c
+      (or (and (seq? c) (contains? #{'> '< '>= '<= '= '!= 'not= 'and 'or} (first c)))
+          (and (vector? c)
+               (or (seq? (first c)) (vector? (first c)))
+               (contains? #{'> '< '>= '<= '= '!= 'not= 'and 'or} (first (first c)))))
+      c
 
-    (< (count c) 2)
-    c
+      (< (count c) 2)
+      c
 
-    :else
-    (let [attr (second c)
-          has-val? (>= (count c) 3)
-          parsed (cond-> [(clean-symbol (first c))
-                          (if (and (string? attr) (clojure.string/starts-with? attr "?"))
-                            (clean-symbol attr)
-                            (keyword attr))]
-                   has-val? (conj (clean-symbol (nth c 2))))]
-      (if (contains? all-rule-attrs attr)
-        (if has-val?
-          (list (rule-name-for attr) (first parsed) (nth parsed 2))
-          (list (rule-name-for attr) (first parsed) '_))
-        parsed))))
+      :else
+      (let [attr (second c)
+            has-val? (>= (count c) 3)
+            parsed (cond-> [(first c)
+                            (if (symbol? attr)
+                              attr
+                              (if (and (string? attr) (clojure.string/starts-with? attr "?"))
+                                (clean-symbol attr)
+                                (keyword attr)))]
+                     has-val? (conj (clean-symbol (nth c 2))))]
+        (if (contains? all-rule-attrs attr)
+          (if has-val?
+            (list (rule-name-for attr) (first parsed) (nth parsed 2))
+            (list (rule-name-for attr) (first parsed) '_))
+          parsed)))))
 
 (defn handle-cli-query [payload]
   (let [datoms (:datoms payload)

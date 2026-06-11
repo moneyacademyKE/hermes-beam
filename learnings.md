@@ -551,3 +551,12 @@ This document summarizes the core learnings from porting python codebase element
     - Rewrote the Bloom Filter to use a pure Clojure persistent set (`#{}`) storing active bit indices rather than relying on a native Java BitSet.
 *   **Impact**: Ensures 100% Babashka sandboxing compatibility while retaining O(1) bit-lookup capabilities.
 
+## 67. JSON Serialization vs Datalog Symbolic Boundary
+
+*   **Problem**: Passing structured queries (containing operators like `not`, `>`, `shortest-path` and variables like `?e`) from a typed host (Gleam) to a dynamic worker (Clojure) via JSON serializes all symbols as strings. Standard Clojure JSON decoders parse them as literal strings, which fails equality checks (`= "not" 'not`) and breaks Datalog unification.
+*   **Resolution**:
+    - Implemented a postwalk coercion boundary (`walk/postwalk`) in `worker.clj`'s `parse-clause-helper`.
+    - Any string matching a known operator name or starting with `?` is dynamically converted to a Clojure symbol at runtime before rule/query compilation.
+*   **Impact**: Simplifies serialization on the host side while maintaining complete compatibility with standard Clojure Datalog syntax and unification rules.
+
+

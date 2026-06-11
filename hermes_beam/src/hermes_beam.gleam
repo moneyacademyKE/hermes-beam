@@ -1,7 +1,7 @@
 import argv
 import constants
 import context_engine
-import datom.{type Datom, Datom, Rule}
+import datom.{type Datom, Datom, Rule, Triple}
 import discord_gateway
 import evolutionary
 import gleam/dynamic/decode
@@ -764,11 +764,11 @@ pub fn run_repl() -> Nil {
       description: "Calculates paths between network nodes",
       rules: [
         Rule(head: #("?x", "route/path", "?y"), body: [
-          #("?x", "route/link", "?y"),
+          Triple("?x", "route/link", "?y"),
         ]),
         Rule(head: #("?x", "route/path", "?y"), body: [
-          #("?x", "route/path", "?z"),
-          #("?z", "route/link", "?y"),
+          Triple("?x", "route/path", "?z"),
+          Triple("?z", "route/link", "?y"),
         ]),
       ],
       facts: [
@@ -784,11 +784,11 @@ pub fn run_repl() -> Nil {
       description: "Calculates recursive group permission membership rules",
       rules: [
         Rule(head: #("?user", "user/member-of-recursive", "?group"), body: [
-          #("?user", "user/member-of", "?group"),
+          Triple("?user", "user/member-of", "?group"),
         ]),
         Rule(head: #("?user", "user/member-of-recursive", "?group"), body: [
-          #("?user", "user/member-of-recursive", "?subgroup"),
-          #("?subgroup", "group/subgroup-of", "?group"),
+          Triple("?user", "user/member-of-recursive", "?subgroup"),
+          Triple("?subgroup", "group/subgroup-of", "?group"),
         ]),
       ],
       facts: [

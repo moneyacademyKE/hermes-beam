@@ -57,3 +57,11 @@ This document contains key technical learnings from implementing Aarondb's advan
 *   **Problem**: Query resolution (especially graph algorithms) is CPU-expensive. Caching query results is necessary, but standard cache invalidation is complex and error-prone.
 *   **Resolution**: The query cache is an atom-backed map. The cache key includes the entire `:facts` database vector. Because the database is treated as an immutable value, any `transact_datalog` operation updates the database's facts vector, modifying the cache key automatically.
 *   **Learning**: By modeling the database as a value and including this value inside the query cache key, cache invalidation becomes a zero-cost byproduct of functional immutability.
+
+---
+
+## 6. JSON Serialization Boundary Coercion
+
+*   **Problem**: When passing structured queries from a typed environment (Gleam) to an untyped worker (Clojure) via JSON, symbol types are serialized as strings. This breaks standard unification and comparison checks in the Datalog engine, as `"not"` does not equal `'not`.
+*   **Resolution**: Run a postwalk symbol coercion pass over parsed JSON arrays inside `parse-clause-helper`, converting known operators and variables starting with `?` back into Clojure symbols at the scripting boundary.
+*   **Learning**: Dynamic scripting engines receiving JSON queries must establish a clean boundary layer to coerce inputs into internally-expected algebraic/symbolic representations.

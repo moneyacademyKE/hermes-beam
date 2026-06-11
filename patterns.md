@@ -1052,3 +1052,30 @@ Implement a space-efficient set membership checker that runs successfully inside
 1. **Class-Free Representation**: Instead of using `java.util.BitSet` (which is typically blocked in SCI sandboxes), model the active bit array using a standard Clojure persistent set (`#{}`).
 2. **Hash Index Generation**: Compute `k` hash indices for a given key by salting the key with a range sequence and taking the absolute value modulo the filter size.
 3. **Membership Check**: Check if the set of computed hash indices is a subset of the active bit set.
+
+---
+
+## 54. Boundary Type Coercion for Heterogeneous JSON-to-EDN Transpilation
+
+### Intent
+Maintain strict Datalog symbolic semantics when serializing AST queries from a statically-typed language (Gleam) to an untyped dynamic scripting interpreter (Clojure/Babashka) over standard JSON streams, preventing string vs. symbol equality mismatch failures.
+
+### Pattern
+1. **Typed AST Representation**: Define Datalog query components (Triples, Filters, Negations, and Graph queries) as strongly-typed union variants on the host side.
+2. **JSON Array Serialization**: Serialize host variants into structured JSON arrays (e.g. `["not", ["?e", "blocked", "true"]]` or `[[">", "?a", 25]]`).
+3. **Postwalk Symbol Coercion**: In the client worker, walk the parsed JSON structure using `walk/postwalk` and convert known operators and variable strings (starting with `?`) to symbols. This ensures standard Clojure pattern matching and unification works seamlessly.
+
+### Example (Clojure)
+```clojure
+(defn parse-clause-helper [c all-rule-attrs]
+  (let [c (walk/postwalk
+           (fn [x]
+             (cond
+               (and (string? x) (contains? #{"not" "shortest-path" ">" "<"} x)) (symbol x)
+               (and (string? x) (clojure.string/starts-with? x "?")) (symbol x)
+               :else x))
+           c)]
+    ;; ... proceed with standard symbol matching ...
+    ))
+```
+

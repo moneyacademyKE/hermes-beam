@@ -1,4 +1,4 @@
-import datom.{Datom, Rule}
+import datom.{Datom, Rule, Triple}
 import evolutionary
 import gleam/dict
 import gleam/list
@@ -9,8 +9,8 @@ import sqlight
 pub fn rule_serialization_roundtrip_test() {
   let original_rule =
     Rule(head: #("?x", "route/path", "?y"), body: [
-      #("?x", "route/path", "?z"),
-      #("?z", "route/link", "?y"),
+      Triple("?x", "route/path", "?z"),
+      Triple("?z", "route/link", "?y"),
     ])
 
   // Serialize
@@ -29,7 +29,7 @@ pub fn rule_serialization_roundtrip_test() {
   let assert "route/path" = roundtripped.head.1
   let assert "?y" = roundtripped.head.2
   let assert 2 = list.length(roundtripped.body)
-  let assert Ok(#("?x", "route/path", "?z")) = list.first(roundtripped.body)
+  let assert Ok(Triple("?x", "route/path", "?z")) = list.first(roundtripped.body)
 }
 
 pub fn skill_verification_loop_test() {
@@ -39,11 +39,11 @@ pub fn skill_verification_loop_test() {
       description: "Calculates paths between network nodes",
       rules: [
         Rule(head: #("?x", "route/path", "?y"), body: [
-          #("?x", "route/link", "?y"),
+          Triple("?x", "route/link", "?y"),
         ]),
         Rule(head: #("?x", "route/path", "?y"), body: [
-          #("?x", "route/link", "?z"),
-          #("?z", "route/path", "?y"),
+          Triple("?x", "route/link", "?z"),
+          Triple("?z", "route/path", "?y"),
         ]),
       ],
       facts: [
@@ -82,11 +82,11 @@ pub fn persist_and_load_skill_test() {
       description: "Routing skill for persistence testing",
       rules: [
         Rule(head: #("?x", "route/path", "?y"), body: [
-          #("?x", "route/link", "?y"),
+          Triple("?x", "route/link", "?y"),
         ]),
         Rule(head: #("?x", "route/path", "?y"), body: [
-          #("?x", "route/path", "?z"),
-          #("?z", "route/link", "?y"),
+          Triple("?x", "route/path", "?z"),
+          Triple("?z", "route/link", "?y"),
         ]),
       ],
       facts: [
@@ -112,7 +112,7 @@ pub fn apply_patch_test() {
       description: "Testing skill patches",
       rules: [
         Rule(head: #("?x", "route/path", "?y"), body: [
-          #("?x", "route/link", "?y"),
+          Triple("?x", "route/link", "?y"),
         ]),
       ],
       facts: [
@@ -122,8 +122,8 @@ pub fn apply_patch_test() {
 
   let rule_to_add =
     Rule(head: #("?x", "route/path", "?y"), body: [
-      #("?x", "route/path", "?z"),
-      #("?z", "route/link", "?y"),
+      Triple("?x", "route/path", "?z"),
+      Triple("?z", "route/link", "?y"),
     ])
 
   // 1. AddRule
@@ -138,21 +138,21 @@ pub fn apply_patch_test() {
   // 3. ReplaceRule
   let replacement_rule =
     Rule(head: #("?x", "route/path", "?y"), body: [
-      #("?x", "route/link_two", "?y"),
+      Triple("?x", "route/link_two", "?y"),
     ])
   let s3 =
     evolutionary.apply_patch(
       initial_skill,
       evolutionary.ReplaceRule(
         old: Rule(head: #("?x", "route/path", "?y"), body: [
-          #("?x", "route/link", "?y"),
+          Triple("?x", "route/link", "?y"),
         ]),
         new: replacement_rule,
       ),
     )
   let assert [r] = s3.rules
-  let assert "route/link_two" =
-    list.first(r.body) |> assert_ok |> fn(clause) { clause.1 }
+  let assert Triple(_, attr, _) = list.first(r.body) |> assert_ok
+  let assert "route/link_two" = attr
 
   // 4. AddFact
   let s4 =
@@ -195,7 +195,7 @@ pub fn evaluate_candidate_test() {
       description: "Testing evaluation",
       rules: [
         Rule(head: #("?x", "route/path", "?y"), body: [
-          #("?x", "route/link", "?y"),
+          Triple("?x", "route/link", "?y"),
         ]),
       ],
       facts: [
@@ -208,11 +208,9 @@ pub fn evaluate_candidate_test() {
     #([#("A", "route/path", "?dest")], [dict.from_list([#("?dest", "B")])]),
     #([#("B", "route/path", "?dest")], [dict.from_list([#("?dest", "C")])]),
     #([#("A", "route/path", "?dest")], [dict.from_list([#("?dest", "C")])]),
-    // this fails under the current rules
   ]
 
   let score = evolutionary.evaluate_candidate(test_skill, checks)
-  // 2 out of 3 checks should pass
   let assert True = score >. 0.66 && score <. 0.67
 }
 
@@ -223,7 +221,7 @@ pub fn optimize_skill_test() {
       description: "Testing optimization",
       rules: [
         Rule(head: #("?x", "route/path", "?y"), body: [
-          #("?x", "route/link", "?y"),
+          Triple("?x", "route/link", "?y"),
         ]),
       ],
       facts: [
@@ -240,20 +238,18 @@ pub fn optimize_skill_test() {
 
   let rule_to_add =
     Rule(head: #("?x", "route/path", "?y"), body: [
-      #("?x", "route/link", "?z"),
-      #("?z", "route/path", "?y"),
+      Triple("?x", "route/link", "?z"),
+      Triple("?z", "route/path", "?y"),
     ])
 
   let patches = [
     evolutionary.AddRule(rule_to_add),
     evolutionary.AddFact(Datom("X", "route/link", "Y")),
-    // doesn't improve check score
   ]
 
   let #(optimized_skill, score) =
     evolutionary.optimize_skill(test_skill, patches, checks)
 
-  // Score should be 1.0 (all checks pass)
   let assert 1.0 = score
   let assert 2 = list.length(optimized_skill.rules)
 }

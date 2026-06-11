@@ -84,6 +84,17 @@ Integrate complex graph algorithms (Shortest Path, Reachable nodes, Cycle Detect
 Implement a space-efficient set membership checker that runs successfully inside Babashka's restricted SCI sandbox without classpath or sandbox-exec errors.
 
 ### Pattern
-*   **Persistent Set Representation**: Instead of using `java.util.BitSet` (which is blocked by SCI sandboxing), model the active bit array using a standard Clojure persistent set (`#{}`).
+*   **Persistent Set Representation**: Instead of using `java.util.BitSet` (which is typically blocked in SCI sandboxes), model the active bit array using a standard Clojure persistent set (`#{}`).
 *   **Salting Hashes**: Generate multiple hash indices for a given key by salting the key with a range sequence and taking the absolute value modulo the filter size.
 *   **Subset Match**: Check if the set of computed hash indices is a subset of the active bit set.
+
+---
+
+## 7. Boundary Type Coercion for Heterogeneous JSON-to-EDN Transpilation
+
+### Intent
+Map statically-typed query representations (Gleam AST variants) cleanly onto dynamic symbolic execution environments (Clojure) across standard JSON payload streams.
+
+### Pattern
+*   **Structured JSON Serialization**: Serialize query ASTs to JSON arrays (e.g. `["not", ["?e", "blocked", "true"]]` or `[[">", "?a", 25]]`).
+*   **Dynamic Postwalk Coercion**: Walk the JSON-parsed structure in Clojure and dynamically replace any string matching operator names or starting with `?` with their respective Clojure symbol representation.
