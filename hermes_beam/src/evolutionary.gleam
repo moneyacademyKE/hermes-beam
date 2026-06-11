@@ -2,14 +2,12 @@ import datom.{type Datom, type Rule, Datom, Rule}
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/int
-import gleam/json
 import gleam/list
 import gleam/result
 import gleam/string
-import hermes_exec
-import simplifile
 import skill.{type Skill, Skill}
 import sqlight
+import gleamdb_client
 
 pub fn rule_to_datoms(rule_name: String, rule: Rule) -> List(Datom) {
   let head_datoms = [
@@ -90,74 +88,20 @@ pub fn verify_skill(
   skill: Skill,
   checks: List(#(List(#(String, String, String)), List(Dict(String, String)))),
 ) -> Result(Nil, String) {
-  let datoms_json =
-    json.array(skill.facts, of: fn(d) {
-      json.object([
-        #("entity", json.string(d.entity)),
-        #("attribute", json.string(d.attribute)),
-        #("value", json.string(d.value)),
-      ])
-    })
-
-  let rules_json =
-    json.array(skill.rules, of: fn(r) {
-      let head =
-        json.array(
-          [json.string(r.head.0), json.string(r.head.1), json.string(r.head.2)],
-          of: fn(x) { x },
-        )
-      let body =
-        list.map(r.body, fn(c) {
-          json.array(
-            [json.string(c.0), json.string(c.1), json.string(c.2)],
-            of: fn(x) { x },
-          )
-        })
-      json.array([head, ..body], of: fn(x) { x })
-    })
-
   list.try_each(checks, fn(check) {
     let #(query_clauses, expected_bindings) = check
-
-    let where_json =
-      json.array(query_clauses, of: fn(c) {
-        json.array(
-          [json.string(c.0), json.string(c.1), json.string(c.2)],
-          of: fn(x) { x },
-        )
-      })
 
     let vars =
       list.flat_map(query_clauses, fn(c) { [c.0, c.1, c.2] })
       |> list.filter(fn(s) { string.starts_with(s, "?") })
       |> list.unique
 
-    let find_json = json.array(vars, of: json.string)
+    let q = datom.Query(find: vars, where: query_clauses)
 
-    let query_json = json.object([#("find", find_json), #("where", where_json)])
-
-    let payload =
-      json.object([
-        #("datoms", datoms_json),
-        #("rules", rules_json),
-        #("query", query_json),
-      ])
-      |> json.to_string
-
-    let tmp_file = "/tmp/hermes_evo_" <> hermes_exec.generate_uuid() <> ".json"
-    let _ = simplifile.write(tmp_file, payload)
-
-    let cmd =
-      "bb /Users/moe/Desktop/ayncoder/babashka_workers/src/worker.clj --datalog-query < "
-      <> tmp_file
-    let cmd_res = hermes_exec.run_command(cmd, 5000)
-
-    let _ = simplifile.delete(tmp_file)
-
-    case cmd_res {
-      Ok(#(out, 0)) -> {
+    case gleamdb_client.run_query(skill.facts, skill.rules, q) {
+      Ok(results) -> {
         let is_empty_expected = list.is_empty(expected_bindings)
-        let is_empty_actual = string.contains(out, "\"results\":[]")
+        let is_empty_actual = list.is_empty(results)
 
         case is_empty_expected {
           True -> {
@@ -169,12 +113,7 @@ pub fn verify_skill(
           False -> {
             let all_found =
               list.all(expected_bindings, fn(b) {
-                let expected_json =
-                  json.object(
-                    list.map(dict.to_list(b), fn(t) { #(t.0, json.string(t.1)) }),
-                  )
-                  |> json.to_string
-                string.contains(out, expected_json)
+                list.contains(results, b)
               })
             case all_found {
               True -> Ok(Nil)
@@ -183,7 +122,7 @@ pub fn verify_skill(
           }
         }
       }
-      _ -> Error("Failed to execute babashka")
+      Error(err) -> Error("Failed to execute query: " <> err)
     }
   })
 }

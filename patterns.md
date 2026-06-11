@@ -893,15 +893,27 @@ Enable Datalog query engines to safely parse and match query clauses with variab
 
 ---
 
-## 44. Command Pre-flight PATH Verification Pattern
+## 45. AST-Based Query Transpilation and Execution Isolation Pattern
 
 ### Intent
-Prevent subprocess execution errors (like `IOException` for missing files) from crashing the main agent turn when executing dynamic command lines under shell runtimes.
+Unify Datalog query construction, AST validation, and process execution, preventing process management leaks (temporary files, exit codes, and path resolution) from coupling with business logic.
 
 ### Pattern
-1. **Strip Variable Prefixes**: Parse the command line, splitting it on whitespace, and filter out any environment variable prefixes containing key-value assignments (`KEY=VALUE`).
-2. **Check Built-in Commands**: Skip external path lookup if the resolved target is a known shell built-in command (e.g. `cd`, `echo`, `exit`).
-3. **Scan System PATH**: Read the OS `PATH` environment variable, split it on the path separator, and check if the target executable exists and is executable within any folder in the path (accounting for OS-specific extensions like `.exe` on Windows).
-4. **Graceful Bypass Warning**: If the binary is missing, return a structured warning to standard output and exit code 0 rather than spawning the process, enabling downstream agent error/retry policies to handle it cleanly.
+1. **Represent Query Components as data structures**: Define Query, Rule, and Datom as strong-typed records on the host side.
+2. **Decouple Serialization (Transpiler)**: Implement a pure transpiler (`gleamdb_transpiler.gleam`) converting the AST structures into JSON/EDN data.
+3. **Encapsulate Process Isolation (Client)**: Implement a single execution runner (`gleamdb_client.gleam`) that handles temporary file generation, subprocess spawning, stdout capturing, and file deletion.
+4. **Structured Response Decoder**: Decode output stdout via JSON decoders into structured records rather than doing substring matching on stdout text.
+
+---
+
+## 46. Redirected Diagnostics to Standard Error Pattern
+
+### Intent
+Prevent diagnostic prints and traces from polluting structured command-line outputs (stdout) meant for IPC communication.
+
+### Pattern
+1. **Standardize stdout for IPC data**: Direct all process output data (e.g. JSON strings) to stdout.
+2. **Redirect Tracing/Debug to stderr**: Wrap all diagnostic print statements so they execute under standard error streams (`stderr`). In Clojure, bind `*out*` to `*err*` during printing: `(binding [*out* *err*] (println ...))`.
+3. **Safe Parsing**: Decoders on the host side can now safely parse standard output as clean JSON without needing to strip out debug text.
 
 

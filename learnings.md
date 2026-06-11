@@ -465,9 +465,14 @@ This document summarizes the core learnings from porting python codebase element
 *   **Resolution**: Refactored `match-fact`, `solve-rule`, and CLI query parsers to check the clause length. If a clause contains only 2 elements, the engine automatically treats the third element as a wildcard symbol `'_`, enabling successful existential checks on attribute presence.
 *   **Impact**: Enhances Datalog parsing completeness and robustness under variable clause shapes without crashing.
 
-## 56. Pre-flight Binary Checks for Shell execution
+## 57. AST-Based Datalog Query Transpilation and Execution Isolation
 
-*   **Problem**: Executing host tools (like `flake8` or `sandbox-exec`) directly from the subagent's shell execution tool threw unhandled JVM/OS `IOException` when the target binary was missing on the host, which immediately aborted the agent's turn.
-*   **Resolution**: Implemented a `executable-in-path?` utility in the Babashka worker. It filters environment variable prefixes (e.g., `PORT=8000`), parses the command to locate the target executable, and checks its existence and execution permissions against system `PATH` folders. If the executable is missing, the tool returns a clean, structured STDOUT warning and exit status 0, allowing the subagent's retry/fallback policies to handle the missing dependency gracefully.
-*   **Impact**: Isolates and handles OS-level path failures safely, preventing process crashes and aligning with Rich Hickey's principles of robust, fault-tolerant edge transformations.
+*   **Problem**: Writing ad-hoc JSON structures for Datalog queries and rules directly inside business logic (`permission.gleam`, `evolutionary.gleam`) is type-unsafe, duplicates OS process execution logic (temporary file management, stdout extraction), and risks unhandled process crashes.
+*   **Resolution**: Implement a strongly-typed AST representing `Query`, `Rule`, and `Datom` structures on the Gleam side. Decouple serialization into a pure transpiler (`gleamdb_transpiler.gleam`) and process boundary management into a unified client (`gleamdb_client.gleam`).
+*   **Impact**: Decomplects query definition from execution mechanics, eliminates duplicate file cleanups, and ensures compile-time check verification for all Datalog interactions.
 
+## 58. Stdout Stream Integrity in Command-Line IPC Interfaces
+
+*   **Problem**: When coordinating out-of-process scripting engines (like the Clojure Babashka worker) via standard IO boundaries, inline diagnostic statements (e.g. `(println "facts:" facts)`) printed directly to `stdout` will corrupt the structured JSON payload stream, causing JSON decoding errors (`UnexpectedByte`) on the host side.
+*   **Resolution**: Always redirect diagnostic and tracing print statements explicitly to the standard error stream (`stderr`), which in Clojure is done via `(binding [*out* *err*] (println ...))`.
+*   **Impact**: Safeguards structured stdout serialization boundaries, allowing diagnostic logs to flow safely to system logs while keeping IPC data clean.

@@ -567,9 +567,10 @@
         
         q-map {:find (mapv clean-symbol (:find q))
                :where (mapv parse-clause (:where q))}
-        _ (println "facts:" facts)
-        _ (println "all-rules:" all-rules)
-        _ (println "q-map:" q-map)
+        _ (binding [*out* *err*]
+            (println "facts:" facts)
+            (println "all-rules:" all-rules)
+            (println "q-map:" q-map))
                
         results (query-datalog q-map facts all-rules {})
         resolved (resolve-entity-names facts results)
