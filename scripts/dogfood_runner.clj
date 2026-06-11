@@ -19,7 +19,16 @@
     :prompt "/goal Transact three new fact datoms into Datalog representing route links: A->B, B->C, C->D. Then query the path between A and D, and write the path result to path.txt."}
    {:id 5
     :name "OS Sandboxing"
-    :prompt "/goal Evaluate a sandboxed shell command to run a small inline Clojure benchmark counting from 1 to 1,000,000 and print the execution time."}])
+    :prompt "/goal Evaluate a sandboxed shell command to run a small inline Clojure benchmark counting from 1 to 1,000,000 and print the execution time."}
+   {:id 6
+    :name "Evolutionary Skill Mutation"
+    :prompt "/goal Mutate the logical datalog skills in the database by verifying assertions on path connections A->D, saving the verified rule to database."}
+   {:id 7
+    :name "Nested Subagent Delegation"
+    :prompt "/goal Spawns a sibling subagent worker to query system stats and report both sibling stats and main worker stats back."}
+   {:id 8
+    :name "Secure Workspace Auditing"
+    :prompt "/goal Run a sandboxed analysis scanning babashka_workers for credentials, and output an audit result under Seatbelt sandbox restriction."}])
 
 (defn run-goal [{:keys [id name prompt]}]
   (println "\n==================================================")
@@ -42,8 +51,8 @@
       ;; We will sleep and check if the database or worker finished,
       ;; or monitor stdout. Since we inherited stdout/stderr, the output
       ;; will print directly to the console in real-time.
-      ;; We will wait up to 45 seconds for each goal.
-      (let [timeout-ms 55000
+      ;; We will wait up to 75 seconds for each goal.
+      (let [timeout-ms 75000
             start-time (System/currentTimeMillis)]
         (loop []
           (let [elapsed (- (System/currentTimeMillis) start-time)]
@@ -58,9 +67,9 @@
         (println "Finished Goal" id)))))
 
 (defn -main []
-  (println "Starting Automated Dogfooding Suite on 5 Goals...")
+  (println (str "Starting Automated Dogfooding Suite on " (count goals) " Goals..."))
   (doseq [g goals]
     (run-goal g))
-  (println "\nAll 5 Dogfooding Goals completed execution."))
+  (println (str "\nAll " (count goals) " Dogfooding Goals completed execution.")))
 
 (-main)

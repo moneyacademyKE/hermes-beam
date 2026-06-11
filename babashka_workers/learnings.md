@@ -1,19 +1,30 @@
-# Learnings from HTTP Header Fetching Script
+This document records the process of fetching HTTP headers using Clojure and Babashka.
 
-In this task, I implemented a Clojure script using Babashka to fetch HTTP headers from a specified URL. The approach utilized Babashka's built-in capabilities, specifically `babashka.curl`, to achieve this.
+## Fetching Headers from HTTP
+The following script was used:
+```clojure
+(require '[clojure.java.io :as io])
+(require '[babashka.curl :as curl])
 
-## Key Points:
-- **Tool Used**: Babashka
-- **URL Fetched**: https://httpbin.org/get
-- **Output File**: headers.txt
+(defn fetch-and-write-headers []
+  (let [response (curl/get "https://httpbin.org/get")
+        headers (:headers response)]
+    (spit "headers.txt" (pr-str headers))))
 
-## Result:
-The headers received were:
-- date: Thu, 11 Jun 2026 03:04:38 GMT
-- content-type: application/json
-- content-length: 294
-- server: gunicorn/19.9.0
-- access-control-allow-origin: *
-- access-control-allow-credentials: true
+(fetch-and-write-headers)
+```
 
-The lesson learned is the importance of using the right tools that fit the task requirements, which in this case was Babashka for simplicity and efficiency.
+### Observations
+- Utilized "babashka.curl" for HTTP requests as "clj-http.client" was not available.
+- Successfully wrote headers to "headers.txt".
+
+### Outcome
+The headers fetched were:
+- Date: Thu, 11 Jun 2026 03:25:07 GMT
+- Content-Type: application/json
+- Content-Length: 294
+- Server: gunicorn/19.9.0
+- Access-Control-Allow-Origin: *
+- Access-Control-Allow-Credentials: true
+
+This approach is lightweight and integrates well with Babashka.
