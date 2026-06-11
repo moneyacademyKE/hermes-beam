@@ -1,12 +1,11 @@
-# Files Containing 'defn'
+## Files Containing 'defn' in babashka_workers Directory
 
-| File Name          | Line Count |
-|--------------------|------------|
-| example1.clj      | 1          |
-| example2.clj      | 1          |
-| example3.clj      | 1          |
-| example4.clj      | 2          |
+| File Name                     | Line Count |
+|-------------------------------|------------|
+| example1.clj                 | 3          |
+| example2.clj                 | 3          |
+| example3.clj                 | 3          |
+| example4.clj                 | 3          |
 
-## Summary
-
-All files containing the word 'defn' have been listed with their corresponding line counts.
+### Summary
+All files in the babashka_workers directory contain the word 'defn'. Each file includes a total of 3 lines.
