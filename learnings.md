@@ -575,3 +575,15 @@ This document summarizes the core learnings from porting python codebase element
 
 
 
+
+## 70. Prompt Decoupling and HTTP Client Reliability in LLM Workers
+
+*   **Problem**:
+    *   **Prompt/Context Pollution (The Prompt Lock)**: Retaining system reasoning instructions (like "Return ONLY the chain of thought") in the message history during subsequent tool-calling iterations confuses LLMs, causing them to output noise/filler text (e.g. `" P-->"`) or fail to call tools.
+    *   **HTTP Silent Failures**: Using HTTP clients without throwing on non-200 responses (such as rate limits 429, payment limits 402, daily key limits 403) causes errors to propagate silently as valid JSON objects (with empty choices), making troubleshooting extremely difficult.
+    *   **Timeout Mismatch**: If an API call hangs or retries under high timeout limits (e.g. 60s, 3 retries), it can exceed the outer runner's execution cap (e.g. 75s), resulting in SIGKILLs with no error logs.
+*   **Resolution**:
+    - **Prompt Decoupling**: Build the execution turn's message history by appending the generated plan (assistant message) to the user's prompt *excluding* the planning system instruction itself.
+    - **Explicit HTTP Validation**: Run `http/post` with `:throw false`, inspect the status code, and throw an explicit exception with the error body if status is `>= 400`. This triggers retry loops and prints the exact server error in logs.
+    - **Timeout Realignment**: Set the HTTP client timeout to 25s and limit retries to 2 (max 50s total) to guarantee clean termination and error logging before the runner's 75s process threshold.
+*   **Impact**: Resolves subagent prompting locks and silent failures, providing immediate visibility into key limit errors (e.g. daily key quota exceeded 403) and ensuring clean termination of goal execution tasks.

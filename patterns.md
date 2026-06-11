@@ -1106,3 +1106,27 @@ Ensure test validation suites can correctly identify and verify output files gen
 
 
 
+
+## 57. Decoupled Context-Execution Prompting Pattern
+
+### Context
+When orchestrating multi-agent or out-of-process workers, execution is often split into a planning/reasoning phase followed by an execution (tool-calling) phase.
+
+### Problem
+System prompts intended solely for the planning phase (e.g. constraints like "Return ONLY the reasoning chain") pollute the execution phase's message history if left in. This causes models to refuse to call tools or output token noise (e.g. `" P-->"`).
+
+### Pattern
+1. Define a separate `planning-system-prompt`.
+2. Perform the planning turn using `[user-prompt planning-system-prompt]`.
+3. Extract the `planning-response` (assistant message).
+4. For the subsequent execution loop, initialize the history using `[user-prompt planning-response]`, explicitly omitting `planning-system-prompt` from the context history. This allows the model to respond to tools without the planning-only constraints.
+
+### Example
+```clojure
+(let [reasoning-prompt {:role "system" :content "Return ONLY the chain of thought."}
+      reasoning-msg (generate-reasoning messages reasoning-prompt)]
+  ;; Decouple system constraints from tool execution loop
+  (loop [loop-messages (vec (concat messages [reasoning-msg]))]
+    (let [response (generate-completion loop-messages tools)]
+      ...)))
+```

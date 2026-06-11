@@ -554,14 +554,16 @@
 
 (defn solve-shortest-path [clause rules db env visited-rules]
   ;; (shortest-path ?from ?to ?edge ?path-var ?cost-var ?max-depth)
-  (let [from (nth clause 1)
-        to (nth clause 2)
-        edge (nth clause 3)
-        path-var (when (>= (count clause) 5) (nth clause 4))
-        cost-var (when (>= (count clause) 6) (nth clause 5))
-        max-depth (when (>= (count clause) 7) (nth clause 6))
-        from-val (resolve-term from env)
-        edge-val (resolve-term edge env)]
+  (if (< (count clause) 4)
+    []
+    (let [from (nth clause 1)
+          to (nth clause 2)
+          edge (nth clause 3)
+          path-var (when (>= (count clause) 5) (nth clause 4))
+          cost-var (when (>= (count clause) 6) (nth clause 5))
+          max-depth (when (>= (count clause) 7) (nth clause 6))
+          from-val (resolve-term from env)
+          edge-val (resolve-term edge env)]
     (if (variable? from-val)
       [] ;; starting node must be bound
       (let [max-d (when max-depth (resolve-term max-depth env))
@@ -583,7 +585,7 @@
                           (variable? cost-var) (->> (mapcat #(if-let [e (unify cost-var cost %)] [e] [])))
                           true                 identity)
                         [])))
-                  all-paths))))))
+                  all-paths)))))))
 
 ;; ── vector similarity math (P2) ──────────────────────────────────────────────
 
@@ -617,9 +619,11 @@
   (get-in db [:aev edge] {}))
 
 (defn solve-reachable [clause rules db env visited-rules]
-  (let [[_ from edge node-var] clause
-        from-val (resolve-term from env)
-        edge-val (resolve-term edge env)]
+  (if (< (count clause) 4)
+    []
+    (let [[_ from edge node-var] clause
+          from-val (resolve-term from env)
+          edge-val (resolve-term edge env)]
     (if (variable? from-val)
       []
       (let [paths (shortest-path-bfs db from-val edge-val nil)
@@ -629,7 +633,7 @@
           (if (contains? (set reachable-nodes) node-val)
             [env]
             [])
-          (mapcat #(if-let [e (unify node-var % env)] [e] []) reachable-nodes))))))
+          (mapcat #(if-let [e (unify node-var % env)] [e] []) reachable-nodes)))))))
 
 (defn- cd-dfs [graph node visited in-stack stack cycles-ref]
   (let [visited (conj visited node)
@@ -669,15 +673,17 @@
     (vec @cycles)))
 
 (defn solve-cycle-detect [clause rules db env visited-rules]
-  (let [[_ edge cycle-var] clause
-        edge-val (resolve-term edge env)
-        cycles (cycle-detect db edge-val)
-        cycle-val (resolve-term cycle-var env)]
+  (if (< (count clause) 3)
+    []
+    (let [[_ edge cycle-var] clause
+          edge-val (resolve-term edge env)
+          cycles (cycle-detect db edge-val)
+          cycle-val (resolve-term cycle-var env)]
     (if (not (variable? cycle-val))
       (if (contains? (set cycles) cycle-val)
         [env]
         [])
-      (mapcat #(if-let [e (unify cycle-var % env)] [e] []) cycles))))
+      (mapcat #(if-let [e (unify cycle-var % env)] [e] []) cycles)))))
 
 (defn topological-sort [db edge]
   (let [graph (build-graph db edge)
@@ -708,15 +714,17 @@
           (recur next-q next-in-deg (conj order curr)))))))
 
 (defn solve-topological-sort [clause rules db env visited-rules]
-  (let [[_ edge order-var] clause
-        edge-val (resolve-term edge env)
-        res (topological-sort db edge-val)]
+  (if (< (count clause) 3)
+    []
+    (let [[_ edge order-var] clause
+          edge-val (resolve-term edge env)
+          res (topological-sort db edge-val)]
     (if-let [order (:ok res)]
       (let [order-val (resolve-term order-var env)]
         (if (not (variable? order-val))
           (if (= order-val order) [env] [])
           (if-let [e (unify order-var order env)] [e] [])))
-      [])))
+      []))))
 
 (defn- preprocess-pagerank [graph all-nodes]
   (let [out-degrees (into {} (map (fn [[s ts]] [s (count ts)]) graph))
@@ -757,8 +765,10 @@
               (recur next-ranks (dec iter)))))))))
 
 (defn solve-pagerank [clause rules db env visited-rules]
-  (let [[_ entity-var edge rank-var damping-p iterations-p] clause
-        edge-val (resolve-term edge env)
+  (if (< (count clause) 6)
+    []
+    (let [[_ entity-var edge rank-var damping-p iterations-p] clause
+          edge-val (resolve-term edge env)
         damping-val (double (resolve-term damping-p env))
         iter-val (int (resolve-term iterations-p env))
         ranks (pagerank db edge-val damping-val iter-val)
@@ -776,7 +786,7 @@
                     (if (== rank-val score) [env1] [])
                     (if-let [e (unify rank-var score env1)] [e] []))
                   []))
-              ranks))))
+              ranks)))))
 
 (defn strongly-connected-components [db edge]
   (let [graph (build-graph db edge)
@@ -819,8 +829,10 @@
       @components)))
 
 (defn solve-scc [clause rules db env visited-rules]
-  (let [[_ edge entity-var component-var] clause
-        edge-val (resolve-term edge env)
+  (if (< (count clause) 4)
+    []
+    (let [[_ edge entity-var component-var] clause
+          edge-val (resolve-term edge env)
         comps (strongly-connected-components db edge-val)
         entity-val (resolve-term entity-var env)
         comp-val (resolve-term component-var env)]
@@ -836,7 +848,7 @@
                     (if (= comp-val cid) [env1] [])
                     (if-let [e (unify component-var cid env1)] [e] []))
                   []))
-              comps))))
+              comps)))))
 
 (defn- bloom-hashes [key size hash-count]
   (map (fn [i]
@@ -1118,7 +1130,7 @@
                      (if-not (executable-in-path? safe-cmd)
                        (let [bin-name (or (first (filter #(not (clojure.string/includes? % "=")) (clojure.string/split safe-cmd #"\s+"))) "command")]
                          (str "STDOUT:\n[WARN] Executable '" bin-name "' not found in PATH. Execution bypassed.\nSTDERR:\n\nEXIT:0"))
-                       (let [{:keys [out err exit]} (p/sh safe-cmd)]
+                       (let [{:keys [out err exit]} (p/sh "sh" "-c" safe-cmd)]
                          (str "STDOUT:\n" out "\nSTDERR:\n" err "\nEXIT:" exit))))
 
                    "read_file" (slurp (:path args))
@@ -1207,6 +1219,17 @@
         (send-telemetry channel (str "tool_error:" name " - " err))
         err))))
 
+(defn- post-json [url api-key body timeout-ms]
+  (let [resp (http/post url
+                        {:headers {"Authorization" (str "Bearer " api-key)
+                                   "Content-Type" "application/json"}
+                         :body (json/generate-string body)
+                         :timeout timeout-ms
+                         :throw false})]
+    (if (>= (:status resp) 400)
+      (throw (Exception. (str "HTTP error " (:status resp) ": " (:body resp))))
+      resp)))
+
 (defn handle-task [channel payload]
   (try
     (let [{:keys [url model api_key messages tools datoms]} payload
@@ -1215,28 +1238,24 @@
           reasoning-prompt {:role "system" 
                             :content "You are an expert planner. Provide a step-by-step reasoning chain validating the user's request, outlining the necessary tool calls. Return ONLY the chain of thought."}
           reasoning-req-body {:model model
-                              :messages (concat messages [reasoning-prompt])}
+                              :messages (concat messages [reasoning-prompt])
+                              :max_tokens 2048}
           _ (send-telemetry channel "status: reasoning_validation_started")
-          reasoning-resp (with-retries* 3 1000
+          reasoning-resp (with-retries* 2 1000
                            (fn []
-                             (http/post url
-                                        {:headers {"Authorization" (str "Bearer " api_key)
-                                                   "Content-Type" "application/json"}
-                                         :body (json/generate-string reasoning-req-body)})))
+                             (post-json url api_key reasoning-req-body 25000)))
           reasoning-result (json/parse-string (:body reasoning-resp) true)
           reasoning-msg (:message (first (:choices reasoning-result)))
           _ (send-telemetry channel (str "reasoning: \n" (:content reasoning-msg)))]
       
-      (loop [loop-messages (vec (concat messages [reasoning-prompt reasoning-msg]))]
+      (loop [loop-messages (vec (concat messages [reasoning-msg]))]
         (let [req-body {:model model
                         :messages loop-messages
-                        :tools merged-tools}
-              response (with-retries* 3 1000
+                        :tools merged-tools
+                        :max_tokens 4096}
+              response (with-retries* 2 1000
                          (fn []
-                           (http/post url
-                                      {:headers {"Authorization" (str "Bearer " api_key)
-                                                 "Content-Type" "application/json"}
-                                       :body (json/generate-string req-body)})))
+                           (post-json url api_key req-body 25000)))
               result (json/parse-string (:body response) true)
               choice (first (:choices result))
               msg (:message choice)]
@@ -1320,6 +1339,37 @@
                (or (seq? (first c)) (vector? (first c)))
                (contains? #{'> '< '>= '<= '= '!= 'not= 'and 'or} (first (first c)))))
       c
+
+      (or (and (seq? c) (contains? #{'shortest-path 'reachable 'cycle-detect 'topological-sort 'pagerank 'scc} (first c)))
+          (and (vector? c) (contains? #{'shortest-path 'reachable 'cycle-detect 'topological-sort 'pagerank 'scc} (first c))))
+      (let [op (first c)
+            edge-idx (case op
+                       shortest-path 3
+                       reachable 2
+                       cycle-detect 1
+                       topological-sort 1
+                       pagerank 2
+                       scc 1
+                       nil)]
+        (apply list
+               (mapv (fn [[idx x]]
+                       (cond
+                         (and (symbol? x) (clojure.string/starts-with? (name x) "?"))
+                         (clean-symbol (name x))
+
+                         (and (string? x) (clojure.string/starts-with? x "?"))
+                         (clean-symbol x)
+
+                         (and (= idx edge-idx) (string? x))
+                         (if (clojure.string/starts-with? x ":")
+                           (keyword (subs x 1))
+                           (keyword x))
+
+                         (and (= idx edge-idx) (symbol? x))
+                         (keyword (name x))
+
+                         :else x))
+                     (map-indexed vector c))))
 
       (< (count c) 2)
       c

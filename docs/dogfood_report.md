@@ -3,7 +3,7 @@
 **Date:** 2026-06-11
 **Tester:** Antigravity (Hermes AI pair-programmer)
 **Runner Exit Code:** 0
-**Total Duration:** 926.644 seconds (~15.4 minutes)
+**Total Duration:** 636.564 seconds (~10.6 minutes)
 
 ---
 
@@ -15,8 +15,8 @@ The automated dogfooding suite runs a series of 28 agentic goals against the Her
 | :--- | :--- |
 | **Total Test Goals** | 28 |
 | **Verifiable Artifact Goals** | 10 |
-| **Artifact Verification Passed** | 10 |
-| **Artifact Verification Failed** | 0 |
+| **Artifact Verification Passed** | 1 |
+| **Artifact Verification Failed** | 9 |
 
 ---
 
@@ -27,121 +27,65 @@ Below is the status of the goals that output files directly to the workspace:
 ### Goal 2: HTTP & Filesystem
 * **Status:** 🟢 PASSED
 * **Output File:** [babashka_workers/headers.txt](file:///Users/moe/Desktop/ayncoder/babashka_workers/headers.txt)
-* **Size:** 250 bytes
+* **Size:** 132 bytes
 * **Content Preview (First 5 lines):**
 ```
-{
-  "args": {}, 
-  "headers": {
-    "Accept": "*/*", 
-    "Host": "httpbin.org", 
+{":status" "503", "content-length" "162", "content-type" "text/html", "date" "Thu, 11 Jun 2026 13:08:42 GMT", "server" "awselb/2.0"}
 ```
 
 ### Goal 4: Bi-directional Datalog
-* **Status:** 🟢 PASSED
+* **Status:** 🔴 FAILED
 * **Output File:** [babashka_workers/path.txt](file:///Users/moe/Desktop/ayncoder/babashka_workers/path.txt)
-* **Size:** 7 bytes
-* **Content Preview (First 5 lines):**
-```
-A
-B
-C
-D
-```
+* **Size:** 0 bytes
+
 
 ### Goal 11: Static Linting Checker
-* **Status:** 🟢 PASSED
+* **Status:** 🔴 FAILED
 * **Output File:** [babashka_workers/lint_report.txt](file:///Users/moe/Desktop/ayncoder/babashka_workers/lint_report.txt)
-* **Size:** 130 bytes
-* **Content Preview (First 5 lines):**
-```
-Lint Report Summary
----------------------
-File: test_script.py
-Errors: No errors found.
+* **Size:** 0 bytes
 
-```
 
 ### Goal 13: Dynamic Port Allocation Inspector
-* **Status:** 🟢 PASSED
+* **Status:** 🔴 FAILED
 * **Output File:** [babashka_workers/port.txt](file:///Users/moe/Desktop/ayncoder/babashka_workers/port.txt)
-* **Size:** 4 bytes
-* **Content Preview (First 5 lines):**
-```
-5001
-```
+* **Size:** 0 bytes
+
 
 ### Goal 15: Git Branch and Commit Historian
-* **Status:** 🟢 PASSED
+* **Status:** 🔴 FAILED
 * **Output File:** [babashka_workers/changelog.md](file:///Users/moe/Desktop/ayncoder/babashka_workers/changelog.md)
-* **Size:** 545 bytes
-* **Content Preview (First 5 lines):**
-```
-| Commit Hash | Commit Message |
-| ----------- | ---------------- |
-| 0304ba332 | docs: perform rich hickey gap analysis and update model settings to deepseek-v4-flash |
-| 4aad0b766 | Include selected Rich Hickey TDD and quality instructions back in system prompts |
-| 4cff0fbd2 | Remove unnecessary Rich Hickey analysis instructions from system prompts |
-```
+* **Size:** 0 bytes
+
 
 ### Goal 20: HTTP Status Code Mock Service
-* **Status:** 🟢 PASSED
+* **Status:** 🔴 FAILED
 * **Output File:** [babashka_workers/errors.txt](file:///Users/moe/Desktop/ayncoder/babashka_workers/errors.txt)
-* **Size:** 55 bytes
-* **Content Preview (First 5 lines):**
-```
-https://nonexistent-url.comhttps://nonexistent-url.com
-```
+* **Size:** 0 bytes
+
 
 ### Goal 21: Git Diff and Patch Generator
-* **Status:** 🟢 PASSED
+* **Status:** 🔴 FAILED
 * **Output File:** [babashka_workers/patch.diff](file:///Users/moe/Desktop/ayncoder/babashka_workers/patch.diff)
-* **Size:** 3414 bytes
-* **Content Preview (First 5 lines):**
-```
-diff --git a/babashka_workers/changelog.md b/babashka_workers/changelog.md
-index 9fbad0f7e..4c1d27463 100644
---- a/babashka_workers/changelog.md
-+++ b/babashka_workers/changelog.md
-@@ -1,9 +1,7 @@
-```
+* **Size:** 0 bytes
+
 
 ### Goal 23: CSV Data Aggregator and Reporter
-* **Status:** 🟢 PASSED
+* **Status:** 🔴 FAILED
 * **Output File:** [babashka_workers/summary_report.md](file:///Users/moe/Desktop/ayncoder/babashka_workers/summary_report.md)
-* **Size:** 439 bytes
-* **Content Preview (First 5 lines):**
-```
-# Summary Report of Resource Usage
+* **Size:** 0 bytes
 
-## Worker Resource Utilization Summary
-
-| Worker ID | Total CPU Usage | Total Memory Usage | Count of Records |
-```
 
 ### Goal 25: Recursive File Grep Search
-* **Status:** 🟢 PASSED
+* **Status:** 🔴 FAILED
 * **Output File:** [babashka_workers/imports.txt](file:///Users/moe/Desktop/ayncoder/babashka_workers/imports.txt)
-* **Size:** 72 bytes
-* **Content Preview (First 5 lines):**
-```
-import java.util.List)
-import java.util.Map)
-import com.example.MyClass)
-```
+* **Size:** 0 bytes
+
 
 ### Goal 26: Subagent Diagnostics Log Audit
-* **Status:** 🟢 PASSED
+* **Status:** 🔴 FAILED
 * **Output File:** [babashka_workers/diagnostic_report.md](file:///Users/moe/Desktop/ayncoder/babashka_workers/diagnostic_report.md)
-* **Size:** 100 bytes
-* **Content Preview (First 5 lines):**
-```
-# Diagnostic Report
+* **Size:** 0 bytes
 
-## Socket Connection Failures
-
-No socket connection failures found in the logs.
-```
 
 ---
 
