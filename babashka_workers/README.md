@@ -1,4 +1,8 @@
-# Project Documentation
-- Datalog was used for representing routes between nodes in a graph structure.
-- Transactions of routes were coded as EAV (Entity, Attribute, Value).
-- Future documentation will evolve based on newly discovered patterns and learnings from project execution.
+# Project Overview
+
+## Description
+This is a project for managing diagnostics in applications that primarily focus on socket communications. It includes log analysis tools and practices for extracting useful diagnostic information from log files.
+
+## Recent Updates
+- Added functionality for scanning logs for socket connection failures, resulting in `diagnostic_report.md`.
+- Documented the patterns and learnings from implementation in `learnings.md` and `patterns.md`.

@@ -317,6 +317,252 @@
   (assert-eq "parse-query :where count" 1 (count (:where q))))
 
 ;; ═══════════════════════════════════════════════════════════════════════════════
+;; Phase 1 Tests: Clause Reordering, Filters, Negation-as-Failure
+;; ═══════════════════════════════════════════════════════════════════════════════
+
+;; Test 14: Clause Reordering Heuristic
+(let [clauses '[ [?e :age ?age] [?e :name ?name] ]
+      ordered (worker/reorder-clauses clauses #{'?name})]
+  (assert-eq "reorder-clauses: bound variable narrows search space first"
+             '[[?e :name ?name] [?e :age ?age]]
+             (vec ordered)))
+
+(let [clauses '[ [(> ?age 25)] [?e :age ?age] [?e :name ?name] ]
+      ordered (worker/reorder-clauses clauses #{'?name})]
+  (assert-eq "reorder-clauses: filter deferred until variables are bound"
+             '[[?e :name ?name] [?e :age ?age] [(> ?age 25)]]
+             (vec ordered)))
+
+;; Test 15: Filter Expression evaluation
+(assert-true "eval-filter: basic gt" (worker/eval-filter '(> ?x 20) {'?x 25}))
+(assert-false "eval-filter: basic gt false" (worker/eval-filter '(> ?x 20) {'?x 15}))
+(assert-true "eval-filter: basic lt" (worker/eval-filter '(< ?x 20) {'?x 15}))
+(assert-true "eval-filter: basic and" (worker/eval-filter '(and (> ?x 10) (< ?x 20)) {'?x 15}))
+(assert-true "eval-filter: string compare" (worker/eval-filter '(> ?name "Alice") {'?name "Bob"}))
+
+;; Test 16: E2E Datalog query with filters
+(let [facts [["alice" :name "Alice"]
+             ["alice" :age 30]
+             ["bob"   :name "Bob"]
+             ["bob"   :age 20]]
+      db (worker/build-indexes facts)
+      q-map {:find ['?name]
+             :where [['?e :name '?name]
+                     ['?e :age '?age]
+                     '[(> ?age 25)]]}]
+  (let [results (worker/query-datalog q-map db [] {})]
+    (assert-eq "query-datalog filter: only Alice is > 25"
+               #{["Alice"]} (set results))))
+
+;; Test 17: E2E Datalog query with negation
+(let [facts [["alice" :name "Alice"]
+             ["alice" :blocked true]
+             ["bob"   :name "Bob"]]
+      db (worker/build-indexes facts)
+      q-map {:find ['?name]
+             :where [['?e :name '?name]
+                     '(not [?e :blocked true])]}]
+  (let [results (worker/query-datalog q-map db [] {})]
+    (assert-eq "query-datalog negation: only Bob is not blocked"
+               #{["Bob"]} (set results))))
+
+;; ═══════════════════════════════════════════════════════════════════════════════
+;; Phase 2 Tests: Aggregate Functions, Scoring / Weighted Union
+;; ═══════════════════════════════════════════════════════════════════════════════
+
+;; Test 18: aggregate-values helpers
+(assert-eq "aggregate-values: count" 3 (worker/aggregate-values 'count [10 20 30]))
+(assert-eq "aggregate-values: sum" 60 (worker/aggregate-values 'sum [10 20 30]))
+(assert-eq "aggregate-values: min" 10 (worker/aggregate-values 'min [30 10 20]))
+(assert-eq "aggregate-values: max" 30 (worker/aggregate-values 'max [30 10 20]))
+(assert-eq "aggregate-values: avg" 20.0 (worker/aggregate-values 'avg [10 20 30]))
+(assert-eq "aggregate-values: median odd" 20 (worker/aggregate-values 'median [30 10 20]))
+(assert-eq "aggregate-values: median even" 25.0 (worker/aggregate-values 'median [10 20 30 40]))
+
+;; Test 19: E2E Datalog query with aggregates (single group)
+(let [facts [["alice" :age 30]
+             ["bob"   :age 20]
+             ["charlie" :age 40]]
+      db (worker/build-indexes facts)
+      q-map {:find ['(count ?e) '(sum ?age) '(avg ?age) '(median ?age)]
+             :where [['?e :age '?age]]}]
+  (let [results (worker/query-datalog q-map db [] {})]
+    (assert-eq "query-datalog aggregates: single group metrics"
+               [[3 90 30.0 30]] results)))
+
+;; Test 20: E2E Datalog query with aggregates and group keys
+(let [facts [["alice" :type "dev"]
+             ["alice" :age 30]
+             ["bob"   :type "dev"]
+             ["bob"   :age 20]
+             ["charlie" :type "design"]
+             ["charlie" :age 40]]
+      db (worker/build-indexes facts)
+      q-map {:find ['?type '(count ?e) '(sum ?age)]
+             :where [['?e :type '?type]
+                     ['?e :age '?age]]}]
+  (let [results (worker/query-datalog q-map db [] {})]
+    (assert-eq "query-datalog aggregates: grouped by type"
+               #{["dev" 2 50] ["design" 1 40]} (set results))))
+
+;; Test 21: Weighted Union and normalization strategy
+(let [res-a [{:entity 1 :score 10.0} {:entity 2 :score 20.0}]
+      res-b [{:entity 2 :score 5.0} {:entity 3 :score 15.0}]
+      union-norm (worker/weighted-union res-a res-b 1.0 1.0 :min-max)
+      union-none (worker/weighted-union res-a res-b 1.0 2.0 :none)]
+  
+  (assert-eq "weighted-union :min-max: correct scores and sorting"
+             [{:entity 2 :score 1.0} {:entity 3 :score 1.0} {:entity 1 :score 0.0}]
+             union-norm)
+  (assert-eq "weighted-union :none: correct scores and sorting"
+             [{:entity 2 :score 30.0} {:entity 3 :score 30.0} {:entity 1 :score 10.0}]
+             union-none))
+
+;; ═══════════════════════════════════════════════════════════════════════════════
+;; Phase 3 Tests: BFS Shortest Path, Cosine Similarity, LRU Query Cache
+;; ═══════════════════════════════════════════════════════════════════════════════
+
+;; Test 22: BFS Shortest Path E2E Datalog
+(let [facts [["A" :link "B"]
+             ["B" :link "C"]
+             ["B" :link "D"]
+             ["D" :link "E"]]
+      db (worker/build-indexes facts)
+      q-map-1 {:find ['?path '?cost]
+               :where ['(shortest-path "A" "E" :link ?path ?cost)]}
+      q-map-2 {:find ['?to '?path]
+               :where ['(shortest-path "A" ?to :link ?path _)]}
+      q-map-3 {:find ['?path]
+               :where ['(shortest-path "A" "C" :link ?path _ 1)]}] ;; max depth 1
+  
+  (assert-eq "shortest-path: E2E path A -> E"
+             [[["A" "B" "D" "E"] 3]]
+             (worker/query-datalog q-map-1 db [] {}))
+  
+  (assert-eq "shortest-path: E2E target variable from A"
+             #{["A" ["A"]] ["B" ["A" "B"]] ["C" ["A" "B" "C"]] ["D" ["A" "B" "D"]] ["E" ["A" "B" "D" "E"]]}
+             (set (worker/query-datalog q-map-2 db [] {})))
+             
+  (assert-eq "shortest-path: depth constraint restricts A -> C"
+             []
+             (worker/query-datalog q-map-3 db [] {})))
+
+;; Test 23: Cosine Similarity
+(assert-true "cosine-similarity: identical direction"
+             (< (Math/abs (- 1.0 (worker/cosine-similarity [1.0 2.0] [2.0 4.0]))) 1e-9))
+
+(assert-true "cosine-similarity: orthogonal vectors"
+             (< (Math/abs (- 0.0 (worker/cosine-similarity [1.0 0.0] [0.0 1.0]))) 1e-9))
+
+;; Test 24: LRU Query Cache & Self-Invalidation
+(let [facts [["A" :val 10] ["B" :val 20]]
+      db (worker/build-indexes facts)
+      q-map {:find ['?v] :where [['?e :val '?v] '(> ?v 15)]}]
+  
+  ;; Clear cache
+  (reset! worker/query-cache {})
+  
+  ;; Query first time -> caches
+  (let [res1 (worker/query-datalog q-map db [] {})]
+    (assert-eq "query-cache first run" [[20]] res1)
+    (assert-eq "query-cache count is 1" 1 (count @worker/query-cache)))
+    
+  ;; Query second time -> cache hit
+  (let [res2 (worker/query-datalog q-map db [] {})]
+    (assert-eq "query-cache second run (cached)" [[20]] res2)
+    (assert-eq "query-cache count remains 1" 1 (count @worker/query-cache)))
+    
+  ;; transacting new facts should change (:facts db) and bypass cache
+  (let [facts' (conj facts ["C" :val 30])
+        db' (worker/build-indexes facts')]
+    (let [res3 (worker/query-datalog q-map db' [] {})]
+      (assert-eq "query-cache new database facts (cache bypass)"
+                 #{[20] [30]} (set res3))
+      (assert-eq "query-cache count increases to 2" 2 (count @worker/query-cache)))))
+
+;; ═══════════════════════════════════════════════════════════════════════════════
+;; Phase 4 Tests: Reachable, Cycle Detection, Topological Sort
+;; ═══════════════════════════════════════════════════════════════════════════════
+
+;; Test 25: BFS Reachable (Transitive Closure)
+(let [facts [["A" :link "B"]
+             ["B" :link "C"]]
+      db (worker/build-indexes facts)
+      q-map {:find ['?node] :where ['(reachable "A" :link ?node)]}]
+  (assert-eq "reachable: find all reachable from A"
+             #{["A"] ["B"] ["C"]}
+             (set (worker/query-datalog q-map db [] {}))))
+
+;; Test 26: DFS Cycle Detection
+(let [facts [["A" :link "B"]
+             ["B" :link "C"]
+             ["C" :link "A"]
+             ["D" :link "E"]]
+      db (worker/build-indexes facts)
+      q-map {:find ['?cycle] :where ['(cycle-detect :link ?cycle)]}
+      results (worker/query-datalog q-map db [] {})
+      first-cycle (first (first results))
+      cycle-set (set first-cycle)]
+  (assert-eq "cycle-detect: count of cycles found" 1 (count results))
+  ;; Cycle can start at A, B or C depending on DFS start, but must be A, B, C
+  (assert-eq "cycle-detect: cycle vertices match" #{"A" "B" "C"} cycle-set))
+
+;; Test 27: Kahn's Topological Sort
+(let [facts [["A" :link "B"]
+             ["B" :link "C"]
+             ["D" :link "B"]]
+      db (worker/build-indexes facts)
+      q-map {:find ['?order] :where ['(topological-sort :link ?order)]}
+      results (worker/query-datalog q-map db [] {})
+      order (first (first results))]
+  (assert-eq "topological-sort: unique sort returned" 1 (count results))
+  ;; Valid orders are ["A" "D" "B" "C"] or ["D" "A" "B" "C"]
+  (assert-true "topological-sort: ordering is valid"
+               (or (= order ["A" "D" "B" "C"])
+                   (= order ["D" "A" "B" "C"]))))
+
+;; ═══════════════════════════════════════════════════════════════════════════════
+;; Phase 5 Tests: PageRank, Tarjan's SCC, Bloom Filter
+;; ═══════════════════════════════════════════════════════════════════════════════
+
+;; Test 28: PageRank Centrality
+(let [facts [["A" :link "B"]
+             ["B" :link "C"]
+             ["C" :link "A"]]
+      db (worker/build-indexes facts)
+      q-map {:find ['?entity '?rank]
+             :where ['(pagerank ?entity :link ?rank 0.85 10)]}
+      results (worker/query-datalog q-map db [] {})]
+  (assert-eq "pagerank: count of nodes ranked" 3 (count results))
+  ;; Every node in a symmetrical cycle should have rank = 1/3 (0.333333333)
+  (doseq [[ent rank] results]
+    (assert-true (str "pagerank: rank for " ent " is close to 0.3333")
+                 (< (Math/abs (- 0.33333333 rank)) 1e-6))))
+
+;; Test 29: Tarjan's Strongly Connected Components
+(let [facts [["A" :link "B"]
+             ["B" :link "C"]
+             ["C" :link "A"]
+             ["C" :link "D"]
+             ["D" :link "E"]
+             ["E" :link "D"]]
+      db (worker/build-indexes facts)
+      q-map {:find ['?entity '?cid] :where ['(scc :link ?entity ?cid)]}
+      results (worker/query-datalog q-map db [] {})
+      comp-map (into {} results)]
+  (assert-eq "scc: total vertices classified" 5 (count comp-map))
+  (assert-eq "scc: A, B, C in same component" (get comp-map "A") (get comp-map "B"))
+  (assert-eq "scc: B, C in same component" (get comp-map "B") (get comp-map "C"))
+  (assert-eq "scc: D, E in same component" (get comp-map "D") (get comp-map "E"))
+  (assert-true "scc: different components" (not= (get comp-map "A") (get comp-map "D"))))
+
+;; Test 30: Bloom Filter
+(let [filter (worker/bloom-create 100 3)
+      filter' (worker/bloom-insert filter "hello")]
+  (assert-true "bloom: contains inserted key" (worker/bloom-might-contain? filter' "hello"))
+  (assert-false "bloom: does not contain non-inserted key" (worker/bloom-might-contain? filter' "world")))
+
+;; ═══════════════════════════════════════════════════════════════════════════════
 ;; Report
 ;; ═══════════════════════════════════════════════════════════════════════════════
 

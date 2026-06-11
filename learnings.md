@@ -484,5 +484,70 @@ This document summarizes the core learnings from porting python codebase element
     - **Triple Indexing**: Ported aarondb's EAVT/AEVT/AVET indexing strategy into Clojure hash-maps. A single O(N) `reduce` pass over facts builds three complementary indexes: `EAV {entity → {attr → #{values}}}`, `AVE {attr → {value → #{entities}}}`, and `AEV {attr → {entity → #{values}}}`.
     - **Index Selection Strategy**: The `index-lookup` function selects the most selective index based on which pattern positions are already bound: (1) entity+attribute bound → EAV O(1), (2) attribute+value bound → AVE O(1), (3) attribute-only → AEV O(entities), (4) entity-only → EAV O(attrs), (5) nothing bound → full scan fallback.
     - **Clean Unification**: Replaced ad-hoc `match-term?` with explicit `variable?` predicate and `unify` function, mirroring standard unification semantics with recursive binding resolution.
-    - **Incremental Index Rebuild**: On `transact_datalog`, indexes are rebuilt from the full fact set to ensure consistency. This is acceptable for the current workload size and avoids incremental update bugs.
+    - **Incremental Index Rebuild**: On `transact_datalog`, indexes are rebuilt from the full fact set to ensure consistency. This is acceptable for the workload size and avoids incremental update bugs.
 *   **Impact**: Query resolution drops from O(N×clauses) to O(1) for bound patterns while maintaining zero external dependencies. All 55 unit tests and 81 orchestrator integration tests pass. The architecture now directly mirrors aarondb's battle-tested index strategy.
+
+## 60. Cost-Based Clause Reordering in Clojure Datalog Engine
+
+*   **Problem**: Executing Datalog clauses in standard declaration order results in combinatorial explosions if unbound variables are evaluated before selective, grounded bounds.
+*   **Resolution**:
+    - Developed a cost-based heuristic planner (`reorder-clauses`) that evaluates clauses greedily.
+    - Each clause type (e.g. positive triples, negative clauses, graph predicates, filters) has a cost function. For instance, a positive triple `[e a v]` costs `1` if both `e` and `v` are bound, `10` if `e` is bound, `100` if `v` is bound, and `1000` if both are unbound.
+    - Filters and negative clauses are heavily penalized (`8000` and `5000`) if they contain unbound variables, deferring their execution until all relevant variables are grounded.
+*   **Impact**: Ensures query evaluation is highly optimal regardless of user clause order, reducing intermediate matching sets.
+
+## 61. Negation-as-Failure and Filter Compiling
+
+*   **Problem**: A pure EAV pattern-matching engine cannot express negative queries (e.g. "not blocked") or range filters (e.g. "age > 25").
+*   **Resolution**:
+    - Implemented a unified predicate dispatcher in `solve-clause`.
+    - Negation-as-Failure (`not` clause) runs the inner clause within the current binding environment. If the inner query returns no bindings, the current environment is passed forward; otherwise, it is pruned.
+    - Filter expressions support inequality and logic gates (`>`, `<`, `=`, `!=`, `and`, `or`) and are evaluated dynamically after grounding checks.
+*   **Impact**: Enables complex semantic filtering and permission exclusions inside the Babashka datalog runner.
+
+## 62. Unified Aggregation Engine
+
+*   **Problem**: Basic Datalog returns flat tuples of unified variables, but analytic queries require summarizing statistics (e.g. counting nodes, computing average weight).
+*   **Resolution**:
+    - Implemented aggregate function projections (`count`, `sum`, `min`, `max`, `avg`, `median`) in `do-query-datalog`.
+    - Grouped non-aggregate variables to create group keys, and then applied aggregation functions over the grouped environments.
+    - Standardized double-precision calculation for average and median functions.
+*   **Impact**: Provides full analytical querying capabilities directly inside the client worker script.
+
+## 63. Weighted Union and Min-Max Normalization
+
+*   **Problem**: Hybrid retrieval systems combine results from multiple sources (such as keyword indices and vector similarity matches) which have completely different score ranges, making linear combination impossible without skew.
+*   **Resolution**:
+    - Ported aarondb's `weighted-union` scoring combining algorithm.
+    - Implemented `:min-max` normalization strategy that scales scores into a standard `[0.0, 1.0]` range before applying weights: `NormalizedScore = (Score - MinScore) / (MaxScore - MinScore)`.
+*   **Impact**: Enables accurate rank fusion for hybrid retrieval and multi-factor recommendation.
+
+## 64. Self-Invalidating Atom-Based LRU Cache
+
+*   **Problem**: Re-evaluating queries repeatedly on static databases introduces overhead, but keeping a stale cache after transactions corrupts data integrity.
+*   **Resolution**:
+    - Designed an atom-based LRU query cache in `worker.clj`.
+    - Keys are composite: `[query-map facts rules inputs-map]`.
+    - Because the raw `(:facts db)` vector is part of the cache key, any transaction modifying the facts database automatically invalidates cache hits due to key mismatch.
+*   **Impact**: Provides ultra-fast O(1) cache lookup for read-heavy workloads while guaranteeing data freshness.
+
+## 65. Graph Algorithm Suite in Pure Clojure
+
+*   **Problem**: Advanced graph algorithms (PageRank, Tarjan's SCC, Topological Sort) usually require specialized library graph databases or heavy Java packages.
+*   **Resolution**:
+    - Implemented 6 graph traversals as native Datalog query predicates:
+      - **BFS Shortest Path**: Queue-based traversal finding shortest connection.
+      - **BFS Reachable**: Fast transitive closure.
+      - **DFS Cycle Detection**: Stack-tracking back-edge detector.
+      - **Kahn's Topological Sort**: In-degree reduction queue.
+      - **PageRank**: Iterative link-centrality algorithm.
+      - **Tarjan's Strongly Connected Components**: Single-pass DFS indexing.
+*   **Impact**: Allows sophisticated graph analysis within the same unified datalog query, completely free of JVM packages.
+
+## 66. SCI Sandbox Classpath Restrictions (Bloom Filter)
+
+*   **Problem**: standard Java collections like `java.util.BitSet` are blocked by Babashka's SCI sandboxing environment by default, causing class resolution failures at runtime.
+*   **Resolution**:
+    - Rewrote the Bloom Filter to use a pure Clojure persistent set (`#{}`) storing active bit indices rather than relying on a native Java BitSet.
+*   **Impact**: Ensures 100% Babashka sandboxing compatibility while retaining O(1) bit-lookup capabilities.
+

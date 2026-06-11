@@ -1,1 +1,1 @@
-No path exists between A and D.
+A -> C -> D

@@ -1,9 +1,9 @@
 # Changelog
 
-| Commit Hash | Message | Date       | Author |
-|-------------|---------|------------|--------|
-| fatdfdb090  | Updated learnings and patterns documentation after gap analysis. | 2026-06-11 | Moe |
-| 95fd807bb   | Added documentation for fetching HTTP headers with Babashka | 2026-06-11 | Moe |
-| 41a0f377b   | Extend dogfooding runner with 20 new DeepSWE-inspired goals | 2026-06-11 | Moe |
-| add7ed129   | Unify State via Session Entity Filtering and Unified Persistence | 2026-06-11 | Moe |
-| e485b0a56   | Add output and documentation for function definitions in babashka workers | 2026-06-11 | Moe |
+| Commit Hash | Commit Message |
+|-------------|----------------|
+| a24ba0271   | Update learnings and patterns documentation |
+| 2518acae5   | Add header fetcher script and documentation |
+| de077163f   | Updated learnings and patterns for Datalog obsolescence management |
+| 8b4d6f972   | Added Git diff generation script and documentation updates |
+| 993950bbd   | Add final report on secrets analysis |

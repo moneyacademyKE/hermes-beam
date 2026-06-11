@@ -17,6 +17,7 @@ gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 gleam_erlang = ">= 1.3.0 and < 2.0.0"
 gleam_otp = ">= 1.2.0 and < 2.0.0"
 simplifile = ">= 2.4.0 and < 3.0.0"
+aarondb = { git = "https://github.com/criticalinsight/gleamdb.git", ref = "52158755e0f76890634f82171678953a1ee94be8" }
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

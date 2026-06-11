@@ -349,6 +349,151 @@
 
 (declare solve-clause)
 
+;; ── query planner & clause reordering (P0) ───────────────────────────────────
+
+(defn clause-vars
+  "Recursively find all variables (symbols starting with ?) in a clause."
+  [clause]
+  (cond
+    (variable? clause) #{clause}
+    (coll? clause) (into #{} (mapcat clause-vars clause))
+    :else #{}))
+
+(defn estimate-cost
+  "Estimate the selectivity cost of a clause based on currently bound variables."
+  [clause bound-vars]
+  (cond
+    ;; Negative clause: (not [?e :blocked true]) or [not [?e :blocked true]]
+    (or (and (seq? clause) (= (first clause) 'not))
+        (and (vector? clause) (= (first clause) 'not)))
+    (let [inner (second clause)
+          vars (clause-vars inner)]
+      (if (clojure.set/subset? vars bound-vars) 5 5000))
+
+    ;; Filter clause: [(> ?a 25)] or (or ...)
+    (let [first-el (if (vector? clause) (first clause) (first clause))]
+      (and (list? first-el) (contains? #{'> '< '>= '<= '= '!= 'not= 'and 'or} (first first-el))))
+    (let [vars (clause-vars clause)]
+      (if (clojure.set/subset? vars bound-vars) 2 8000))
+
+    ;; Also direct list starting with comparison operator
+    (and (seq? clause) (contains? #{'> '< '>= '<= '= '!= 'not= 'and 'or} (first clause)))
+    (let [vars (clause-vars clause)]
+      (if (clojure.set/subset? vars bound-vars) 2 8000))
+
+    ;; Graph ShortestPath
+    (and (seq? clause) (= (first clause) 'shortest-path))
+    (let [[_ from to] clause
+          from-bound? (or (not (variable? from)) (contains? bound-vars from))
+          to-bound? (or (not (variable? to)) (contains? bound-vars to))]
+      (if (and from-bound? to-bound?) 500 9000))
+
+    ;; Graph Reachable
+    (and (seq? clause) (= (first clause) 'reachable))
+    (let [[_ from] clause
+          from-bound? (or (not (variable? from)) (contains? bound-vars from))]
+      (if from-bound? 50 9000))
+
+    ;; Rule application (list starting with anything else)
+    (seq? clause)
+    (let [[_ he hv] clause
+          e-bound? (or (not (variable? he)) (contains? bound-vars he))
+          v-bound? (or (not (variable? hv)) (contains? bound-vars hv))]
+      (cond
+        (and e-bound? v-bound?) 100
+        e-bound?                200
+        v-bound?                500
+        :else                   5000))
+
+    ;; Positive triple pattern [e a v]
+    (vector? clause)
+    (let [[e _ v] clause
+          e-bound? (or (not (variable? e)) (contains? bound-vars e))
+          v-bound? (or (not (variable? v)) (contains? bound-vars v))]
+      (cond
+        (and e-bound? v-bound?) 1
+        e-bound?                10
+        v-bound?                100
+        :else                   1000))
+
+    :else 9999))
+
+(defn reorder-clauses
+  "Greedily reorder clauses based on selectivity cost given a set of bound variables."
+  [clauses bound-vars]
+  (loop [remaining clauses
+         bound bound-vars
+         acc []]
+    (if (empty? remaining)
+      acc
+      (let [best (apply min-key #(estimate-cost % bound) remaining)
+            next-remaining (remove #(= % best) remaining)
+            new-bound (clojure.set/union bound (clause-vars best))]
+        (recur next-remaining new-bound (conj acc best))))))
+
+;; ── filter evaluator (P0) ────────────────────────────────────────────────────
+
+(defn eval-filter
+  "Recursively evaluate comparison and logical filter expressions."
+  [expr env]
+  (let [expr (if (and (vector? expr) (seq? (first expr))) (first expr) expr)]
+    (if (seq? expr)
+      (let [op (first expr)
+            args (rest expr)
+            resolve-arg (fn [x] (let [r (resolve-term x env)]
+                                  (if (variable? r)
+                                    (throw (Exception. (str "Unbound variable in filter: " r)))
+                                    r)))]
+        (case op
+          and (every? #(eval-filter % env) args)
+          or  (some #(eval-filter % env) args)
+          (let [resolved-args (map resolve-arg args)
+                arg1 (first resolved-args)
+                arg2 (second resolved-args)]
+            (case op
+              =    (= arg1 arg2)
+              !=   (not= arg1 arg2)
+              not= (not= arg1 arg2)
+              >    (cond
+                     (and (number? arg1) (number? arg2)) (> arg1 arg2)
+                     (and (string? arg1) (string? arg2)) (pos? (compare arg1 arg2))
+                     :else (throw (Exception. (str "Cannot compare " arg1 " and " arg2))))
+              <    (cond
+                     (and (number? arg1) (number? arg2)) (< arg1 arg2)
+                     (and (string? arg1) (string? arg2)) (neg? (compare arg1 arg2))
+                     :else (throw (Exception. (str "Cannot compare " arg1 " and " arg2))))
+              >=   (cond
+                     (and (number? arg1) (number? arg2)) (>= arg1 arg2)
+                     (and (string? arg1) (string? arg2)) (not (neg? (compare arg1 arg2)))
+                     :else (throw (Exception. (str "Cannot compare " arg1 " and " arg2))))
+              <=   (cond
+                     (and (number? arg1) (number? arg2)) (<= arg1 arg2)
+                     (and (string? arg1) (string? arg2)) (not (pos? (compare arg1 arg2)))
+                     :else (throw (Exception. (str "Cannot compare " arg1 " and " arg2))))
+              (throw (Exception. (str "Unknown operator: " op)))))))
+      expr)))
+
+;; ── negation-as-failure helpers (P0) ─────────────────────────────────────────
+
+(defn negative-clause? [clause]
+  (or (and (seq? clause) (= (first clause) 'not))
+      (and (vector? clause) (= (first clause) 'not))))
+
+(defn extract-negative-inner [clause]
+  (second clause))
+
+(defn filter-clause? [clause]
+  (or (and (seq? clause) (contains? #{'> '< '>= '<= '= '!= 'not= 'and 'or} (first clause)))
+      (and (vector? clause)
+           (seq? (first clause))
+           (contains? #{'> '< '>= '<= '= '!= 'not= 'and 'or} (first (first clause))))))
+
+(defn solve-negative [inner-clause rules db env visited]
+  (let [results (solve-clause inner-clause rules db env visited)]
+    (if (empty? results)
+      [env]
+      [])))
+
 (defn solve-rule
   "Evaluate a rule-application clause against all matching rules.
    Uses cycle detection via the `visited` set to prevent infinite loops."
@@ -375,35 +520,487 @@
                    body (rest renamed)]
                (if-let [env1 (unify he re env)]
                  (if-let [env2 (unify hv rv env1)]
-                   (reduce (fn [envs body-clause]
-                             (mapcat #(solve-clause body-clause rules db % visited')
-                                     envs))
-                           [env2] body)
+                   (let [bound-vars (set (keys env2))
+                         ordered-body (reorder-clauses body bound-vars)]
+                     (reduce (fn [envs body-clause]
+                               (mapcat #(solve-clause body-clause rules db % visited')
+                                       envs))
+                             [env2] ordered-body))
                    [])
                  [])))
            matching))))))
 
+;; ── graph algorithms helpers (P2, P3, P4) ────────────────────────────────────
+
+(defn shortest-path-bfs
+  "Find all shortest paths from starting node in graph."
+  [db from edge max-depth]
+  (loop [q (conj clojure.lang.PersistentQueue/EMPTY [from [from]])
+         visited #{from}
+         paths {}]
+    (if (empty? q)
+      paths
+      (let [[curr path] (peek q)
+            depth (dec (count path))
+            q' (pop q)]
+        (if (and max-depth (>= depth max-depth))
+          (recur q' visited paths)
+          (let [neighbors (get-in db [:eav curr edge] #{})
+                unvisited-neighbors (clojure.set/difference neighbors visited)
+                new-paths (reduce (fn [acc n] (assoc acc n (conj path n))) {} unvisited-neighbors)
+                next-q (reduce (fn [acc n] (conj acc [n (conj path n)])) q' unvisited-neighbors)
+                next-visited (clojure.set/union visited unvisited-neighbors)]
+            (recur next-q next-visited (merge paths new-paths))))))))
+
+(defn solve-shortest-path [clause rules db env visited-rules]
+  ;; (shortest-path ?from ?to ?edge ?path-var ?cost-var ?max-depth)
+  (let [from (nth clause 1)
+        to (nth clause 2)
+        edge (nth clause 3)
+        path-var (when (>= (count clause) 5) (nth clause 4))
+        cost-var (when (>= (count clause) 6) (nth clause 5))
+        max-depth (when (>= (count clause) 7) (nth clause 6))
+        from-val (resolve-term from env)
+        edge-val (resolve-term edge env)]
+    (if (variable? from-val)
+      [] ;; starting node must be bound
+      (let [max-d (when max-depth (resolve-term max-depth env))
+            paths (shortest-path-bfs db from-val edge-val max-d)
+            all-paths (assoc paths from-val [from-val])
+            to-val (resolve-term to env)]
+        (if (not (variable? to-val))
+          (if-let [path (get all-paths to-val)]
+            (let [cost (dec (count path))]
+              (cond-> [env]
+                (variable? path-var) (->> (mapcat #(if-let [e (unify path-var path %)] [e] [])))
+                (variable? cost-var) (->> (mapcat #(if-let [e (unify cost-var cost %)] [e] [])))))
+            [])
+          (mapcat (fn [[target path]]
+                    (let [cost (dec (count path))]
+                      (if-let [env1 (unify to target env)]
+                        (cond-> [env1]
+                          (variable? path-var) (->> (mapcat #(if-let [e (unify path-var path %)] [e] [])))
+                          (variable? cost-var) (->> (mapcat #(if-let [e (unify cost-var cost %)] [e] [])))
+                          true                 identity)
+                        [])))
+                  all-paths))))))
+
+;; ── vector similarity math (P2) ──────────────────────────────────────────────
+
+(defn cosine-similarity [a b]
+  (if-not (= (count a) (count b))
+    nil
+    (let [dot-product (reduce + (map * a b))
+          mag-a (Math/sqrt (reduce + (map #(* % %) a)))
+          mag-b (Math/sqrt (reduce + (map #(* % %) b)))]
+      (if (or (zero? mag-a) (zero? mag-b))
+        nil
+        (/ dot-product (* mag-a mag-b))))))
+
+;; ── query cache (P2) ─────────────────────────────────────────────────────────
+
+(defonce query-cache (atom {}))
+(def max-cache-size 100)
+
+(defn get-cached-query [cache-key]
+  (when-let [entry (get @query-cache cache-key)]
+    (swap! query-cache assoc-in [cache-key :last-accessed] (System/currentTimeMillis))
+    (:val entry)))
+
+(defn cache-query! [cache-key val]
+  (swap! query-cache assoc cache-key {:val val :last-accessed (System/currentTimeMillis)})
+  (when (> (count @query-cache) max-cache-size)
+    (let [oldest (apply min-key (fn [[_ entry]] (:last-accessed entry)) @query-cache)]
+      (swap! query-cache dissoc (first oldest)))))
+
+(defn build-graph [db edge]
+  (get-in db [:aev edge] {}))
+
+(defn solve-reachable [clause rules db env visited-rules]
+  (let [[_ from edge node-var] clause
+        from-val (resolve-term from env)
+        edge-val (resolve-term edge env)]
+    (if (variable? from-val)
+      []
+      (let [paths (shortest-path-bfs db from-val edge-val nil)
+            reachable-nodes (conj (keys paths) from-val)
+            node-val (resolve-term node-var env)]
+        (if (not (variable? node-val))
+          (if (contains? (set reachable-nodes) node-val)
+            [env]
+            [])
+          (mapcat #(if-let [e (unify node-var % env)] [e] []) reachable-nodes))))))
+
+(defn- cd-dfs [graph node visited in-stack stack cycles-ref]
+  (let [visited (conj visited node)
+        in-stack (conj in-stack node)
+        stack (conj stack node)
+        neighbors (get graph node #{})]
+    (let [[next-visited next-in-stack]
+          (reduce (fn [[v is] neighbor]
+                    (cond
+                      (contains? is neighbor)
+                      (do
+                        (let [idx (.indexOf stack neighbor)
+                              cycle (if (neg? idx) [neighbor] (subvec stack idx))]
+                          (swap! cycles-ref conj cycle))
+                        [v is])
+                      
+                      (contains? v neighbor)
+                      [v is]
+                      
+                      :else
+                      (let [[v' is'] (cd-dfs graph neighbor v is stack cycles-ref)]
+                        [v' is'])))
+                  [visited in-stack]
+                  neighbors)]
+      [next-visited (disj next-in-stack node)])))
+
+(defn cycle-detect [db edge]
+  (let [graph (build-graph db edge)
+        all-nodes (set (concat (keys graph) (mapcat graph (keys graph))))
+        cycles (atom #{})
+        _ (reduce (fn [visited node]
+                    (if (contains? visited node)
+                      visited
+                      (first (cd-dfs graph node visited #{} [] cycles))))
+                  #{}
+                  all-nodes)]
+    (vec @cycles)))
+
+(defn solve-cycle-detect [clause rules db env visited-rules]
+  (let [[_ edge cycle-var] clause
+        edge-val (resolve-term edge env)
+        cycles (cycle-detect db edge-val)
+        cycle-val (resolve-term cycle-var env)]
+    (if (not (variable? cycle-val))
+      (if (contains? (set cycles) cycle-val)
+        [env]
+        [])
+      (mapcat #(if-let [e (unify cycle-var % env)] [e] []) cycles))))
+
+(defn topological-sort [db edge]
+  (let [graph (build-graph db edge)
+        all-nodes (set (concat (keys graph) (mapcat graph (keys graph))))
+        in-degree (reduce (fn [acc node]
+                            (let [neighbors (get graph node #{})]
+                              (reduce (fn [m n] (update m n (fnil inc 0))) acc neighbors)))
+                          (zipmap all-nodes (repeat 0))
+                          all-nodes)
+        zero-in (filter #(zero? (get in-degree %)) all-nodes)]
+    (loop [q (into clojure.lang.PersistentQueue/EMPTY zero-in)
+           in-deg in-degree
+           order []]
+      (if (empty? q)
+        (if (= (count order) (count all-nodes))
+          {:ok order}
+          {:error (filter #(pos? (get in-deg %)) all-nodes)})
+        (let [curr (peek q)
+              q' (pop q)
+              neighbors (get graph curr #{})
+              [next-q next-in-deg]
+              (reduce (fn [[q-acc id-acc] neighbor]
+                        (let [new-deg (dec (get id-acc neighbor))]
+                          [(if (zero? new-deg) (conj q-acc neighbor) q-acc)
+                           (assoc id-acc neighbor new-deg)]))
+                      [q' in-deg]
+                      neighbors)]
+          (recur next-q next-in-deg (conj order curr)))))))
+
+(defn solve-topological-sort [clause rules db env visited-rules]
+  (let [[_ edge order-var] clause
+        edge-val (resolve-term edge env)
+        res (topological-sort db edge-val)]
+    (if-let [order (:ok res)]
+      (let [order-val (resolve-term order-var env)]
+        (if (not (variable? order-val))
+          (if (= order-val order) [env] [])
+          (if-let [e (unify order-var order env)] [e] [])))
+      [])))
+
+(defn- preprocess-pagerank [graph all-nodes]
+  (let [out-degrees (into {} (map (fn [[s ts]] [s (count ts)]) graph))
+        incoming (reduce (fn [acc [source targets]]
+                           (reduce (fn [m target]
+                                     (update m target (fnil conj []) source))
+                                   acc
+                                   targets))
+                         {}
+                         graph)]
+    [incoming out-degrees]))
+
+(defn pagerank [db edge damping iterations]
+  (let [graph (build-graph db edge)
+        all-nodes (set (concat (keys graph) (mapcat graph (keys graph))))
+        n (double (count all-nodes))]
+    (if (zero? n)
+      {}
+      (let [[incoming out-degrees] (preprocess-pagerank graph all-nodes)
+            initial-ranks (zipmap all-nodes (repeat (/ 1.0 n)))]
+        (loop [ranks initial-ranks
+               iter iterations]
+          (if (zero? iter)
+            ranks
+            (let [next-ranks
+                  (into {}
+                        (map (fn [u]
+                               (let [incoming-nodes (get incoming u [])
+                                     sum-val (reduce (fn [s v]
+                                                       (let [rank-v (get ranks v 0.0)
+                                                             deg-v (get out-degrees v 1)]
+                                                         (+ s (/ rank-v (double deg-v)))))
+                                                     0.0
+                                                     incoming-nodes)
+                                     new-rank (+ (/ (- 1.0 damping) n) (* damping sum-val))]
+                                 [u new-rank]))
+                             all-nodes))]
+              (recur next-ranks (dec iter)))))))))
+
+(defn solve-pagerank [clause rules db env visited-rules]
+  (let [[_ entity-var edge rank-var damping-p iterations-p] clause
+        edge-val (resolve-term edge env)
+        damping-val (double (resolve-term damping-p env))
+        iter-val (int (resolve-term iterations-p env))
+        ranks (pagerank db edge-val damping-val iter-val)
+        entity-val (resolve-term entity-var env)
+        rank-val (resolve-term rank-var env)]
+    (if (not (variable? entity-val))
+      (if-let [score (get ranks entity-val)]
+        (if (not (variable? rank-val))
+          (if (== rank-val score) [env] [])
+          (if-let [e (unify rank-var score env)] [e] []))
+        [])
+      (mapcat (fn [[ent score]]
+                (if-let [env1 (unify entity-var ent env)]
+                  (if (not (variable? rank-val))
+                    (if (== rank-val score) [env1] [])
+                    (if-let [e (unify rank-var score env1)] [e] []))
+                  []))
+              ranks))))
+
+(defn strongly-connected-components [db edge]
+  (let [graph (build-graph db edge)
+        all-nodes (set (concat (keys graph) (mapcat graph (keys graph))))
+        index (atom 0)
+        indices (atom {})
+        lowlinks (atom {})
+        on-stack (atom #{})
+        stack (atom [])
+        components (atom {})
+        comp-id (atom 0)]
+    (letfn [(dfs [v]
+              (let [idx @index]
+                (swap! index inc)
+                (swap! indices assoc v idx)
+                (swap! lowlinks assoc v idx)
+                (swap! on-stack conj v)
+                (swap! stack conj v))
+              (doseq [w (get graph v #{})]
+                (cond
+                  (not (contains? @indices w))
+                  (do
+                    (dfs w)
+                    (swap! lowlinks assoc v (min (get @lowlinks v) (get @lowlinks w))))
+                  
+                  (contains? @on-stack w)
+                  (swap! lowlinks assoc v (min (get @lowlinks v) (get @indices w)))))
+              (when (= (get @lowlinks v) (get @indices v))
+                (loop [comp-nodes []]
+                  (let [top (last @stack)]
+                    (swap! stack pop)
+                    (swap! on-stack disj top)
+                    (swap! components assoc top @comp-id)
+                    (if (= top v)
+                      (swap! comp-id inc)
+                      (recur (conj comp-nodes top)))))))]
+      (doseq [node all-nodes]
+        (when-not (contains? @indices node)
+          (dfs node)))
+      @components)))
+
+(defn solve-scc [clause rules db env visited-rules]
+  (let [[_ edge entity-var component-var] clause
+        edge-val (resolve-term edge env)
+        comps (strongly-connected-components db edge-val)
+        entity-val (resolve-term entity-var env)
+        comp-val (resolve-term component-var env)]
+    (if (not (variable? entity-val))
+      (if-let [cid (get comps entity-val)]
+        (if (not (variable? comp-val))
+          (if (= comp-val cid) [env] [])
+          (if-let [e (unify component-var cid env)] [e] []))
+        [])
+      (mapcat (fn [[ent cid]]
+                (if-let [env1 (unify entity-var ent env)]
+                  (if (not (variable? comp-val))
+                    (if (= comp-val cid) [env1] [])
+                    (if-let [e (unify component-var cid env1)] [e] []))
+                  []))
+              comps))))
+
+(defn- bloom-hashes [key size hash-count]
+  (map (fn [i]
+         (let [h (hash [key i])]
+           (mod (Math/abs h) size)))
+       (range 1 (inc hash-count))))
+
+(defn bloom-create [size hash-count]
+  {:size size
+   :hash-count hash-count
+   :bits #{}})
+
+(defn bloom-insert [filter key]
+  (let [hashes (bloom-hashes key (:size filter) (:hash-count filter))]
+    (update filter :bits clojure.set/union (set hashes))))
+
+(defn bloom-might-contain? [filter key]
+  (let [hashes (bloom-hashes key (:size filter) (:hash-count filter))]
+    (clojure.set/subset? (set hashes) (:bits filter))))
+
 (defn solve-clause
-  "Dispatch a clause — rule applications (seqs) go to solve-rule,
-   triple patterns (vectors) go to index-driven match-fact."
+  "Dispatch a clause — negative, filter, shortest-path, graph algos, rules, or indexed patterns."
   [clause rules db env visited]
-  (if (seq? clause)
+  (cond
+    (negative-clause? clause)
+    (solve-negative (extract-negative-inner clause) rules db env visited)
+
+    (filter-clause? clause)
+    (if (eval-filter clause env) [env] [])
+
+    ;; ShortestPath
+    (and (seq? clause) (= (first clause) 'shortest-path))
+    (solve-shortest-path clause rules db env visited)
+
+    ;; Reachable
+    (and (seq? clause) (= (first clause) 'reachable))
+    (solve-reachable clause rules db env visited)
+
+    ;; CycleDetect
+    (and (seq? clause) (= (first clause) 'cycle-detect))
+    (solve-cycle-detect clause rules db env visited)
+
+    ;; TopologicalSort
+    (and (seq? clause) (= (first clause) 'topological-sort))
+    (solve-topological-sort clause rules db env visited)
+
+    ;; PageRank
+    (and (seq? clause) (= (first clause) 'pagerank))
+    (solve-pagerank clause rules db env visited)
+
+    ;; SCC (strongly connected components)
+    (and (seq? clause) (= (first clause) 'scc))
+    (solve-scc clause rules db env visited)
+
+    (seq? clause)
     (solve-rule clause rules db env visited)
+
+    :else
     (match-fact clause db env)))
 
-(defn query-datalog
-  "Top-level query driver. Threads the initial environment through each
-   where-clause sequentially, collecting all valid binding environments,
-   then projects the :find variables."
+;; ── aggregate functions (P1) ─────────────────────────────────────────────────
+
+(defn aggregate-values
+  "Compute aggregate function value over a list of values."
+  [op values]
+  (case op
+    count (count values)
+    sum   (reduce + 0 (filter number? values))
+    min   (if (empty? values) nil (first (sort values)))
+    max   (if (empty? values) nil (last (sort values)))
+    avg   (if (empty? values) 0.0 (/ (double (reduce + 0 (filter number? values))) (count values)))
+    median (if (empty? values)
+             nil
+             (let [sorted (sort values)
+                   cnt (count sorted)
+                   mid (quot cnt 2)]
+               (if (odd? cnt)
+                 (nth sorted mid)
+                 (let [v1 (nth sorted (dec mid))
+                       v2 (nth sorted mid)]
+                   (if (and (number? v1) (number? v2))
+                     (/ (+ v1 v2) 2.0)
+                     v1)))))
+    nil))
+
+;; ── scoring & weighted union (P1) ────────────────────────────────────────────
+
+(defn normalize-scores
+  "Normalize scores of results based on strategy (:min-max or :none)."
+  [results strategy]
+  (case strategy
+    :min-max
+    (if (empty? results)
+      []
+      (let [scores (map :score results)
+            min-s (apply min scores)
+            max-s (apply max scores)
+            range-s (- max-s min-s)
+            safe-range (if (zero? range-s) 1.0 range-s)]
+        (map (fn [r]
+               (assoc r :score (/ (- (:score r) min-s) safe-range)))
+             results)))
+    results))
+
+(defn weighted-union
+  "Combine two lists of scored results [{:entity e :score s}] by weighted union."
+  [results-a results-b weight-a weight-b normalization]
+  (let [norm-a (normalize-scores results-a normalization)
+        norm-b (normalize-scores results-b normalization)
+        map-a (into {} (map (juxt :entity :score) norm-a))
+        map-b (into {} (map (juxt :entity :score) norm-b))
+        all-entities (distinct (concat (keys map-a) (keys map-b)))]
+    (->> all-entities
+         (map (fn [e]
+                (let [score-a (get map-a e 0.0)
+                      score-b (get map-b e 0.0)
+                      final-score (+ (* weight-a score-a) (* weight-b score-b))]
+                  {:entity e :score final-score})))
+         (sort-by :score >)
+         vec)))
+
+(defn do-query-datalog
   [q-map db rules inputs-map]
   (let [initial-env inputs-map
+        bound-vars (set (keys inputs-map))
+        ordered-clauses (reorder-clauses (:where q-map) bound-vars)
         envs (reduce (fn [envs clause]
                        (mapcat #(solve-clause clause rules db % #{})
                                envs))
                      [initial-env]
-                     (:where q-map))]
-    (mapv (fn [env] (mapv #(resolve-term % env) (:find q-map)))
-          (distinct envs))))
+                     ordered-clauses)
+        find-exprs (:find q-map)
+        has-aggregates? (some seq? find-exprs)]
+    (if-not has-aggregates?
+      (mapv (fn [env] (mapv #(resolve-term % env) find-exprs))
+            (distinct envs))
+      (let [group-keys (filterv #(not (seq? %)) find-exprs)
+            grouped (group-by (fn [env]
+                                (mapv #(resolve-term % env) group-keys))
+                              (distinct envs))
+            projected (mapv (fn [[group-vals group-envs]]
+                              (let [val-map (zipmap group-keys group-vals)]
+                                (mapv (fn [expr]
+                                        (if (seq? expr)
+                                          (let [op (first expr)
+                                                var (second expr)
+                                                vals (map #(resolve-term var %) group-envs)]
+                                            (aggregate-values op vals))
+                                          (get val-map expr)))
+                                      find-exprs)))
+                            grouped)]
+        projected))))
+
+(defn query-datalog
+  "Top-level query driver. Threads the initial environment through each
+   where-clause sequentially, collecting all valid binding environments,
+   then projects the :find variables. Uses query-cache."
+  [q-map db rules inputs-map]
+  (let [cache-key [q-map (:facts db) rules inputs-map]]
+    (if-let [cached (get-cached-query cache-key)]
+      cached
+      (let [res (do-query-datalog q-map db rules inputs-map)]
+        (cache-query! cache-key res)
+        res))))
 
 ;; ── datom ingestion & rule compilation ───────────────────────────────────────
 
@@ -700,6 +1297,36 @@
                (catch Exception _ false))]
       (when ok (recur)))))
 
+(defn parse-clause-helper [c all-rule-attrs]
+  (cond
+    (or (and (seq? c) (= (first c) 'not))
+        (and (vector? c) (= (first c) 'not)))
+    (let [inner (second c)]
+      (list 'not (parse-clause-helper inner all-rule-attrs)))
+
+    (or (and (seq? c) (contains? #{'> '< '>= '<= '= '!= 'not= 'and 'or} (first c)))
+        (and (vector? c)
+             (seq? (first c))
+             (contains? #{'> '< '>= '<= '= '!= 'not= 'and 'or} (first (first c)))))
+    c
+
+    (< (count c) 2)
+    c
+
+    :else
+    (let [attr (second c)
+          has-val? (>= (count c) 3)
+          parsed (cond-> [(clean-symbol (first c))
+                          (if (and (string? attr) (clojure.string/starts-with? attr "?"))
+                            (clean-symbol attr)
+                            (keyword attr))]
+                   has-val? (conj (clean-symbol (nth c 2))))]
+      (if (contains? all-rule-attrs attr)
+        (if has-val?
+          (list (rule-name-for attr) (first parsed) (nth parsed 2))
+          (list (rule-name-for attr) (first parsed) '_))
+        parsed))))
+
 (defn handle-cli-query [payload]
   (let [datoms (:datoms payload)
         q (:query payload)
@@ -710,21 +1337,7 @@
         rule-attrs-db (set (keep (fn [d] (when (= (:attribute d) "rule/head_1") (:value d))) datoms))
         all-rule-attrs (clojure.set/union rule-attrs-payload rule-attrs-db)
         
-        parse-clause (fn [c] 
-                       (if (< (count c) 2)
-                         c
-                         (let [attr (second c)
-                               has-val? (>= (count c) 3)
-                               parsed (cond-> [(clean-symbol (first c))
-                                               (if (and (string? attr) (clojure.string/starts-with? attr "?"))
-                                                 (clean-symbol attr)
-                                                 (keyword attr))]
-                                        has-val? (conj (clean-symbol (nth c 2))))]
-                           (if (contains? all-rule-attrs attr)
-                             (if has-val?
-                               (list (rule-name-for attr) (first parsed) (nth parsed 2))
-                               (list (rule-name-for attr) (first parsed) '_))
-                             parsed))))
+        parse-clause #(parse-clause-helper % all-rule-attrs)
         extra-rules (mapv (fn [r] (vec (cons (parse-clause (first r)) (mapv parse-clause (rest r))))) (or rules-raw []))
         
         all-rules (vec (concat (:rules db) extra-rules))

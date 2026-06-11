@@ -963,4 +963,92 @@ Replace linear O(N) fact scans in Datalog query evaluation with index-driven O(1
       :else                   (:facts db))))               ;; O(N) fallback
 ```
 
+---
 
+## 48. Cost-Based Selectivity Heuristic for Clause Reordering
+
+### Intent
+Prevent worst-case query times by automatically ordering join and match clauses so that the most selective (highly bound) clauses execute first.
+
+### Pattern
+1. **Clause Variable Analysis**: Implement `clause-vars` to extract all variable symbols (`?x`) present in a clause.
+2. **Selectivity Score Function**: Map each clause to a cost integer based on current variable grounding:
+   - Grounded constants or bound variables = Low Cost (1 to 10)
+   - Partially bound rule/graph clauses = Medium Cost (100 to 500)
+   - Unbound positive triples = High Cost (1000)
+   - Unbound filters or negative clauses = Extremely High Cost (5000 to 8000) to force deferral.
+3. **Greedy Reordering**: Perform a greedy selection loop. In each iteration, select the clause with the minimum cost given the current set of bound variables, append it to the planned queue, and union its variables into the bound set.
+
+### Example (Clojure)
+```clojure
+(defn reorder-clauses [clauses bound-vars]
+  (loop [remaining clauses
+         bound bound-vars
+         acc []]
+    (if (empty? remaining)
+      acc
+      (let [best (apply min-key #(estimate-cost % bound) remaining)
+            next-remaining (remove #(= % best) remaining)
+            new-bound (clojure.set/union bound (clause-vars best))]
+        (recur next-remaining new-bound (conj acc best))))))
+```
+
+---
+
+## 49. Negation-as-Failure and Deferrable Filter Expression Evaluator
+
+### Intent
+Incorporate non-monotonic logic (negation) and dynamic comparisons (filters) into Datalog while preventing issues with unbound variables.
+
+### Pattern
+1. **Dynamic Predicate Dispatch**: Extend `solve-clause` to differentiate between positive facts, negative constraints (`not` clauses), and boolean filters.
+2. **NAF Pruning**: Evaluate a `not` clause by executing its inner pattern against the database under the current environment. If it returns any valid bindings, reject (prune) the current environment; otherwise, pass the current environment through.
+3. **Deferred Filter Evaluation**: Evaluate inequality predicates (e.g. `(> ?a 25)`) dynamically. If any variable in the expression is unbound, throw an error. This is guarded by the cost planner, which ensures filters only run after their variables are grounded.
+
+---
+
+## 50. Grouped Projections for Aggregate Query Execution
+
+### Intent
+Compute aggregate statistics (`count`, `sum`, `min`, `max`, `avg`, `median`) over Datalog find variables while grouping by non-aggregated variables.
+
+### Pattern
+1. **Syntax Detection**: Parse the `:find` vector to separate aggregate symbols (e.g., `(count ?e)`) from standard variables.
+2. **Grouping Phase**: Group all unified environment bindings using the values of the non-aggregated variables as the key: `(group-by (fn [env] (mapv #(resolve-term % env) group-keys)) envs)`.
+3. **Aggregate Reducer**: For each group, extract the values of the target variable from all matching environments, apply the corresponding reducer function, and project the final aggregated vector.
+
+---
+
+## 51. Normalized Rank Fusion (Weighted Union)
+
+### Intent
+Combine result sets from different search modalities (e.g. TF-IDF and vector similarity) using customizable weights and scale-free normalization.
+
+### Pattern
+1. **Strategized Min-Max Scaling**: Define a normalization step that maps raw scores to `[0.0, 1.0]`. Guard against zero division when all scores are equal by using a default safety range (`1.0`).
+2. **Union Score Accumulation**: Extract the set of all unique entities across both results. For each entity, fetch the normalized score from each list (defaulting to `0.0` if absent), apply the respective weights, and sum them.
+3. **Deterministic Ranking**: Sort the resulting entity list in descending order of weighted scores.
+
+---
+
+## 52. Multi-Graph Algorithm Dispatch in Datalog Engine
+
+### Intent
+Enable advanced graph traversal and analysis (Shortest Path, Reachable nodes, Cycle Detection, Kahn's Topological Sort, PageRank, Tarjan's SCC) as composable Datalog clauses.
+
+### Pattern
+1. **Graph Construction from Triples**: Construct a directed adjacency graph representation on-the-fly using the database's attribute index (`AEV` index): `(get-in db [:aev edge] {})`.
+2. **DFS/BFS Traversal Adapters**: Implement native graph algorithms (Tarjan's SCC, BFS shortest path, PageRank iteration) using Clojure collections, avoiding external libraries or Java class imports.
+3. **Unified Unification Output**: Map graph algorithm results back to unified bindings. For example, `shortest-path` yields path vectors and costs, unifying them with variables in the pattern.
+
+---
+
+## 53. SCI-Compliant Bloom Filter Representation
+
+### Intent
+Implement a space-efficient set membership checker that runs successfully inside Babashka's restricted SCI sandbox without classpath or sandbox-exec errors.
+
+### Pattern
+1. **Class-Free Representation**: Instead of using `java.util.BitSet` (which is typically blocked in SCI sandboxes), model the active bit array using a standard Clojure persistent set (`#{}`).
+2. **Hash Index Generation**: Compute `k` hash indices for a given key by salting the key with a range sequence and taking the absolute value modulo the filter size.
+3. **Membership Check**: Check if the set of computed hash indices is a subset of the active bit set.
