@@ -440,9 +440,21 @@ This document summarizes the core learnings from porting python codebase element
 
 ## 52. OTP Process Exit stdout Termination Crash Mitigation
 
-*   **Problem**: In concurrent OTP test suites or actor environments (e.g., gleeunit running test cases), actors running asynchronously can attempt to write to stdout or standard IO (`io.print` / `io.println`) after the test case has completed. Since EUnit terminates the test's group leader process on completion, subsequent print operations throw a `terminated` exception inside the actor or port-monitoring process, causing unexpected crash reports and test failures.
+*   **Problem**: In concurrent OTP test suites or actor environments (e.g., gleeunit running test cases), actors running asynchronously can attempt to write to stdout or standard IO (`io.print` / `io.println`) after the test case has completed. Since EUnit terminates the test's group leader process on completion, subsequent print operations throw a `terminated` exception inside the actor or port-monitoring process, causing unexpected crash report failures.
 *   **Resolution**: 
     1. Avoid raw `io.print` or `io.println` calls in background or port-monitoring processes.
     2. Implement a safe print FFI wrapper (`safe_print` and `safe_println`) in Erlang using a catch-all `try-catch` block (`try io:put_chars(Binary) catch _:_ -> ok end`). This prevents any print failure from bubbling up and crashing the process.
     3. Route all supervisor and worker logging through the safe wrappers.
 *   **Impact**: Eliminates random "terminated io:put_chars" crashes across the entire BEAM supervisor/worker tree, ensuring 100% clean test suite runs.
+
+## 53. SQLite Table Name Hyphen Syntax Error
+
+*   **Problem**: SQLite does not support hyphens `-` in dynamic table names unless they are quoted, as it interprets them as subtraction operators (e.g., `CREATE TABLE datoms_session-A` triggers `near "-": syntax error`).
+*   **Resolution**: Sanitize session IDs by replacing all hyphens with underscores using `string.replace(session_id, "-", "_")` when deriving SQLite table names.
+*   **Impact**: Prevents SQL syntax errors while maintaining a clean relationship between session IDs and partitioned database tables.
+
+## 54. Session Isolation and State Unification
+
+*   **Problem**: Workers running concurrent sessions can experience context pollution (context rot) if they query from a shared global database table containing data from other sessions.
+*   **Resolution**: Implement dynamic table partitioning (`datoms_<session_id>`) for session-specific facts, and keep a shared static table (`datoms`) for global rules/skills. Unify reads by fetching from the session table and merging with global rules from the fallback table, filtering out session-specific metadata.
+*   **Impact**: Guarantees strict boundary isolation and prevents context leakage across concurrent agent sessions.

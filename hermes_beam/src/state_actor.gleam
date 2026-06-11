@@ -9,13 +9,22 @@ import sqlight
 
 pub type Message {
   TransactDatoms(
+    session_id: String,
     datoms: List(Datom),
     tx: Int,
     reply_to: Subject(Result(Nil, sqlight.Error)),
   )
   LoadDatabase(reply_to: Subject(Result(List(Datom), sqlight.Error)))
   GetAllDatoms(reply_to: Subject(Result(List(Datom), sqlight.Error)))
+  GetSessionDatoms(
+    session_id: String,
+    reply_to: Subject(Result(List(Datom), sqlight.Error)),
+  )
   Close(reply_to: Subject(Result(Nil, sqlight.Error)))
+  DeleteSessionDatoms(
+    session_id: String,
+    reply_to: Subject(Result(Nil, sqlight.Error)),
+  )
   CreateSession(
     id: String,
     source: String,
@@ -123,8 +132,8 @@ fn handle_message(
   message: Message,
 ) -> actor.Next(ActorState, Message) {
   case message {
-    TransactDatoms(datoms, tx, reply_to) -> {
-      let res = hermes_state.save_datoms(state.conn, datoms, tx)
+    TransactDatoms(session_id, datoms, tx, reply_to) -> {
+      let res = hermes_state.save_session_datoms(state.conn, session_id, datoms, tx)
       case state.intent_subjs {
         intent_subjs ->
           list.each(intent_subjs, fn(subj) {
@@ -144,16 +153,26 @@ fn handle_message(
       process.send(reply_to, res)
       actor.continue(state)
     }
+    GetSessionDatoms(session_id, reply_to) -> {
+      let res = hermes_state.get_session_datoms(state.conn, session_id)
+      process.send(reply_to, res)
+      actor.continue(state)
+    }
     Close(reply_to) -> {
       let res = sqlight.close(state.conn)
       process.send(reply_to, res)
       actor.stop()
     }
+    DeleteSessionDatoms(session_id, reply_to) -> {
+      let res = hermes_state.delete_session_datoms(state.conn, session_id)
+      process.send(reply_to, res)
+      actor.continue(state)
+    }
     HandleMcpNotification(method, params, reply_to) -> {
       let datoms = [
         Datom(entity: "mcp_client", attribute: method, value: params),
       ]
-      let res = hermes_state.save_datoms(state.conn, datoms, 0)
+      let res = hermes_state.save_session_datoms(state.conn, "global", datoms, 0)
       case state.intent_subjs {
         intent_subjs ->
           list.each(intent_subjs, fn(subj) {
@@ -179,7 +198,7 @@ fn handle_message(
         Datom("session:" <> id, "source", source),
         Datom("session:" <> id, "model", model),
       ]
-      let _ = hermes_state.save_datoms(state.conn, datoms, 0)
+      let _ = hermes_state.save_session_datoms(state.conn, id, datoms, 0)
       let _ =
         list.each(state.intent_subjs, fn(subj) {
           list.each(datoms, process.send(subj, _))
@@ -222,7 +241,7 @@ fn handle_message(
         ),
         Datom("message:" <> float.to_string(timestamp), "role", role),
       ]
-      let _ = hermes_state.save_datoms(state.conn, datoms, 0)
+      let _ = hermes_state.save_session_datoms(state.conn, session_id, datoms, 0)
       let _ =
         list.each(state.intent_subjs, fn(subj) {
           list.each(datoms, process.send(subj, _))
@@ -278,18 +297,43 @@ fn handle_message(
 
 pub fn transact(
   actor: StateActor,
+  session_id: String,
   datoms: List(Datom),
   tx: Int,
 ) -> Result(Nil, sqlight.Error) {
-  actor.call(actor.subject, 5000, TransactDatoms(datoms, tx, _))
+  actor.call(actor.subject, 5000, fn(subject) {
+    TransactDatoms(session_id, datoms, tx, subject)
+  })
 }
 
-pub fn load(actor: StateActor) -> Result(List(Datom), sqlight.Error) {
+pub fn load_database(actor: StateActor) -> Result(List(Datom), sqlight.Error) {
   actor.call(actor.subject, 5000, LoadDatabase)
+}
+
+pub fn get_all_datoms(actor: StateActor) -> Result(List(Datom), sqlight.Error) {
+  actor.call(actor.subject, 5000, GetAllDatoms)
+}
+
+pub fn get_session_datoms(
+  actor: StateActor,
+  session_id: String,
+) -> Result(List(Datom), sqlight.Error) {
+  actor.call(actor.subject, 5000, fn(subject) {
+    GetSessionDatoms(session_id, subject)
+  })
 }
 
 pub fn close(actor: StateActor) -> Result(Nil, sqlight.Error) {
   actor.call(actor.subject, 5000, Close)
+}
+
+pub fn delete_session_datoms(
+  actor: StateActor,
+  session_id: String,
+) -> Result(Nil, sqlight.Error) {
+  actor.call(actor.subject, 5000, fn(subject) {
+    DeleteSessionDatoms(session_id, subject)
+  })
 }
 
 pub fn create_session(
@@ -395,6 +439,4 @@ pub fn search_messages(
   actor.call(actor.subject, 5000, fn(subject) { SearchMessages(term, subject) })
 }
 
-pub fn get_all_datoms(actor: StateActor) -> Result(List(Datom), sqlight.Error) {
-  actor.call(actor.subject, 5000, GetAllDatoms)
-}
+

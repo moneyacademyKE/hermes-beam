@@ -852,3 +852,30 @@ safe_print(Binary) ->
         _:_ -> ok
     end.
 ```
+
+---
+
+## 41. Dynamic Namespace Partitioning Pattern
+
+### Intent
+Segregate task/session states dynamically within a single SQLite database without cross-session data pollution or index bloat.
+
+### Pattern
+1. **Construct Namespaces**: Formulate dynamic table names based on unique session/worker IDs (e.g., `datoms_<session_id>`).
+2. **Sanitize Identifiers**: Clean session IDs by replacing symbols that SQLite table syntax rejects (such as hyphens `-`) with underscores `_`.
+3. **Lazy Schema Generation**: Generate database tables dynamically via `CREATE TABLE IF NOT EXISTS` upon the first query or transaction for a session.
+4. **State Snapshot Separation**: Perform transactions against the segregated table while keeping reads consolidated.
+
+---
+
+## 42. Session-Entity State Unification Pattern
+
+### Intent
+Expose isolated session context and static global configurations to workers while completely preventing context rot.
+
+### Pattern
+1. **Identity Resolution**: Parse the dynamic `session_id` prefix from worker IDs on socket handshakes.
+2. **Unified Data Query**: Read session-specific datoms from the partitioned dynamic table, and query global static rules from the fallback global table.
+3. **Global Filter Constraint**: Exclude any dynamic session-specific or message-specific entities from the global table using filtering constraints (e.g., `entity NOT LIKE 'session:%' AND entity NOT LIKE 'message:%'`).
+4. **Combine and Serialize**: Merge the datasets and serialize them into the worker context payload.
+

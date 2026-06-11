@@ -144,7 +144,12 @@ fn handle_message(
         [#(id, prompt, api_key, base_url, tools_json), ..rest] -> {
           let next_workers = [#(id, sock), ..state.active_workers]
 
-          let datoms = case state_actor.get_all_datoms(state.db_conn) {
+          let session_id = case string.split_once(id, "goal_worker_") {
+            Ok(#("", sess_id)) -> sess_id
+            _ -> id
+          }
+
+          let datoms = case state_actor.get_session_datoms(state.db_conn, session_id) {
             Ok(ds) -> ds
             Error(_) -> []
           }
@@ -195,19 +200,24 @@ fn handle_message(
         Error(_) -> "unknown_worker"
       }
 
+      let session_id = case string.split_once(worker_id, "goal_worker_") {
+        Ok(#("", sess_id)) -> sess_id
+        _ -> worker_id
+      }
+
       // Check if it's a delegated tool call request from the subagent
       let is_tool_call = string.contains(msg, "\"call_tool_on_gleam\"")
       case is_tool_call {
         True -> {
           let datom =
             Datom(entity: worker_id, attribute: "call_tool_request", value: msg)
-          let _ = state_actor.transact(state.db_conn, [datom], 1)
+          let _ = state_actor.transact(state.db_conn, session_id, [datom], 1)
           Nil
         }
         False -> {
           let datom =
             Datom(entity: worker_id, attribute: "telemetry", value: msg)
-          let _ = state_actor.transact(state.db_conn, [datom], 1)
+          let _ = state_actor.transact(state.db_conn, session_id, [datom], 1)
           Nil
         }
       }

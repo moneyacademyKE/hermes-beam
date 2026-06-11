@@ -356,7 +356,7 @@ pub fn repl_loop(state: REPLState) -> Nil {
               attribute: "spawn_worker",
               value: full_prompt,
             )
-          let _ = state_actor.transact(state.db_conn, [datom], 1)
+          let _ = state_actor.transact(state.db_conn, state.session_id, [datom], 1)
 
           repl_loop(state)
         }
@@ -481,7 +481,7 @@ pub fn repl_loop(state: REPLState) -> Nil {
                       attribute: "spawn_worker",
                       value: full_prompt,
                     )
-                  let _ = state_actor.transact(state.db_conn, [datom], 1)
+                  let _ = state_actor.transact(state.db_conn, state.session_id, [datom], 1)
 
                   repl_loop(state)
                 }
@@ -515,7 +515,7 @@ pub fn repl_loop(state: REPLState) -> Nil {
                   attribute: "spawn_worker",
                   value: full_prompt,
                 )
-              let _ = state_actor.transact(state.db_conn, [datom], 1)
+              let _ = state_actor.transact(state.db_conn, state.session_id, [datom], 1)
 
               repl_loop(state)
             }
@@ -809,7 +809,7 @@ pub fn run_repl() -> Nil {
     })
     |> list.flatten
   let datoms_1 = list.append(routing_skill.facts, rule_datoms_1)
-  let assert Ok(Nil) = state_actor.transact(actor, datoms_1, 1)
+  let assert Ok(Nil) = state_actor.transact(actor, "global", datoms_1, 1)
 
   let rule_datoms_2 =
     list.index_map(permission_skill.rules, fn(rule, idx) {
@@ -819,7 +819,7 @@ pub fn run_repl() -> Nil {
     })
     |> list.flatten
   let datoms_2 = list.append(permission_skill.facts, rule_datoms_2)
-  let assert Ok(Nil) = state_actor.transact(actor, datoms_2, 1)
+  let assert Ok(Nil) = state_actor.transact(actor, "global", datoms_2, 1)
 
   // 1c. Load skills dynamically from hermes_home / skills/
   let skills_dir = constants.path_join(constants.get_hermes_home(), "skills")
@@ -833,7 +833,7 @@ pub fn run_repl() -> Nil {
           })
           |> list.flatten
         let datoms = list.append(sk.facts, rule_datoms)
-        let _ = state_actor.transact(actor, datoms, 1)
+        let _ = state_actor.transact(actor, "global", datoms, 1)
         io.println("Loaded skill: " <> sk.name)
       })
     }

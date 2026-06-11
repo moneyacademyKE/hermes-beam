@@ -1,3 +1,4 @@
+import datom
 import gleam/list
 import hermes_state
 import sqlight
@@ -63,6 +64,65 @@ pub fn state_db_workflow_test() {
     first_match.content
 
   // Clean close
+  let _ = sqlight.close(conn)
+  Nil
+}
+
+pub fn session_isolation_test() {
+  let assert Ok(conn) = hermes_state.connect(":memory:")
+  let assert Ok(Nil) = hermes_state.init_schema(conn)
+
+  // 1. Save global rules to fallback 'datoms' table
+  let global_datom = datom.Datom("rule/global-1", "permission", "admin")
+  let assert Ok(Nil) = hermes_state.save_session_datoms(conn, "global", [global_datom], 0)
+
+  // 2. Save session-A specific datoms
+  let datom_a = datom.Datom("session:session-A", "val", "A")
+  let assert Ok(Nil) = hermes_state.save_session_datoms(conn, "session-A", [datom_a], 0)
+
+  // 3. Save session-B specific datoms
+  let datom_b = datom.Datom("session:session-B", "val", "B")
+  let assert Ok(Nil) = hermes_state.save_session_datoms(conn, "session-B", [datom_b], 0)
+
+  // 4. Retrieve session-A datoms (should contain A and global, but not B)
+  let assert Ok(res_a) = hermes_state.get_session_datoms(conn, "session-A")
+  let has_a = list.any(res_a, fn(d) { d.entity == "session:session-A" })
+  let has_global = list.any(res_a, fn(d) { d.entity == "rule/global-1" })
+  let has_b = list.any(res_a, fn(d) { d.entity == "session:session-B" })
+
+  let assert True = has_a
+  let assert True = has_global
+  let assert False = has_b
+
+  // 5. Retrieve session-B datoms (should contain B and global, but not A)
+  let assert Ok(res_b) = hermes_state.get_session_datoms(conn, "session-B")
+  let has_a_in_b = list.any(res_b, fn(d) { d.entity == "session:session-A" })
+  let has_global_in_b = list.any(res_b, fn(d) { d.entity == "rule/global-1" })
+  let has_b_in_b = list.any(res_b, fn(d) { d.entity == "session:session-B" })
+
+  let assert False = has_a_in_b
+  let assert True = has_global_in_b
+  let assert True = has_b_in_b
+
+  // 6. Test retrieval for a clean session (should only contain global rules)
+  let assert Ok(res_new) = hermes_state.get_session_datoms(conn, "session-new")
+  let has_global_in_new = list.any(res_new, fn(d) { d.entity == "rule/global-1" })
+  let has_a_in_new = list.any(res_new, fn(d) { d.entity == "session:session-A" })
+  let assert True = has_global_in_new
+  let assert False = has_a_in_new
+
+  // 7. Test table deletion (resource cleanup)
+  let assert Ok(Nil) = hermes_state.delete_session_datoms(conn, "session-A")
+  let assert Ok(res_a_after) = hermes_state.get_session_datoms(conn, "session-A")
+  let has_a_after = list.any(res_a_after, fn(d) { d.entity == "session:session-A" })
+  let has_global_after = list.any(res_a_after, fn(d) { d.entity == "rule/global-1" })
+  let assert False = has_a_after
+  let assert True = has_global_after
+
+  // 8. Test validation safety against SQL injection/special characters
+  let assert Error(_) = hermes_state.get_session_datoms(conn, "invalid;drop table datoms;")
+  let assert Error(_) = hermes_state.save_session_datoms(conn, "invalid;drop table datoms;", [], 0)
+
   let _ = sqlight.close(conn)
   Nil
 }

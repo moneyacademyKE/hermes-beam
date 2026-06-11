@@ -2,6 +2,7 @@ import datom.{type Datom, Datom}
 import gleam/dynamic/decode
 import gleam/list
 import gleam/result
+import gleam/string
 import sqlight
 
 pub const schema_sql = "
@@ -576,4 +577,149 @@ pub fn get_all_datoms(
     decode.success(Datom(entity: entity, attribute: attribute, value: value))
   }
   sqlight.query(query, on: conn, with: [], expecting: datom_decoder)
+}
+
+pub fn save_session_datoms(
+  conn: sqlight.Connection,
+  session_id: String,
+  datoms: List(Datom),
+  tx: Int,
+) -> Result(Nil, sqlight.Error) {
+  let is_valid = case session_id {
+    "" | "global" -> True
+    _ -> is_valid_session_id(session_id)
+  }
+
+  case is_valid {
+    False ->
+      Error(sqlight.SqlightError(
+        code: sqlight.GenericError,
+        message: "Invalid session_id: " <> session_id,
+        offset: -1,
+      ))
+    True -> {
+      let _ = sqlight.exec("BEGIN TRANSACTION;", conn)
+      let query =
+        "INSERT OR REPLACE INTO datoms (entity, attribute, value, tx) VALUES (?, ?, ?, ?);"
+
+      let res =
+        list.try_each(datoms, fn(datom) {
+          sqlight.query(
+            query,
+            on: conn,
+            with: [
+              sqlight.text(datom.entity),
+              sqlight.text(datom.attribute),
+              sqlight.text(datom.value),
+              sqlight.int(tx),
+            ],
+            expecting: decode.dynamic,
+          )
+          |> result.map(fn(_) { Nil })
+        })
+
+      case res {
+        Ok(_) -> {
+          let _ = sqlight.exec("COMMIT;", conn)
+          Ok(Nil)
+        }
+        Error(err) -> {
+          let _ = sqlight.exec("ROLLBACK;", conn)
+          Error(err)
+        }
+      }
+    }
+  }
+}
+
+pub fn get_session_datoms(
+  conn: sqlight.Connection,
+  session_id: String,
+) -> Result(List(Datom), sqlight.Error) {
+  let is_valid = case session_id {
+    "" | "global" -> True
+    _ -> is_valid_session_id(session_id)
+  }
+
+  case is_valid {
+    False ->
+      Error(sqlight.SqlightError(
+        code: sqlight.GenericError,
+        message: "Invalid session_id: " <> session_id,
+        offset: -1,
+      ))
+    True -> {
+      let query =
+        "SELECT entity, attribute, value FROM datoms 
+         WHERE entity = ? 
+            OR entity IN (SELECT entity FROM datoms WHERE attribute = 'session_id' AND value = ?)
+            OR (entity NOT LIKE 'session:%' AND entity NOT LIKE 'message:%');"
+      
+      let datom_decoder = {
+        use entity <- decode.field(0, decode.string)
+        use attribute <- decode.field(1, decode.string)
+        use value <- decode.field(2, decode.string)
+        decode.success(Datom(entity: entity, attribute: attribute, value: value))
+      }
+
+      let session_entity = "session:" <> session_id
+      sqlight.query(
+        query,
+        on: conn,
+        with: [sqlight.text(session_entity), sqlight.text(session_id)],
+        expecting: datom_decoder,
+      )
+    }
+  }
+}
+
+pub fn delete_session_datoms(
+  conn: sqlight.Connection,
+  session_id: String,
+) -> Result(Nil, sqlight.Error) {
+  let is_valid = case session_id {
+    "" | "global" -> True
+    _ -> is_valid_session_id(session_id)
+  }
+
+  case is_valid {
+    False ->
+      Error(sqlight.SqlightError(
+        code: sqlight.GenericError,
+        message: "Invalid session_id: " <> session_id,
+        offset: -1,
+      ))
+    True -> {
+      case session_id {
+        "" | "global" -> Ok(Nil)
+        _ -> {
+          let query =
+            "DELETE FROM datoms 
+             WHERE entity = ? 
+                OR entity IN (SELECT entity FROM datoms WHERE attribute = 'session_id' AND value = ?);"
+          let session_entity = "session:" <> session_id
+          sqlight.query(
+            query,
+            on: conn,
+            with: [sqlight.text(session_entity), sqlight.text(session_id)],
+            expecting: decode.dynamic,
+          )
+          |> result.map(fn(_) { Nil })
+        }
+      }
+    }
+  }
+}
+
+fn is_valid_session_id(session_id: String) -> Bool {
+  let chars = string.to_graphemes(session_id)
+  list.all(chars, fn(c) {
+    case c {
+      "a" | "b" | "c" | "d" | "e" | "f" | "g" | "h" | "i" | "j" | "k" | "l" | "m" | "n" | "o" | "p" | "q" | "r" | "s" | "t" | "u" | "v" | "w" | "x" | "y" | "z" -> True
+      "A" | "B" | "C" | "D" | "E" | "F" | "G" | "H" | "I" | "J" | "K" | "L" | "M" | "N" | "O" | "P" | "Q" | "R" | "S" | "T" | "U" | "V" | "W" | "X" | "Y" | "Z" -> True
+      "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" -> True
+      "-" | "_" -> True
+      _ -> False
+    }
+  })
 }
