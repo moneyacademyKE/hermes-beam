@@ -1,0 +1,2 @@
+- Implemented a script to fetch HTTP headers using Babashka.
+- Documented findings and patterns for future reference in `learnings.md` and `patterns.md`.
