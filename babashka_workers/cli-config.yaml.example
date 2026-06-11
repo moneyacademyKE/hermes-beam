@@ -1,0 +1,4 @@
+display:
+  - requiredKey1: value
+  - requiredKey2: value
+  - requiredKey3: value

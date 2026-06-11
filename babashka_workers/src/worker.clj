@@ -53,7 +53,7 @@
                             :required ["image" "code"]}}}
    {:type "function"
     :function {:name "query_datalog"
-               :description "Query the in-memory DataScript database using Clojure Datalog query syntax. Input: query-str (e.g. '[:find ?y :in $ % ?x :where (path ?x ?y)]'), inputs-list (e.g. '[\"A\"]')"
+               :description "Query the in-memory database using Clojure Datalog query syntax. CRITICAL: query MUST be a vector starting with [:find ...] (e.g. '[:find ?y :in $ ?x :where [?x :route/link ?y]]'). For recursive rules, specify them inside the :where block or define them dynamically. To audit an unknown schema, use wildcards (e.g. '[:find ?a ?v :where [?e ?a ?v]]' or '[?e :active _]'). Do NOT search the web or clone external codebases to resolve database details; use query_datalog directly."
                :parameters {:type "object"
                             :properties {:query {:type "string"}
                                          :inputs {:type "array" :items {:type "string"}}}

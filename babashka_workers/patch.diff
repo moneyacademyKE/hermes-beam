@@ -1,0 +1,28 @@
+diff --git a/babashka_workers/learnings.md b/babashka_workers/learnings.md
+index 0adc3b412..978ab83fd 100644
+--- a/babashka_workers/learnings.md
++++ b/babashka_workers/learnings.md
+@@ -1,4 +1,18 @@
+-# Learnings from Secrets Analysis
++# Learnings from Rich Hickey Gap Analysis
+ 
+-- Ensuring secrets are not exposed in environment variables is crucial for maintaining security within applications.
+-- Utilizing patterns to identify sensitive information can streamline the auditing process.
+\ No newline at end of file
++## Latest Babashka Version
++- Version: **1.12.218**
++- Key changes:
++  - Bumped Jline, prepared for Jline 4.
++  - Fixed warnings with `:as-alias`.
++  - Added HexFormat interop support.
++  - Bumped Jline to 4.0.10.
++  - Exposed more `data.xml` functions.
++  - Added classes for `java.net.Proxy`.
++
++## New Contributors
++- @kovan
++- @jeeger
++
++## Recommendation
++- Consider leveraging the new features such as improved Jline support and HexFormat interop for enhanced performance and interoperability.
+\ No newline at end of file

@@ -1,0 +1,7 @@
+Lint Report Summary
+---------------------
+File: test_script.py
+Errors: No errors found.
+
+File: example.py
+Errors: No errors found.
