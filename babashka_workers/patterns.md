@@ -1,11 +1,10 @@
-# Patterns for Using defn in Babashka Workers
+# Patterns
 
-## Overview
+## Environment Variable Security
+When managing environment variables, consider the following patterns:
 
-This document provides patterns and practices for using the 'defn' keyword in Babashka scripts and Clojure code.
+- **Do not hard-code sensitive keys**: Always use environment variables for sensitive information.
+- **Use naming conventions**: Prefix or suffix sensitive keys with identifiers like 'SECRET' or 'PASSWORD' for easier identification during audits.
 
-## Key Points
-- 'defn' is used to define functions in Clojure.
-- Best practices include:
-  - Clearly naming functions for better readability.
-  - Documenting function behavior and parameters.
+## Best Practices
+- Regularly audit your environment variables for exposure using automated scripts.
