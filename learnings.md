@@ -458,3 +458,16 @@ This document summarizes the core learnings from porting python codebase element
 *   **Problem**: Workers running concurrent sessions can experience context pollution (context rot) if they query from a shared global database table containing data from other sessions.
 *   **Resolution**: Implement dynamic table partitioning (`datoms_<session_id>`) for session-specific facts, and keep a shared static table (`datoms`) for global rules/skills. Unify reads by fetching from the session table and merging with global rules from the fallback table, filtering out session-specific metadata.
 *   **Impact**: Guarantees strict boundary isolation and prevents context leakage across concurrent agent sessions.
+
+## 55. Arity-safe Datalog Matching on 2-element clauses
+
+*   **Problem**: The custom Clojure micro-Datalog query engine crashed with `IndexOutOfBoundsException` when evaluating 2-element clauses (e.g. `[?s :session/active]`) because it assumed all query clauses were strict 3-tuples and unconditionally performed `(nth clause 2)`.
+*   **Resolution**: Refactored `match-fact`, `solve-rule`, and CLI query parsers to check the clause length. If a clause contains only 2 elements, the engine automatically treats the third element as a wildcard symbol `'_`, enabling successful existential checks on attribute presence.
+*   **Impact**: Enhances Datalog parsing completeness and robustness under variable clause shapes without crashing.
+
+## 56. Pre-flight Binary Checks for Shell execution
+
+*   **Problem**: Executing host tools (like `flake8` or `sandbox-exec`) directly from the subagent's shell execution tool threw unhandled JVM/OS `IOException` when the target binary was missing on the host, which immediately aborted the agent's turn.
+*   **Resolution**: Implemented a `executable-in-path?` utility in the Babashka worker. It filters environment variable prefixes (e.g., `PORT=8000`), parses the command to locate the target executable, and checks its existence and execution permissions against system `PATH` folders. If the executable is missing, the tool returns a clean, structured STDOUT warning and exit status 0, allowing the subagent's retry/fallback policies to handle the missing dependency gracefully.
+*   **Impact**: Isolates and handles OS-level path failures safely, preventing process crashes and aligning with Rich Hickey's principles of robust, fault-tolerant edge transformations.
+

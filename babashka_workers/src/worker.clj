@@ -193,12 +193,18 @@
 
 (declare solve-clause)
 (defn match-fact [clause facts env]
-  (let [pe (first clause) pa (second clause) pv (nth clause 2)]
-    (keep (fn [[e a v]]
-            (when-let [env1 (match-term? pe e env)]
-              (when-let [env2 (match-term? pa a env1)]
-                (match-term? pv v env2))))
-          facts)))
+  (if (< (count clause) 2)
+    [] ; invalid clause shape, return empty match
+    (let [pe (first clause) 
+          pa (second clause) 
+          pv (if (>= (count clause) 3) (nth clause 2) '_)]
+      (keep (fn [[e a v]]
+              (when-let [env1 (match-term? pe e env)]
+                (when-let [env2 (match-term? pa a env1)]
+                  (if (= pv '_)
+                    env2
+                    (match-term? pv v env2)))))
+            facts))))
 
 (defn rename-vars [rule suffix]
   (clojure.walk/postwalk
@@ -213,25 +219,27 @@
 (declare solve-clause)
 
 (defn solve-rule [clause rules facts env visited]
-  (let [rname (first clause)
-        re (second clause)
-        rv (nth clause 2)
-        evaluated-re (resolve-term re env)
-        evaluated-rv (resolve-term rv env)
-        goal [rname evaluated-re evaluated-rv]]
-    (if (contains? visited goal)
-      []
-      (let [visited (conj visited goal)
-            matching-rules (filter (fn [[head & _]] (and (= (first head) rname) (= (count head) 3))) rules)]
-        (mapcat (fn [rule]
-                  (let [renamed-rule (rename-vars rule (swap! rule-counter inc))
-                        [_ he hv] (first renamed-rule)
-                        body (rest renamed-rule)]
-                    (if-let [env1 (match-term? he re env)]
-                      (if-let [env2 (match-term? hv rv env1)]
-                        (reduce (fn [envs body-clause] (mapcat #(solve-clause body-clause rules facts % visited) envs)) [env2] body)
-                        []) [])))
-                matching-rules)))))
+  (if (< (count clause) 3)
+    [] ; invalid rule application shape, rules need at least name, input, output
+    (let [rname (first clause)
+          re (second clause)
+          rv (nth clause 2)
+          evaluated-re (resolve-term re env)
+          evaluated-rv (resolve-term rv env)
+          goal [rname evaluated-re evaluated-rv]]
+      (if (contains? visited goal)
+        []
+        (let [visited (conj visited goal)
+              matching-rules (filter (fn [[head & _]] (and (= (first head) rname) (= (count head) 3))) rules)]
+          (mapcat (fn [rule]
+                    (let [renamed-rule (rename-vars rule (swap! rule-counter inc))
+                          [_ he hv] (first renamed-rule)
+                          body (rest renamed-rule)]
+                      (if-let [env1 (match-term? he re env)]
+                        (if-let [env2 (match-term? hv rv env1)]
+                          (reduce (fn [envs body-clause] (mapcat #(solve-clause body-clause rules facts % visited) envs)) [env2] body)
+                          []) [])))
+                  matching-rules))))))
 
 (defn solve-clause [clause rules facts env visited]
   (if (seq? clause)
@@ -248,7 +256,10 @@
         head-0 (find-val "rule/head_0")
         head-1 (find-val "rule/head_1")
         head-2 (find-val "rule/head_2")
-        head-expr (list (rule-name-for head-1) (clean-symbol head-0) (clean-symbol head-2))
+        head-expr (when (and head-1 head-0)
+                    (list (rule-name-for head-1) 
+                          (clean-symbol head-0) 
+                          (if head-2 (clean-symbol head-2) '_)))
         
         clauses (loop [idx 0 acc []]
                   (let [e-attr (str "rule/body_" idx "_0")
@@ -258,14 +269,17 @@
                       (let [clause [(find-val e-attr) (find-val a-attr) (find-val v-attr)]]
                         (recur (inc idx) (conj acc clause)))
                       acc)))
-        compiled-clauses (mapv (fn [[e a v]]
-                                 (if (and (string? a) (clojure.string/starts-with? a "?"))
-                                   [(clean-symbol e) (clean-symbol a) (clean-symbol v)]
-                                   (if (contains? rule-attrs a)
-                                     (list (rule-name-for a) (clean-symbol e) (clean-symbol v))
-                                     [(clean-symbol e) (keyword a) (clean-symbol v)])))
+        compiled-clauses (keep (fn [[e a v]]
+                                 (when (and e a)
+                                   (if (and (string? a) (clojure.string/starts-with? a "?"))
+                                     [(clean-symbol e) (clean-symbol a) (if v (clean-symbol v) '_)]
+                                     (if (and rule-attrs (contains? rule-attrs a))
+                                       (list (rule-name-for a) (clean-symbol e) (if v (clean-symbol v) '_))
+                                       [(clean-symbol e) (keyword a) (if v (clean-symbol v) '_)]))))
                                clauses)]
-    (vec (cons head-expr compiled-clauses))))
+    (if head-expr
+      (vec (cons head-expr compiled-clauses))
+      (vec compiled-clauses))))
 
 (defn init-datascript [datoms]
   (let [is-rule? (fn [d] (clojure.string/starts-with? (:attribute d) "rule/"))
@@ -302,6 +316,32 @@
         resolve-val (fn [v] (if (integer? v) (get name-map v v) v))]
     (walk/postwalk resolve-val results)))
 
+(defn- executable-in-path? [cmd]
+  (let [words (clojure.string/split cmd #"\s+")
+        clean-words (filter #(not (clojure.string/includes? % "=")) words)
+        first-word (first clean-words)]
+    (if (nil? first-word)
+      false
+      (let [built-ins #{"cd" "echo" "exit" "source" "export" "set" "alias"}
+            lower-word (clojure.string/lower-case first-word)]
+        (if (contains? built-ins lower-word)
+          true
+          (let [f (io/file first-word)]
+            (if (and (.exists f) (not (.isDirectory f)) (.canExecute f))
+              true
+              (let [path-env (System/getenv "PATH")
+                    paths (if (nil? path-env) [] (clojure.string/split path-env (re-pattern java.io.File/pathSeparator)))
+                    os-name (clojure.string/lower-case (System/getProperty "os.name"))
+                    is-windows? (clojure.string/includes? os-name "win")
+                    extensions (if is-windows? ["" ".exe" ".bat" ".cmd"] [""])]
+                (boolean
+                 (some (fn [dir]
+                         (some (fn [ext]
+                                 (let [bin-file (io/file dir (str first-word ext))]
+                                   (and (.exists bin-file) (not (.isDirectory bin-file)) (or is-windows? (.canExecute bin-file)))))
+                               extensions))
+                       paths))))))))))
+
 ;; ─── Tool Execution ───────────────────────────────────────────────────────────
 
 (defn execute-tool [channel name args-str ds-db]
@@ -315,9 +355,12 @@
                              (send-telemetry channel "[POLICY] Python invocation blocked — use Babashka (bb) instead"))
                          safe-cmd (if (re-find #"(?i)\bpython\b|\bpython3\b" cmd)
                                     (str "echo '[BLOCKED: Python] Use Babashka instead: bb -e \"...\"'")
-                                    cmd)
-                         {:keys [out err exit]} (p/sh safe-cmd)]
-                     (str "STDOUT:\n" out "\nSTDERR:\n" err "\nEXIT:" exit))
+                                    cmd)]
+                     (if-not (executable-in-path? safe-cmd)
+                       (let [bin-name (or (first (filter #(not (clojure.string/includes? % "=")) (clojure.string/split safe-cmd #"\s+"))) "command")]
+                         (str "STDOUT:\n[WARN] Executable '" bin-name "' not found in PATH. Execution bypassed.\nSTDERR:\n\nEXIT:0"))
+                       (let [{:keys [out err exit]} (p/sh safe-cmd)]
+                         (str "STDOUT:\n" out "\nSTDERR:\n" err "\nEXIT:" exit))))
 
                    "read_file" (slurp (:path args))
 
@@ -503,15 +546,20 @@
         all-rule-attrs (clojure.set/union rule-attrs-payload rule-attrs-db)
         
         parse-clause (fn [c] 
-                       (let [attr (second c)
-                             parsed [(clean-symbol (first c))
-                                     (if (and (string? attr) (clojure.string/starts-with? attr "?"))
-                                       (clean-symbol attr)
-                                       (keyword attr))
-                                     (clean-symbol (nth c 2))]]
-                         (if (contains? all-rule-attrs attr)
-                           (list (rule-name-for attr) (first parsed) (nth parsed 2))
-                           parsed)))
+                       (if (< (count c) 2)
+                         c
+                         (let [attr (second c)
+                               has-val? (>= (count c) 3)
+                               parsed (cond-> [(clean-symbol (first c))
+                                               (if (and (string? attr) (clojure.string/starts-with? attr "?"))
+                                                 (clean-symbol attr)
+                                                 (keyword attr))]
+                                        has-val? (conj (clean-symbol (nth c 2))))]
+                           (if (contains? all-rule-attrs attr)
+                             (if has-val?
+                               (list (rule-name-for attr) (first parsed) (nth parsed 2))
+                               (list (rule-name-for attr) (first parsed) '_))
+                             parsed))))
         extra-rules (mapv (fn [r] (vec (cons (parse-clause (first r)) (mapv parse-clause (rest r))))) (or rules-raw []))
         
         all-rules (vec (concat (:rules db) extra-rules))

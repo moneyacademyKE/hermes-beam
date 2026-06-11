@@ -879,3 +879,29 @@ Expose isolated session context and static global configurations to workers whil
 3. **Global Filter Constraint**: Exclude any dynamic session-specific or message-specific entities from the global table using filtering constraints (e.g., `entity NOT LIKE 'session:%' AND entity NOT LIKE 'message:%'`).
 4. **Combine and Serialize**: Merge the datasets and serialize them into the worker context payload.
 
+---
+
+## 43. Arity-Insensitive Datalog Clause Matcher Pattern
+
+### Intent
+Enable Datalog query engines to safely parse and match query clauses with variable arities (such as 2-element entity-attribute check clauses) without throwing out-of-bounds index errors.
+
+### Pattern
+1. **Check Clause Constraints**: Check the number of elements in the clause before performing index-based access.
+2. **Inject Wildcard Symbols**: If the clause lacks a value element (e.g., count is 2), automatically assign a wildcard symbol `'_` as the missing match target.
+3. **Existential Fact Verification**: During matching, verify that the fact has matching entity and attribute keys, and skip value binding if the target is the wildcard symbol, treating the query clause as an existential check.
+
+---
+
+## 44. Command Pre-flight PATH Verification Pattern
+
+### Intent
+Prevent subprocess execution errors (like `IOException` for missing files) from crashing the main agent turn when executing dynamic command lines under shell runtimes.
+
+### Pattern
+1. **Strip Variable Prefixes**: Parse the command line, splitting it on whitespace, and filter out any environment variable prefixes containing key-value assignments (`KEY=VALUE`).
+2. **Check Built-in Commands**: Skip external path lookup if the resolved target is a known shell built-in command (e.g. `cd`, `echo`, `exit`).
+3. **Scan System PATH**: Read the OS `PATH` environment variable, split it on the path separator, and check if the target executable exists and is executable within any folder in the path (accounting for OS-specific extensions like `.exe` on Windows).
+4. **Graceful Bypass Warning**: If the binary is missing, return a structured warning to standard output and exit code 0 rather than spawning the process, enabling downstream agent error/retry policies to handle it cleanly.
+
+
