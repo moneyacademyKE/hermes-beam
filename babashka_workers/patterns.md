@@ -1,4 +1,4 @@
-### Patterns for Subprocess Management
-- Use Babashka for managing subprocesses in Erlang runtime environments.
-- Ensure proper error handling for subprocess signals.
-- Leverage git commands to fetch project history and format structured documentation (e.g., changelogs) in markdown for better tracking.
+# Patterns for Identifying Secrets in Environment Variables
+
+## Secret Patterns
+- Look for terms like "SECRET", "TOKEN", "KEY", and "PASSWORD" to filter environment variables for sensitive information.
