@@ -224,3 +224,9 @@ pub fn get_cwd() -> Result(String, Dynamic)
 
 @external(erlang, "utils_ffi", "set_expand_fun")
 pub fn set_expand_fun() -> Nil
+
+@external(erlang, "utils_ffi", "safe_print")
+pub fn safe_print(s: String) -> Nil
+
+@external(erlang, "utils_ffi", "safe_println")
+pub fn safe_println(s: String) -> Nil

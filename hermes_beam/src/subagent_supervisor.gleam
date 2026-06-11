@@ -1,14 +1,18 @@
+import constants
 import datom.{type Datom, Datom}
 import gleam/bit_array
+import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process.{type Subject}
-import gleam/io
 import gleam/json
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/string
 import hermes_exec
+import simplifile
 import state_actor.{type StateActor}
 import uds_ffi
+import utils
 
 pub type SupervisorMessage {
   /// Spawns a new subagent process with the given ID and initial system prompt/instructions.
@@ -29,6 +33,7 @@ pub type SupervisorMessage {
   AcceptConnection(sock: uds_ffi.Socket)
   SubagentMsg(sock: uds_ffi.Socket, msg: String)
   SubagentDisconnect(sock: uds_ffi.Socket)
+  Shutdown
 }
 
 pub type SupervisorState {
@@ -84,12 +89,17 @@ fn handle_message(
     StartSubagent(id, prompt, api_key, base_url, tools_json) -> {
       case list.length(state.active_workers) < state.max_workers {
         True -> {
-          io.println("Supervisor starting subagent Babashka process: " <> id)
+          utils.safe_println("Supervisor starting subagent Babashka process: " <> id)
 
           let cmd =
-            "cd /Users/moe/Desktop/ayncoder/babashka_workers && bb -m worker "
+            "/bin/sh -c 'cd "
+            <> get_workers_dir()
+            <> " && "
+            <> get_bb_cmd()
+            <> " -m worker "
             <> state.socket_path
-          let _ = hermes_exec.spawn_port(cmd)
+            <> "'"
+          spawn_and_monitor_port(cmd)
 
           let new_queue =
             list.append(state.pending_queue, [
@@ -98,7 +108,7 @@ fn handle_message(
           actor.continue(SupervisorState(..state, pending_queue: new_queue))
         }
         False -> {
-          io.println("Supervisor queueing subagent task: " <> id)
+          utils.safe_println("Supervisor queueing subagent task: " <> id)
           let new_queue =
             list.append(state.pending_queue, [
               #(id, prompt, api_key, base_url, tools_json),
@@ -108,7 +118,7 @@ fn handle_message(
       }
     }
     WorkerDone(id) -> {
-      io.println("Supervisor detected worker completion: " <> id)
+      utils.safe_println("Supervisor detected worker completion: " <> id)
       // Remove from active_workers
       let next_workers = list.filter(state.active_workers, fn(w) { w.0 != id })
       actor.continue(SupervisorState(..state, active_workers: next_workers))
@@ -118,17 +128,17 @@ fn handle_message(
       actor.continue(state)
     }
     BroadcastState(datom) -> {
-      io.println("Supervisor broadcasting datom: " <> datom.attribute)
+      utils.safe_println("Supervisor broadcasting datom: " <> datom.attribute)
       actor.continue(state)
     }
     AcceptConnection(sock) -> {
-      io.println("Actor registered new subagent socket")
+      utils.safe_println("Actor registered new subagent socket")
       let _ = process.spawn(fn() { worker_read_loop(sock, state.self) })
 
       // When a new socket connects, we pair it with the first pending task in the queue.
       case state.pending_queue {
         [] -> {
-          io.println("No pending tasks for new connection.")
+          utils.safe_println("No pending tasks for new connection.")
           actor.continue(state)
         }
         [#(id, prompt, api_key, base_url, tools_json), ..rest] -> {
@@ -153,18 +163,18 @@ fn handle_message(
           // Build JSON-RPC payload
           let payload =
             "{\"jsonrpc\":\"2.0\",\"method\":\"execute_task\",\"params\":{\"url\":\""
-            <> base_url
+            <> escape_json_string(base_url <> "/chat/completions")
             <> "\",\"model\":\"gpt-4o-mini\",\"api_key\":\""
-            <> api_key
+            <> escape_json_string(api_key)
             <> "\",\"messages\":[{\"role\":\"user\",\"content\":\""
-            <> string.replace(prompt, "\"", "\\\"")
+            <> escape_json_string(prompt)
             <> "\"}],\"tools\":"
             <> tools_json
             <> ",\"datoms\":"
             <> datoms_json
             <> "}}"
 
-          let _ = uds_ffi.send_uds(sock, bit_array.from_string(payload))
+          let _ = uds_ffi.send_uds(sock, bit_array.from_string(payload <> "\n"))
           actor.continue(
             SupervisorState(
               ..state,
@@ -176,7 +186,7 @@ fn handle_message(
       }
     }
     SubagentMsg(sock, msg) -> {
-      io.println("Actor received subagent msg: " <> msg)
+      utils.safe_println("Actor received subagent msg: " <> msg)
 
       let worker_id = case
         list.find(state.active_workers, fn(w) { w.1 == sock })
@@ -215,7 +225,7 @@ fn handle_message(
       actor.continue(state)
     }
     SubagentDisconnect(sock) -> {
-      io.println("Actor handling disconnect")
+      utils.safe_println("Actor handling disconnect")
       // Find which ID this was to print
       case list.find(state.active_workers, fn(w) { w.1 == sock }) {
         Ok(#(id, _)) -> {
@@ -227,9 +237,14 @@ fn handle_message(
                 [] -> Nil
                 _ -> {
                   let cmd =
-                    "cd /Users/moe/Desktop/ayncoder/babashka_workers && bb -m worker "
+                    "/bin/sh -c 'cd "
+                    <> get_workers_dir()
+                    <> " && "
+                    <> get_bb_cmd()
+                    <> " -m worker "
                     <> state.socket_path
-                  let _ = hermes_exec.spawn_port(cmd)
+                    <> "'"
+                  spawn_and_monitor_port(cmd)
                   Nil
                 }
               }
@@ -244,6 +259,15 @@ fn handle_message(
         list.filter(state.active_workers, fn(w) { w.1 != sock })
       actor.continue(SupervisorState(..state, active_workers: next_workers))
     }
+    Shutdown -> {
+      let _ = uds_ffi.close_listen_socket(state.listen_sock)
+      list.each(state.active_workers, fn(w) {
+        let _ = uds_ffi.close_uds(w.1)
+        Nil
+      })
+      let _ = simplifile.delete(state.socket_path)
+      actor.stop()
+    }
   }
 }
 
@@ -253,12 +277,12 @@ fn accept_loop(
 ) -> Nil {
   case uds_ffi.accept_uds(lsock) {
     Ok(sock) -> {
-      io.println("Accepted new UDS connection")
+      utils.safe_println("Accepted new UDS connection")
       process.send(subj, AcceptConnection(sock))
       accept_loop(lsock, subj)
     }
     Error(e) -> {
-      io.println("Accept loop failed: " <> string.inspect(e))
+      utils.safe_println("Accept loop failed: " <> string.inspect(e))
     }
   }
 }
@@ -293,11 +317,103 @@ fn list_find_and_send(
     [#(id, sock), ..rest] -> {
       case id == target_id {
         True -> {
-          let _ = uds_ffi.send_uds(sock, bit_array.from_string(msg))
+          let msg_with_newline = case string.ends_with(msg, "\n") {
+            True -> msg
+            False -> msg <> "\n"
+          }
+          let _ = uds_ffi.send_uds(sock, bit_array.from_string(msg_with_newline))
           Nil
         }
         False -> list_find_and_send(rest, target_id, msg)
       }
     }
   }
+}
+
+fn get_workers_dir() -> String {
+  case constants.get_env("HERMES_WORKERS_DIR") {
+    Some(dir) -> dir
+    None -> {
+      case utils.get_cwd() {
+        Ok(cwd) -> {
+          let parent = constants.dirname(cwd)
+          let candidate = constants.path_join(parent, "babashka_workers")
+          case simplifile.is_directory(candidate) {
+            Ok(True) -> candidate
+            _ -> {
+              let candidate2 = constants.path_join(cwd, "babashka_workers")
+              case simplifile.is_directory(candidate2) {
+                Ok(True) -> candidate2
+                _ -> "/Users/moe/Desktop/ayncoder/babashka_workers"
+              }
+            }
+          }
+        }
+        Error(_) -> "/Users/moe/Desktop/ayncoder/babashka_workers"
+      }
+    }
+  }
+}
+
+fn get_bb_cmd() -> String {
+  case simplifile.is_file("/opt/homebrew/bin/bb") {
+    Ok(True) -> "/opt/homebrew/bin/bb"
+    _ -> {
+      case simplifile.is_file("/usr/local/bin/bb") {
+        Ok(True) -> "/usr/local/bin/bb"
+        _ -> "bb"
+      }
+    }
+  }
+}
+
+fn spawn_and_monitor_port(cmd: String) -> Nil {
+  let _ =
+    process.spawn(fn() {
+      case hermes_exec.spawn_port(cmd) {
+        Ok(port) -> {
+          let selector =
+            process.new_selector()
+            |> process.select_other(fn(msg) { decode_port_message(msg) })
+          receive_and_ignore_loop(port, selector)
+        }
+        Error(_) -> Nil
+      }
+    })
+  Nil
+}
+
+@external(erlang, "hermes_exec_ffi", "decode_port_message")
+fn decode_port_message(msg: Dynamic) -> hermes_exec.PortMessage
+
+fn receive_and_ignore_loop(
+  port: Dynamic,
+  selector: process.Selector(hermes_exec.PortMessage),
+) -> Nil {
+  case process.selector_receive(selector, 600_000) {
+    Ok(hermes_exec.PortData(data)) -> {
+      utils.safe_print("[Supervisor Port Out] " <> data)
+      receive_and_ignore_loop(port, selector)
+    }
+    Ok(hermes_exec.PortExit(status)) -> {
+      utils.safe_println("[Supervisor Port Exit] " <> string.inspect(status))
+      hermes_exec.close_port(port)
+      Nil
+    }
+    Ok(hermes_exec.PortIgnored) -> receive_and_ignore_loop(port, selector)
+    Error(_) -> {
+      hermes_exec.kill_port_process(port)
+      hermes_exec.close_port(port)
+      Nil
+    }
+  }
+}
+
+pub fn escape_json_string(s: String) -> String {
+  s
+  |> string.replace("\\", "\\\\")
+  |> string.replace("\"", "\\\"")
+  |> string.replace("\n", "\\n")
+  |> string.replace("\r", "\\r")
+  |> string.replace("\t", "\\t")
 }

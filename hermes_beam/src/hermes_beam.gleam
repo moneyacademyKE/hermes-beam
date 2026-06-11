@@ -60,6 +60,21 @@ pub type REPLState {
   )
 }
 
+pub type IntentLoopInit {
+  IntentLoopInit(
+    mcp_client_opt: option.Option(mcp_client.McpClient),
+    supervisor_subj: process.Subject(subagent_supervisor.SupervisorMessage),
+    agent_state: hermes_agent.AgentState,
+  )
+}
+
+pub type SpawnedSubjects {
+  SpawnedSubjects(
+    intent_subj: process.Subject(Datom),
+    init_subj: process.Subject(IntentLoopInit),
+  )
+}
+
 @external(erlang, "timer", "sleep")
 pub fn sleep_ms(ms: Int) -> Nil
 
@@ -594,10 +609,30 @@ pub fn run_repl_resuming(target_session_id: String) -> Nil {
   let db_path = constants.path_join(constants.get_hermes_home(), "state.db")
   let assert Ok(conn) = hermes_state.connect(db_path)
   let assert Ok(Nil) = hermes_state.init_schema(conn)
-  let intent_subj: process.Subject(Datom) = process.new_subject()
-  let assert Ok(actor) = state_actor.start(conn, [intent_subj])
 
+  let temp_subj: process.Subject(SpawnedSubjects) = process.new_subject()
   let #(api_key, base_url) = resolve_api_credentials()
+  let _ =
+    process.spawn(fn() {
+      let intent_subj = process.new_subject()
+      let init_subj = process.new_subject()
+      process.send(temp_subj, SpawnedSubjects(intent_subj, init_subj))
+      let assert Ok(init_data) = process.receive(init_subj, 10_000)
+      let selector =
+        process.new_selector()
+        |> process.select(intent_subj)
+      intent_loop(
+        selector,
+        init_data.mcp_client_opt,
+        init_data.supervisor_subj,
+        api_key,
+        base_url,
+        init_data.agent_state,
+      )
+    })
+  let assert Ok(spawned) = process.receive(temp_subj, 5000)
+  let assert Ok(actor) = state_actor.start(conn, [spawned.intent_subj])
+
   let model = case constants.get_env("HERMES_MODEL") {
     Some(val) -> val
     None -> "meta-llama/llama-3-8b-instruct:free"
@@ -658,18 +693,15 @@ pub fn run_repl_resuming(target_session_id: String) -> Nil {
         constants.path_join(constants.get_hermes_home(), "subagents.sock")
       let assert Ok(supervisor_subj) =
         subagent_supervisor.start_supervisor(socket_path, actor)
-      let _ =
-        process.spawn(fn() {
-          let selector = process.new_selector() |> process.select(intent_subj)
-          intent_loop(
-            selector,
-            None,
-            supervisor_subj,
-            api_key,
-            base_url,
-            resumed_agent,
-          )
-        })
+
+      process.send(
+        spawned.init_subj,
+        IntentLoopInit(
+          mcp_client_opt: None,
+          supervisor_subj: supervisor_subj,
+          agent_state: resumed_agent,
+        ),
+      )
 
       let state =
         REPLState(
@@ -698,9 +730,30 @@ pub fn run_repl() -> Nil {
   let db_path = constants.path_join(constants.get_hermes_home(), "state.db")
   let assert Ok(conn) = hermes_state.connect(db_path)
   let assert Ok(Nil) = hermes_state.init_schema(conn)
-  let intent_subj: process.Subject(Datom) = process.new_subject()
 
-  let subjects = [intent_subj]
+  let temp_subj: process.Subject(SpawnedSubjects) = process.new_subject()
+  let #(api_key, base_url) = resolve_api_credentials()
+  let _ =
+    process.spawn(fn() {
+      let intent_subj = process.new_subject()
+      let init_subj = process.new_subject()
+      process.send(temp_subj, SpawnedSubjects(intent_subj, init_subj))
+      let assert Ok(init_data) = process.receive(init_subj, 10_000)
+      let selector =
+        process.new_selector()
+        |> process.select(intent_subj)
+      intent_loop(
+        selector,
+        init_data.mcp_client_opt,
+        init_data.supervisor_subj,
+        api_key,
+        base_url,
+        init_data.agent_state,
+      )
+    })
+  let assert Ok(spawned) = process.receive(temp_subj, 5000)
+
+  let subjects = [spawned.intent_subj]
 
   let assert Ok(actor) = state_actor.start(conn, subjects)
 
@@ -788,7 +841,6 @@ pub fn run_repl() -> Nil {
   }
 
   // 2. Load credentials
-  let #(api_key, base_url) = resolve_api_credentials()
   let model = case constants.get_env("HERMES_MODEL") {
     Some(val) -> val
     None -> "meta-llama/llama-3-8b-instruct:free"
@@ -797,15 +849,19 @@ pub fn run_repl() -> Nil {
   // Start MCP Client if HERMES_MCP_CMD is set
   let mcp_client_opt = case constants.get_env("HERMES_MCP_CMD") {
     Some(cmd) -> {
-      let notif_subj: process.Subject(mcp_client.JsonRpcNotification) =
-        process.new_subject()
+      let temp_mcp_subj: process.Subject(
+        process.Subject(mcp_client.JsonRpcNotification),
+      ) = process.new_subject()
       let _ =
         process.spawn(fn() {
+          let notif_subj = process.new_subject()
+          process.send(temp_mcp_subj, notif_subj)
           let selector =
             process.new_selector()
             |> process.select(notif_subj)
           notification_loop(selector, actor)
         })
+      let assert Ok(notif_subj) = process.receive(temp_mcp_subj, 5000)
 
       case mcp_client.start(cmd, Some(notif_subj)) {
         Ok(client) -> {
@@ -879,21 +935,10 @@ pub fn run_repl() -> Nil {
       Nil
     }
     Ok(agent_state) -> {
-      // Always spawn intent_loop to process side effects (e.g. running tools)
-      let _ =
-        process.spawn(fn() {
-          let selector =
-            process.new_selector()
-            |> process.select(intent_subj)
-          intent_loop(
-            selector,
-            mcp_client_opt,
-            supervisor_subj,
-            api_key,
-            base_url,
-            agent_state,
-          )
-        })
+      process.send(
+        spawned.init_subj,
+        IntentLoopInit(mcp_client_opt, supervisor_subj, agent_state),
+      )
 
       let state =
         REPLState(

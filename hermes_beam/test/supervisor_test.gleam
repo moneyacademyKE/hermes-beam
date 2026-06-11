@@ -1,5 +1,7 @@
+import constants
 import gleam/erlang/process
 import gleam/io
+import hermes_exec
 import hermes_state
 import sqlight
 import state_actor
@@ -10,7 +12,8 @@ pub fn supervisor_start_worker_test() {
   let assert Ok(Nil) = hermes_state.init_schema(conn)
   let assert Ok(actor) = state_actor.start(conn, [])
 
-  let assert Ok(subj) = subagent_supervisor.start_supervisor("test.sock", actor)
+  let socket_path = constants.path_join(hermes_exec.get_temp_dir(), "test.sock")
+  let assert Ok(subj) = subagent_supervisor.start_supervisor(socket_path, actor)
 
   // Ask supervisor to start the worker process
   io.println("Asking supervisor to start worker...")
@@ -29,6 +32,12 @@ pub fn supervisor_start_worker_test() {
   process.sleep(100)
 
   io.println("Done")
+
+  let assert Ok(pid) = process.subject_owner(subj)
+  let _monitor = process.monitor(pid)
+  process.send(subj, subagent_supervisor.Shutdown)
+  let selector = process.new_selector() |> process.select_monitors(fn(d) { d })
+  let assert Ok(_) = process.selector_receive(selector, 1000)
 }
 
 pub fn supervisor_pool_test() {
@@ -36,7 +45,8 @@ pub fn supervisor_pool_test() {
   let assert Ok(Nil) = hermes_state.init_schema(conn)
   let assert Ok(actor) = state_actor.start(conn, [])
 
-  let assert Ok(subj) = subagent_supervisor.start_supervisor("test.sock", actor)
+  let socket_path = constants.path_join(hermes_exec.get_temp_dir(), "test_pool.sock")
+  let assert Ok(subj) = subagent_supervisor.start_supervisor(socket_path, actor)
 
   // Start 6 workers. Supervisor max is 5.
   process.send(
@@ -79,4 +89,16 @@ pub fn supervisor_pool_test() {
 
   // Sleep so w6 is dequeued
   process.sleep(50)
+
+  let assert Ok(pid) = process.subject_owner(subj)
+  let _monitor = process.monitor(pid)
+  process.send(subj, subagent_supervisor.Shutdown)
+  let selector = process.new_selector() |> process.select_monitors(fn(d) { d })
+  let assert Ok(_) = process.selector_receive(selector, 1000)
+}
+
+pub fn supervisor_escape_json_string_test() {
+  let input = "Hello\nWorld \"with quotes\" \\and backslash\\\r\ttab"
+  let expected = "Hello\\nWorld \\\"with quotes\\\" \\\\and backslash\\\\\\r\\ttab"
+  let assert True = subagent_supervisor.escape_json_string(input) == expected
 }

@@ -423,6 +423,26 @@ This document summarizes the core learnings from porting python codebase element
     - Implemented a custom unification algorithm (`match-term?`), recursive rule solver (`solve-rule`, `solve-clause`), and query evaluator mapping directly to core Datalog semantics.
 *   **Impact**: Removed the final JVM dependency constraint. Babashka can now run the worker completely independently without needing `java` binaries or Maven resolutions, achieving ultra-fast boot times, pure C-level binary execution, and completing the Rich Hickey mandate of extreme decomplectation.
 
+## 50. UDS Reconnect Auto-Healing and Fail-Safe Diagnostics
 
+*   **Problem**: In distributed worker setups running out-of-process (e.g. Babashka connecting to a Gleam supervisor), transient network states or socket file permission errors can cause silent worker crashes or infinite retries that exhaust OS file descriptors.
+*   **Resolution**:
+    - Strictly bound connection attempts to exactly three.
+    - Implement a structured diagnostics inspector that queries parent directory existence, socket file presence, file permissions (`canRead`/`canWrite`), and formats Exception details.
+    - Thread exception metadata through the loop recursion so the diagnostics report has access to the root cause of the final failure.
 
+## 51. JSON-RPC Payload Escaping in Headless UDS IPC
 
+*   **Problem**: When coordinating out-of-process Babashka workers using standard Unix Domain Sockets (UDS) message passing, manual string serialization of dynamic content (such as LLM prompts containing newlines, carriage returns, or backslashes) will corrupt the socket's line-delimited message framing. This causes JSON parsing exceptions (e.g. `Error parsing msg`) and breaks worker initialization.
+*   **Resolution**:
+    - Build a dedicated JSON-RPC string escaper (`escape_json_string`) that sequentially sanitizes backslashes, double quotes, newlines (`\n`), carriage returns (`\r`), and tab characters.
+    - Always append the endpoint path `/chat/completions` to the `base_url` parameter before passing it to subagents, ensuring all external completions requests hit the standard chat completions API directly instead of the generic base path.
+
+## 52. OTP Process Exit stdout Termination Crash Mitigation
+
+*   **Problem**: In concurrent OTP test suites or actor environments (e.g., gleeunit running test cases), actors running asynchronously can attempt to write to stdout or standard IO (`io.print` / `io.println`) after the test case has completed. Since EUnit terminates the test's group leader process on completion, subsequent print operations throw a `terminated` exception inside the actor or port-monitoring process, causing unexpected crash reports and test failures.
+*   **Resolution**: 
+    1. Avoid raw `io.print` or `io.println` calls in background or port-monitoring processes.
+    2. Implement a safe print FFI wrapper (`safe_print` and `safe_println`) in Erlang using a catch-all `try-catch` block (`try io:put_chars(Binary) catch _:_ -> ok end`). This prevents any print failure from bubbling up and crashing the process.
+    3. Route all supervisor and worker logging through the safe wrappers.
+*   **Impact**: Eliminates random "terminated io:put_chars" crashes across the entire BEAM supervisor/worker tree, ensuring 100% clean test suite runs.

@@ -13,7 +13,9 @@
     format_float/1,
     read_line/1,
     get_cwd/0,
-    set_expand_fun/0
+    set_expand_fun/0,
+    safe_print/1,
+    safe_println/1
 ]).
 
 identity(X) -> X.
@@ -86,4 +88,18 @@ expand(RevStr) ->
             end;
         _ ->
             {no, "", []}
+    end.
+
+safe_print(Binary) ->
+    try
+        io:put_chars(Binary)
+    catch
+        _:_ -> ok
+    end.
+
+safe_println(Binary) ->
+    try
+        io:put_chars([Binary, 10])
+    catch
+        _:_ -> ok
     end.

@@ -21,3 +21,6 @@ pub fn send_uds(socket: Socket, data: BitArray) -> Result(Nil, dynamic.Dynamic)
 
 @external(erlang, "uds_native", "close_uds")
 pub fn close_uds(socket: Socket) -> Result(Nil, dynamic.Dynamic)
+
+@external(erlang, "uds_native", "close_uds")
+pub fn close_listen_socket(socket: ListenSocket) -> Result(Nil, dynamic.Dynamic)

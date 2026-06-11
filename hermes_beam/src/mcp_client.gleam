@@ -304,7 +304,7 @@ fn loop(state: State, subj: Subject(Message)) -> Nil {
       let _ =
         process.spawn(fn() {
           let res = case process.receive(wrap_subj, 60_000) {
-            Ok(Ok(dyn)) -> Ok(string.inspect(dyn))
+            Ok(Ok(dyn)) -> Ok(encode_json(dyn))
             Ok(Error(e)) -> Error(e)
             Error(_) -> Error("Timeout")
           }

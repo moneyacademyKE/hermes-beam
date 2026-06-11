@@ -739,5 +739,116 @@ Execute recursive Datalog queries natively in a dynamic scripting runtime (e.g.,
 ### Benefit
 Keeps the runtime completely independent from the JVM ecosystem, resulting in instantaneous boot times, while retaining the functional expressiveness required to reason over complex Datalog graphs and policies.
 
+---
 
+## 37. Threaded Exception Diagnostics in Auto-Healing Loops
 
+### Intent
+Log detailed OS and file permission diagnostics upon loop exhaustion to troubleshoot socket or network connection errors.
+
+### Pattern
+Instead of a simple decrementing integer loop, construct a recursive loop that carries both the attempt counter and the last caught exception. Upon exceeding maximum attempts, call a diagnostics printer passing the last exception to inspect filesystem metadata (such as target path presence, parent permissions, read/write capabilities).
+
+### Example
+```clojure
+(defn diagnose-uds-failure [path exception]
+  ;; print path details, file presence, parent permissions, and exception class/message
+  )
+
+(defn connect-loop [path]
+  (loop [attempt 1
+         last-exception nil]
+    (let [res (try
+                (connect-uds path)
+                {:ok true}
+                (catch Exception e
+                  {:error e}))]
+      (if (:ok res)
+        (do-work)
+        (if (< attempt 3)
+          (do
+            (Thread/sleep 1000)
+            (recur (inc attempt) (:error res)))
+          (do
+            (diagnose-uds-failure path (:error res))
+            (System/exit 1)))))))
+```
+
+---
+
+## 38. Safe Stream Payload Escaping Pattern
+
+### Intent
+Safely serialize dynamic string fields inside manually concatenated JSON payloads sent over newline-delimited UDS socket connections.
+
+### Pattern
+Instead of naive search-and-replace, construct a pipeline of positional replaces:
+1. Escape backslashes (`\`) first to prevent escaping double quotes.
+2. Escape double quotes (`"`).
+3. Escape newlines (`\n`) and carriage returns (`\r`) to protect newline message framing.
+4. Escape tabs (`\t`).
+
+### Example (Gleam)
+```gleam
+pub fn escape_json_string(s: String) -> String {
+  s
+  |> string.replace("\\", "\\\\")
+  |> string.replace("\"", "\\\"")
+  |> string.replace("\n", "\\n")
+  |> string.replace("\r", "\\r")
+  |> string.replace("\t", "\\t")
+}
+```
+
+## 39. Graceful Actor Shutdown and Deterministic Exit Coordination Pattern
+
+### Intent
+Cleanly terminate background supervisor actors and associated listeners (like UDS sockets) at the end of a test case or process lifespan, preventing leaked file descriptors, port connections, or trailing output prints after execution finishes.
+
+### Pattern
+1. **Define a Shutdown Message**: Add a `Shutdown` payload to the actor's message protocol.
+2. **Actor Cleanup Implementation**: Inside `handle_message`, when `Shutdown` is received:
+   - Close all open sockets (listening sockets and active client connections).
+   - Clean up filesystem resources (e.g., `simplifile.delete` the socket file).
+   - Stop the actor using `actor.stop()`.
+3. **Deterministic Test Coordination**: In the test case:
+   - Monitor the actor's Pid using `process.monitor(pid)`.
+   - Send the `Shutdown` message to the actor.
+   - Wait for the `DOWN` message in a selector with a reasonable timeout.
+   - Proceed only after the actor process has completely exited, ensuring no asynchronous teardown runs after the test returns.
+
+### Example (Gleam)
+```gleam
+pub fn test() {
+  let assert Ok(subj) = start_actor()
+  let assert Ok(pid) = process.subject_owner(subj)
+  let _monitor = process.monitor(pid)
+  
+  process.send(subj, Shutdown)
+  
+  let selector = process.new_selector() |> process.select_monitors(fn(d) { d })
+  let assert Ok(_) = process.selector_receive(selector, 1000)
+}
+```
+
+---
+
+## 40. Safe Print Catch-All Wrapper Pattern
+
+### Intent
+Safely write diagnostics and logs to standard output in concurrent actor environments without risking process crashes if standard output gets closed or redirected (e.g., due to test process termination).
+
+### Pattern
+1. **Define Native Handler**: Create an Erlang/FFI function that wraps standard output writes in a try-catch block.
+2. **Expose to Orchestrator**: Declare the external function in Gleam.
+3. **Use Universally**: Call this function instead of raw `io.print` / `io.println` for any diagnostic messages.
+
+### Example (Erlang)
+```erlang
+safe_print(Binary) ->
+    try
+        io:put_chars(Binary)
+    catch
+        _:_ -> ok
+    end.
+```

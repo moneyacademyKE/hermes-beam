@@ -1,8 +1,19 @@
-# Learnings
+# Learnings from HTTP Header Fetching Script
 
-## Effective Scripting with Babashka
-- Babashka is a powerful tool for scripting in Clojure, enabling quick execution without JVM constraints.
-- Simple scripts can be executed without complex setup, making it ideal for straightforward tasks.
+In this task, I implemented a Clojure script using Babashka to fetch HTTP headers from a specified URL. The approach utilized Babashka's built-in capabilities, specifically `babashka.curl`, to achieve this.
 
-## Future Implementations
-- When needing to print or log messages, always consider Babashka for quick tasks that do not require full Clojure functionality.
+## Key Points:
+- **Tool Used**: Babashka
+- **URL Fetched**: https://httpbin.org/get
+- **Output File**: headers.txt
+
+## Result:
+The headers received were:
+- date: Thu, 11 Jun 2026 03:04:38 GMT
+- content-type: application/json
+- content-length: 294
+- server: gunicorn/19.9.0
+- access-control-allow-origin: *
+- access-control-allow-credentials: true
+
+The lesson learned is the importance of using the right tools that fit the task requirements, which in this case was Babashka for simplicity and efficiency.
