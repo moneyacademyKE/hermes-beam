@@ -1,5 +1,4 @@
-# Patterns for Datalog Management
+## Patterns
 
-## Obsolescence Management
-- **Pattern**: Querying obsolete skills and retracting them
-  - **Description**: This pattern outlines how to identify obsolete entities in the Datalog and the procedure for retracting them. Regular maintenance should be conducted following this pattern.
+1. Use `babashka.curl` for making HTTP requests.
+2. Use `spit` for file output to maintain simplicity and clarity.
