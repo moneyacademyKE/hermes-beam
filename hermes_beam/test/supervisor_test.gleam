@@ -25,6 +25,7 @@ pub fn supervisor_start_worker_test() {
       "api_key",
       "base_url",
       "[]",
+      "gpt-4o-mini",
     ),
   )
 
@@ -51,23 +52,23 @@ pub fn supervisor_pool_test() {
   // Start 6 workers. Supervisor max is 5.
   process.send(
     subj,
-    subagent_supervisor.StartSubagent("w1", "prompt", "api", "base", "[]"),
+    subagent_supervisor.StartSubagent("w1", "prompt", "api", "base", "[]", "gpt-4o-mini"),
   )
   process.send(
     subj,
-    subagent_supervisor.StartSubagent("w2", "prompt", "api", "base", "[]"),
+    subagent_supervisor.StartSubagent("w2", "prompt", "api", "base", "[]", "gpt-4o-mini"),
   )
   process.send(
     subj,
-    subagent_supervisor.StartSubagent("w3", "prompt", "api", "base", "[]"),
+    subagent_supervisor.StartSubagent("w3", "prompt", "api", "base", "[]", "gpt-4o-mini"),
   )
   process.send(
     subj,
-    subagent_supervisor.StartSubagent("w4", "prompt", "api", "base", "[]"),
+    subagent_supervisor.StartSubagent("w4", "prompt", "api", "base", "[]", "gpt-4o-mini"),
   )
   process.send(
     subj,
-    subagent_supervisor.StartSubagent("w5", "prompt", "api", "base", "[]"),
+    subagent_supervisor.StartSubagent("w5", "prompt", "api", "base", "[]", "gpt-4o-mini"),
   )
 
   // This one should be queued
@@ -79,6 +80,7 @@ pub fn supervisor_pool_test() {
       "api",
       "base",
       "[]",
+      "gpt-4o-mini",
     ),
   )
 

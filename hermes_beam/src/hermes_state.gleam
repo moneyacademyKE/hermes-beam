@@ -1,5 +1,6 @@
 import datom.{type Datom, Datom}
 import gleam/dynamic/decode
+import gleam/json
 import gleam/list
 import gleam/result
 import gleam/string
@@ -105,6 +106,13 @@ CREATE TABLE IF NOT EXISTS telemetry (
 );
 
 CREATE INDEX IF NOT EXISTS idx_telemetry_session ON telemetry(session_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS session_embeddings (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id),
+    summary TEXT NOT NULL,
+    embedding TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
 "
 
 pub const deferred_index_sql = "
@@ -723,3 +731,66 @@ fn is_valid_session_id(session_id: String) -> Bool {
     }
   })
 }
+
+pub type SessionEmbedding {
+  SessionEmbedding(
+    session_id: String,
+    summary: String,
+    embedding: List(Float),
+  )
+}
+
+pub fn save_session_embedding(
+  conn: sqlight.Connection,
+  session_id: String,
+  summary: String,
+  embedding: List(Float),
+  created_at: Float,
+) -> Result(Nil, sqlight.Error) {
+  let embedding_json =
+    json.array(embedding, of: json.float)
+    |> json.to_string
+
+  let query =
+    "
+    INSERT OR REPLACE INTO session_embeddings (session_id, summary, embedding, created_at)
+    VALUES (?, ?, ?, ?);
+  "
+  sqlight.query(
+    query,
+    on: conn,
+    with: [
+      sqlight.text(session_id),
+      sqlight.text(summary),
+      sqlight.text(embedding_json),
+      sqlight.float(created_at),
+    ],
+    expecting: decode.dynamic,
+  )
+  |> result.map(fn(_) { Nil })
+}
+
+pub fn get_all_session_embeddings(
+  conn: sqlight.Connection,
+) -> Result(List(SessionEmbedding), sqlight.Error) {
+  let query =
+    "
+    SELECT session_id, summary, embedding FROM session_embeddings;
+  "
+  let row_decoder = {
+    use session_id <- decode.field(0, decode.string)
+    use summary <- decode.field(1, decode.string)
+    use embedding_str <- decode.field(2, decode.string)
+
+    let embedding = case
+      json.parse(from: embedding_str, using: decode.list(decode.float))
+    {
+      Ok(embed) -> embed
+      _ -> []
+    }
+    decode.success(SessionEmbedding(session_id, summary, embedding))
+  }
+
+  sqlight.query(query, on: conn, with: [], expecting: row_decoder)
+}
+

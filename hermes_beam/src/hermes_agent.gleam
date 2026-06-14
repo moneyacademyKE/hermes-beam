@@ -22,7 +22,10 @@ import mcp_client
 import memory_plugin
 import model_router.{type ModelRouter}
 import state_actor.{type StateActor}
+import token_budget
 import tools_registry
+import circuit_breaker_actor
+import glotel/span
 
 // ─── Core Types ────────────────────────────────────────────────────────────────
 
@@ -50,6 +53,8 @@ pub type AgentState {
     mcp_client: Option(mcp_client.McpClient),
     /// Model router: primary + fallback chain, inspired by lm-eval-harness TemplateAPI
     router: Option(ModelRouter),
+    circuit_breaker: Option(circuit_breaker_actor.CircuitBreaker),
+    token_budget: Option(token_budget.TokenBudget),
   )
 }
 
@@ -360,6 +365,34 @@ pub fn decode_tool_call(data: json.Json) -> Option(ToolCall) {
   }
 }
 
+pub fn parse_response_usage(json_str: String) -> Int {
+  let decoder = {
+    use usage <- decode.field("usage", {
+      use total_tokens <- decode.field("total_tokens", decode.int)
+      decode.success(total_tokens)
+    })
+    decode.success(usage)
+  }
+  case json.parse(from: json_str, using: decoder) {
+    Ok(total) -> total
+    Error(_) -> 0
+  }
+}
+
+pub fn extract_delta_usage(json_str: String) -> Option(Int) {
+  let decoder = {
+    use usage <- decode.field("usage", {
+      use total_tokens <- decode.field("total_tokens", decode.int)
+      decode.success(total_tokens)
+    })
+    decode.success(usage)
+  }
+  case json.parse(from: json_str, using: decoder) {
+    Ok(total) -> Some(total)
+    Error(_) -> None
+  }
+}
+
 /// Parse a complete (non-streaming) OpenAI chat completion JSON response.
 pub fn parse_completion_response(json_str: String) -> AgentResponse {
   let text_decoder = {
@@ -558,6 +591,7 @@ pub type StreamAccumulator {
     text: String,
     reasoning: String,
     tool_calls: Dict(Int, PartialToolCall),
+    tokens: Option(Int),
   )
 }
 
@@ -784,11 +818,16 @@ pub fn stream_and_collect(
               let tc_seen_now = tcs != []
               let is_tool_call = decode_openai_delta_tool_calls(json_str)
 
+              let usage_opt = case acc.tokens {
+                Some(total) -> Some(total)
+                None -> extract_delta_usage(json_str)
+              }
               let updated_acc =
                 StreamAccumulator(
                   text: acc.text <> text_delta,
                   reasoning: acc.reasoning <> reasoning_delta,
                   tool_calls: new_tcs,
+                  tokens: usage_opt,
                 )
               #(updated_acc, tc_seen || is_tool_call || tc_seen_now)
             }
@@ -826,6 +865,7 @@ pub fn stream_and_collect(
           text: "__STREAM_ERROR__:" <> err,
           reasoning: "",
           tool_calls: dict.new(),
+          tokens: None,
         ),
         False,
       )
@@ -842,6 +882,7 @@ pub fn stream_and_collect(
           text: "__STREAM_ERROR__:timeout",
           reasoning: "",
           tool_calls: dict.new(),
+          tokens: None,
         ),
         False,
       )
@@ -906,7 +947,7 @@ pub fn build_request_body(
   <> tools_json
   <> ",\"stream\":"
   <> case stream {
-    True -> "true"
+    True -> "true,\"stream_options\":{\"include_usage\":true}"
     False -> "false"
   }
   <> "}"
@@ -1111,79 +1152,152 @@ pub fn agent_turn_loop(
         #("Accept", "text/event-stream"),
       ]
 
-      case
-        hermes_client.stream_post_request(
-          state.base_url <> "/chat/completions",
-          headers,
-          "application/json",
-          body,
-        )
-      {
-        Error(err) -> {
+      let cb_allowed = case state.circuit_breaker {
+        Some(cb) -> circuit_breaker_actor.check(cb, active_model2)
+        None -> True
+      }
+      let tb_allowed = case state.token_budget {
+        Some(tb) -> token_budget.check(tb)
+        None -> True
+      }
+
+      case cb_allowed, tb_allowed {
+        False, _ -> {
           case spinner {
             Some(s) -> kawaii_spinner.stop(s)
             None -> Nil
           }
+          let err = "Circuit breaker blocked request to " <> active_model2 <> " due to consecutive failures."
           case quiet {
-            False -> io.println("\n[API Error: " <> err <> "]")
+            False -> io.println("\n[" <> err <> "]")
             True -> Nil
           }
-          Error("API request failed: " <> err)
+          Error(err)
         }
-
-        Ok(req_id) -> {
-          // Collect streaming response
-          let on_delta = case state.on_event {
-            Some(handler) -> Some(fn(delta) { handler(MessageDelta(delta)) })
-            None -> None
+        _, False -> {
+          case spinner {
+            Some(s) -> kawaii_spinner.stop(s)
+            None -> Nil
           }
-          let initial_acc = StreamAccumulator("", "", dict.new())
-          let #(final_acc, _saw_tool_calls_in_stream) =
-            stream_and_collect(
-              req_id,
-              hermes_client.new_line_parser(),
-              initial_acc,
-              on_delta,
-              spinner,
+          let err = "Token budget exhausted."
+          case quiet {
+            False -> io.println("\n[" <> err <> "]")
+            True -> Nil
+          }
+          Error(err)
+        }
+        True, True -> {
+          use span_ctx <- span.new("llm_stream_call", [
+            #("model", active_model2),
+            #("url", state.base_url),
+          ])
+
+          let req_res =
+            hermes_client.stream_post_request(
+              state.base_url <> "/chat/completions",
+              headers,
+              "application/json",
+              body,
             )
 
-          let response_trimmed = string.trim(final_acc.text)
-          let agent_resp = case dict.size(final_acc.tool_calls) > 0 {
-            True -> {
-              let calls =
-                dict.values(final_acc.tool_calls)
-                |> list.map(fn(ptc) {
-                  ToolCall(
-                    id: ptc.id,
-                    name: ptc.name,
-                    arguments: ptc.arguments_acc,
-                  )
-                })
-              ToolCalls(calls)
+          case req_res {
+            Error(err) -> {
+              let _ = case state.circuit_breaker {
+                Some(cb) -> circuit_breaker_actor.record_failure(cb, active_model2)
+                None -> Nil
+              }
+              span.set_error_message(span_ctx, "API request failed: " <> err)
+              case spinner {
+                Some(s) -> kawaii_spinner.stop(s)
+                None -> Nil
+              }
+              case quiet {
+                False -> io.println("\n[API Error: " <> err <> "]")
+                True -> Nil
+              }
+              Error("API request failed: " <> err)
             }
-            False -> {
-              case response_trimmed {
-                "" -> {
-                  let _ = case spinner {
-                    Some(s) -> kawaii_spinner.stop(s)
+
+            Ok(req_id) -> {
+              // Collect streaming response
+              let on_delta = case state.on_event {
+                Some(handler) -> Some(fn(delta) { handler(MessageDelta(delta)) })
+                None -> None
+              }
+              let initial_acc = StreamAccumulator("", "", dict.new(), None)
+              let #(final_acc, _saw_tool_calls_in_stream) =
+                stream_and_collect(
+                  req_id,
+                  hermes_client.new_line_parser(),
+                  initial_acc,
+                  on_delta,
+                  spinner,
+                )
+
+              let response_trimmed = string.trim(final_acc.text)
+              let stream_tokens = case final_acc.tokens {
+                Some(t) -> t
+                None -> {
+                  let prompt_est = string.length(body) / 4
+                  let completion_est = string.length(response_trimmed) / 4
+                  prompt_est + completion_est
+                }
+              }
+              let _ = case state.token_budget {
+                Some(tb) -> token_budget.record(tb, stream_tokens)
+                None -> Nil
+              }
+              let agent_resp = case dict.size(final_acc.tool_calls) > 0 {
+                True -> {
+                  let calls =
+                    dict.values(final_acc.tool_calls)
+                    |> list.map(fn(ptc) {
+                      ToolCall(
+                        id: ptc.id,
+                        name: ptc.name,
+                        arguments: ptc.arguments_acc,
+                      )
+                    })
+                  let _ = case state.circuit_breaker {
+                    Some(cb) -> circuit_breaker_actor.record_success(cb, active_model2)
                     None -> Nil
                   }
-                  fetch_fallback_non_streaming(state, body)
+                  ToolCalls(calls)
                 }
-                text -> {
-                  case string.starts_with(text, "__STREAM_ERROR__:") {
-                    True -> {
-                      let reason = string.drop_start(text, 17)
-                      ErrorResponse("Stream failed: " <> reason)
+                False -> {
+                  case response_trimmed {
+                    "" -> {
+                      let _ = case spinner {
+                        Some(s) -> kawaii_spinner.stop(s)
+                        None -> Nil
+                      }
+                      fetch_fallback_non_streaming(state, body)
                     }
-                    False -> FinalText(text)
+                    text -> {
+                      case string.starts_with(text, "__STREAM_ERROR__:") {
+                        True -> {
+                          let reason = string.drop_start(text, 17)
+                          let _ = case state.circuit_breaker {
+                            Some(cb) -> circuit_breaker_actor.record_failure(cb, active_model2)
+                            None -> Nil
+                          }
+                          span.set_error_message(span_ctx, "Stream failed: " <> reason)
+                          ErrorResponse("Stream failed: " <> reason)
+                        }
+                        False -> {
+                          let _ = case state.circuit_breaker {
+                            Some(cb) -> circuit_breaker_actor.record_success(cb, active_model2)
+                            None -> Nil
+                          }
+                          FinalText(text)
+                        }
+                      }
+                    }
                   }
                 }
               }
-            }
-          }
 
-          case agent_resp {
+              case agent_resp {
             // ── Tool call path ──────────────────────────────────────────────
             ToolCalls(calls) -> {
               case state.on_event {
@@ -1362,6 +1476,8 @@ pub fn agent_turn_loop(
     }
   }
 }
+}
+}
 
 /// Fallback: send a non-streaming request to get the response (text or tool calls)
 /// when streaming response was empty or timed out.
@@ -1369,38 +1485,89 @@ pub fn fetch_fallback_non_streaming(
   state: AgentState,
   _streaming_body: String,
 ) -> AgentResponse {
-  // Build non-streaming body
-  let honcho = memory_plugin.honcho_adapter(state.api_key, "user-default")
-  let mem_ctx = case honcho.retrieve_context(state.session_id) {
-    Ok(ctx) -> ctx
-    Error(_) -> ""
+  let cb_allowed = case state.circuit_breaker {
+    Some(cb) -> circuit_breaker_actor.check(cb, state.model)
+    None -> True
+  }
+  let tb_allowed = case state.token_budget {
+    Some(tb) -> token_budget.check(tb)
+    None -> True
   }
 
-  let body =
-    build_request_body(
-      state.model,
-      state.system_prompt,
-      list.reverse(state.history),
-      all_tool_schemas(state.mcp_client),
-      False,
-      mem_ctx,
-    )
+  case cb_allowed, tb_allowed {
+    False, _ -> ErrorResponse("Circuit breaker blocked request to " <> state.model)
+    _, False -> ErrorResponse("Token budget exhausted.")
+    True, True -> {
+      use span_ctx <- span.new("llm_sync_call", [
+        #("model", state.model),
+        #("url", state.base_url),
+      ])
 
-  let headers = [
-    #("Authorization", "Bearer " <> state.api_key),
-    #("Content-Type", "application/json"),
-  ]
+      // Build non-streaming body
+      let honcho = memory_plugin.honcho_adapter(state.api_key, "user-default")
+      let mem_ctx = case honcho.retrieve_context(state.session_id) {
+        Ok(ctx) -> ctx
+        Error(_) -> ""
+      }
 
-  case
-    hermes_client.post_request_with_retry(
-      state.base_url <> "/chat/completions",
-      headers,
-      "application/json",
-      body,
-    )
-  {
-    Ok(response_json) -> parse_completion_response(response_json)
-    Error(err) -> ErrorResponse(err)
+      let body =
+        build_request_body(
+          state.model,
+          state.system_prompt,
+          list.reverse(state.history),
+          all_tool_schemas(state.mcp_client),
+          False,
+          mem_ctx,
+        )
+
+      let headers = [
+        #("Authorization", "Bearer " <> state.api_key),
+        #("Content-Type", "application/json"),
+      ]
+
+      let res =
+        hermes_client.post_request_with_retry(
+          state.base_url <> "/chat/completions",
+          headers,
+          "application/json",
+          body,
+        )
+
+      case res {
+        Ok(response_json) -> {
+          let _ = case state.token_budget {
+            Some(tb) -> token_budget.record(tb, parse_response_usage(response_json))
+            None -> Nil
+          }
+          let parsed = parse_completion_response(response_json)
+          case parsed {
+            ErrorResponse(err) -> {
+              let _ = case state.circuit_breaker {
+                Some(cb) -> circuit_breaker_actor.record_failure(cb, state.model)
+                None -> Nil
+              }
+              span.set_error_message(span_ctx, "API request returned error: " <> err)
+              parsed
+            }
+            _ -> {
+              let _ = case state.circuit_breaker {
+                Some(cb) -> circuit_breaker_actor.record_success(cb, state.model)
+                None -> Nil
+              }
+              parsed
+            }
+          }
+        }
+        Error(err) -> {
+          let _ = case state.circuit_breaker {
+            Some(cb) -> circuit_breaker_actor.record_failure(cb, state.model)
+            None -> Nil
+          }
+          span.set_error_message(span_ctx, "API request failed: " <> err)
+          ErrorResponse(err)
+        }
+      }
+    }
   }
 }
 
@@ -1411,48 +1578,93 @@ pub fn compress_history(
   state: AgentState,
 ) -> Result(String, String) {
   let summary_model = "claude-3-haiku-20240307"
-  // Or state.model fallback
-  let prompt =
-    "Summarize the following conversation history concisely. Retain key facts, constraints, and instructions:\n\n"
 
-  let user_msg =
-    json.object([
-      #("role", json.string("user")),
-      #(
-        "content",
-        json.string(prompt <> string.join(list.reverse(history), "\n")),
-      ),
-    ])
+  let cb_allowed = case state.circuit_breaker {
+    Some(cb) -> circuit_breaker_actor.check(cb, summary_model)
+    None -> True
+  }
+  let tb_allowed = case state.token_budget {
+    Some(tb) -> token_budget.check(tb)
+    None -> True
+  }
 
-  let body =
-    json.object([
-      #("model", json.string(summary_model)),
-      #("messages", json.array([user_msg], of: fn(x) { x })),
-      #("stream", json.bool(False)),
-    ])
-    |> json.to_string
+  case cb_allowed, tb_allowed {
+    False, _ -> Error("Circuit breaker blocked compression request to " <> summary_model)
+    _, False -> Error("Token budget exhausted.")
+    True, True -> {
+      use span_ctx <- span.new("llm_compress_call", [
+        #("model", summary_model),
+        #("url", state.base_url),
+      ])
 
-  let headers = [
-    #("Authorization", "Bearer " <> state.api_key),
-    #("Content-Type", "application/json"),
-  ]
+      let prompt =
+        "Summarize the following conversation history concisely. Retain key facts, constraints, and instructions:\n\n"
 
-  case
-    hermes_client.post_request(
-      state.base_url,
-      headers,
-      "application/json",
-      body,
-    )
-  {
-    Ok(json_resp) -> {
-      let resp = parse_completion_response(json_resp)
-      case resp {
-        FinalText(text) -> Ok(text)
-        _ -> Error("Failed to parse compression response")
+      let user_msg =
+        json.object([
+          #("role", json.string("user")),
+          #(
+            "content",
+            json.string(prompt <> string.join(list.reverse(history), "\n")),
+          ),
+        ])
+
+      let body =
+        json.object([
+          #("model", json.string(summary_model)),
+          #("messages", json.array([user_msg], of: fn(x) { x })),
+          #("stream", json.bool(False)),
+        ])
+        |> json.to_string
+
+      let headers = [
+        #("Authorization", "Bearer " <> state.api_key),
+        #("Content-Type", "application/json"),
+      ]
+
+      let res =
+        hermes_client.post_request(
+          state.base_url,
+          headers,
+          "application/json",
+          body,
+        )
+
+      case res {
+        Ok(json_resp) -> {
+          let _ = case state.token_budget {
+            Some(tb) -> token_budget.record(tb, parse_response_usage(json_resp))
+            None -> Nil
+          }
+          let resp = parse_completion_response(json_resp)
+          case resp {
+            FinalText(text) -> {
+              let _ = case state.circuit_breaker {
+                Some(cb) -> circuit_breaker_actor.record_success(cb, summary_model)
+                None -> Nil
+              }
+              Ok(text)
+            }
+            _ -> {
+              let _ = case state.circuit_breaker {
+                Some(cb) -> circuit_breaker_actor.record_failure(cb, summary_model)
+                None -> Nil
+              }
+              span.set_error_message(span_ctx, "Failed to parse compression response")
+              Error("Failed to parse compression response")
+            }
+          }
+        }
+        Error(err_str) -> {
+          let _ = case state.circuit_breaker {
+            Some(cb) -> circuit_breaker_actor.record_failure(cb, summary_model)
+            None -> Nil
+          }
+          span.set_error_message(span_ctx, "Compression API request failed: " <> err_str)
+          Error("Compression API request failed: " <> err_str)
+        }
       }
     }
-    Error(err_str) -> Error("Compression API request failed: " <> err_str)
   }
 }
 
@@ -1461,6 +1673,11 @@ pub fn run_conversation(
   state: AgentState,
   user_prompt: String,
 ) -> Result(AgentState, String) {
+  use span_ctx <- span.new("run_conversation", [
+    #("session_id", state.session_id),
+    #("model", state.model),
+  ])
+
   hermes_logger.info(
     state.session_id,
     "Starting run_conversation with user prompt length: "
@@ -1508,7 +1725,14 @@ pub fn run_conversation(
 
   let new_state = AgentState(..state, history: compressed_history)
 
-  agent_turn_loop(new_state, 0)
+  let result = agent_turn_loop(new_state, 0)
+  case result {
+    Error(err) -> {
+      span.set_error_message(span_ctx, err)
+      result
+    }
+    Ok(_) -> result
+  }
 }
 
 /// Create a new AgentState with a fresh iteration budget.
@@ -1523,6 +1747,8 @@ pub fn new_agent_state(
   system_prompt: String,
   max_iterations: Int,
   mcp_client: Option(mcp_client.McpClient),
+  circuit_breaker: Option(circuit_breaker_actor.CircuitBreaker),
+  token_budget: Option(token_budget.TokenBudget),
 ) -> Result(AgentState, String) {
   case iteration_budget.start(max_iterations) {
     Ok(budget) ->
@@ -1540,6 +1766,8 @@ pub fn new_agent_state(
         on_event: None,
         mcp_client: mcp_client,
         router: Some(model_router.from_env()),
+        circuit_breaker: circuit_breaker,
+        token_budget: token_budget,
       ))
     Error(_) -> Error("Failed to start iteration budget actor")
   }

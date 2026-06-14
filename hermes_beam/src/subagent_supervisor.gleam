@@ -1,6 +1,7 @@
 import constants
 import datom.{type Datom, Datom}
 import gleam/bit_array
+import gleam/int
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process.{type Subject}
 import gleam/json
@@ -13,6 +14,7 @@ import simplifile
 import state_actor.{type StateActor}
 import uds_ffi
 import utils
+import glotel/span
 
 pub type SupervisorMessage {
   /// Spawns a new subagent process with the given ID and initial system prompt/instructions.
@@ -22,6 +24,7 @@ pub type SupervisorMessage {
     api_key: String,
     base_url: String,
     tools_json: String,
+    model: String,
   )
   /// Sends a message string to an active subagent via its mailbox.
   SendSubagentMsg(id: String, msg: String)
@@ -44,7 +47,7 @@ pub type SupervisorState {
     db_conn: StateActor,
     self: Subject(SupervisorMessage),
     max_workers: Int,
-    pending_queue: List(#(String, String, String, String, String)),
+    pending_queue: List(#(String, String, String, String, String, String)),
   )
 }
 
@@ -81,12 +84,50 @@ pub fn start_supervisor(
   }
 }
 
+pub fn start_supervised(
+  name: process.Name(SupervisorMessage),
+  socket_path: String,
+  db_conn: StateActor,
+) -> Result(actor.Started(Subject(SupervisorMessage)), actor.StartError) {
+  case uds_ffi.listen_uds(socket_path) {
+    Ok(lsock) -> {
+      let res =
+        actor.new_with_initialiser(1000, fn(subj) {
+          let state =
+            SupervisorState(socket_path, lsock, [], db_conn, subj, 5, [])
+          let selector = process.new_selector() |> process.select(subj)
+          actor.initialised(state)
+          |> actor.selecting(selector)
+          |> actor.returning(subj)
+          |> Ok
+        })
+        |> actor.on_message(handle_message)
+        |> actor.named(name)
+        |> actor.start()
+
+      case res {
+        Ok(started) -> {
+          let subj = started.data
+          let _ = process.spawn(fn() { accept_loop(lsock, subj) })
+          Ok(actor.Started(pid: started.pid, data: subj))
+        }
+        Error(e) -> Error(e)
+      }
+    }
+    Error(e) -> Error(actor.InitFailed(string.inspect(e)))
+  }
+}
+
 fn handle_message(
   state: SupervisorState,
   msg: SupervisorMessage,
 ) -> actor.Next(SupervisorState, SupervisorMessage) {
   case msg {
-    StartSubagent(id, prompt, api_key, base_url, tools_json) -> {
+    StartSubagent(id, prompt, api_key, base_url, tools_json, model) -> {
+      use _span_ctx <- span.new("subagent_start", [
+        #("id", id),
+        #("model", model),
+      ])
       case list.length(state.active_workers) < state.max_workers {
         True -> {
           utils.safe_println("Supervisor starting subagent Babashka process: " <> id)
@@ -103,7 +144,7 @@ fn handle_message(
 
           let new_queue =
             list.append(state.pending_queue, [
-              #(id, prompt, api_key, base_url, tools_json),
+              #(id, prompt, api_key, base_url, tools_json, model),
             ])
           actor.continue(SupervisorState(..state, pending_queue: new_queue))
         }
@@ -111,7 +152,7 @@ fn handle_message(
           utils.safe_println("Supervisor queueing subagent task: " <> id)
           let new_queue =
             list.append(state.pending_queue, [
-              #(id, prompt, api_key, base_url, tools_json),
+              #(id, prompt, api_key, base_url, tools_json, model),
             ])
           actor.continue(SupervisorState(..state, pending_queue: new_queue))
         }
@@ -124,6 +165,10 @@ fn handle_message(
       actor.continue(SupervisorState(..state, active_workers: next_workers))
     }
     SendSubagentMsg(id, payload) -> {
+      use _span_ctx <- span.new("subagent_send_msg", [
+        #("id", id),
+        #("payload_len", int.to_string(string.length(payload))),
+      ])
       let _ = list_find_and_send(state.active_workers, id, payload)
       actor.continue(state)
     }
@@ -141,7 +186,7 @@ fn handle_message(
           utils.safe_println("No pending tasks for new connection.")
           actor.continue(state)
         }
-        [#(id, prompt, api_key, base_url, tools_json), ..rest] -> {
+        [#(id, prompt, api_key, base_url, tools_json, model), ..rest] -> {
           let next_workers = [#(id, sock), ..state.active_workers]
 
           let session_id = case string.split_once(id, "goal_worker_") {
@@ -165,15 +210,38 @@ fn handle_message(
             |> json.to_string
           }
 
+          let system_message =
+            json.object([
+              #("role", json.string("system")),
+              #(
+                "content",
+                json.string(
+                  "You are a highly efficient Hermes subagent worker. When solving tasks, you MUST: 1. Keep your context window clean: NEVER read large source files (e.g. >10KB) into context. Use local commands (e.g. grep, sed, awk, or inline bb scripts with run_command/bb_eval) to filter, search, and extract information on the filesystem, and write results directly to the output files. 2. For transact_datalog, facts must be a JSON array of arrays of strings. Ensure standard JSON compliance with commas separating array elements: e.g. [[\"A\", \"route/link\", \"B\"]]. Do NOT omit commas or write Clojure vector syntax inside the JSON facts list. 3. Log files are located at: ~/.hermes/logs/agent.log and ~/.hermes/logs/errors.log. Do NOT search the entire filesystem using find /. 4. Proceed step-by-step and write to files using write_file.",
+                ),
+              ),
+            ])
+
+          let user_message =
+            json.object([
+              #("role", json.string("user")),
+              #("content", json.string(prompt)),
+            ])
+
+          let messages_json =
+            json.array([system_message, user_message], of: fn(x) { x })
+            |> json.to_string
+
           // Build JSON-RPC payload
           let payload =
             "{\"jsonrpc\":\"2.0\",\"method\":\"execute_task\",\"params\":{\"url\":\""
             <> escape_json_string(base_url <> "/chat/completions")
-            <> "\",\"model\":\"gpt-4o-mini\",\"api_key\":\""
+            <> "\",\"model\":\""
+            <> escape_json_string(model)
+            <> "\",\"api_key\":\""
             <> escape_json_string(api_key)
-            <> "\",\"messages\":[{\"role\":\"user\",\"content\":\""
-            <> escape_json_string(prompt)
-            <> "\"}],\"tools\":"
+            <> "\",\"messages\":"
+            <> messages_json
+            <> ",\"tools\":"
             <> tools_json
             <> ",\"datoms\":"
             <> datoms_json

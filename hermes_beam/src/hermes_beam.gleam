@@ -2,7 +2,7 @@ import argv
 import constants
 import context_engine
 import datom.{type Datom, Datom, Rule, Triple}
-import discord_gateway
+import telegram_gateway
 import evolutionary
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -22,16 +22,28 @@ import skill_compiler
 import state_actor
 import subagent_supervisor
 import utils
+import circuit_breaker_actor
+import gleam/otp/static_supervisor
+import gleam/otp/supervision
+import token_budget
 
 @external(erlang, "erlang", "system_time")
 fn system_time() -> Int
 
+pub type TcpLockSocket
+
+@external(erlang, "hermes_http", "acquire_port_lock")
+pub fn acquire_port_lock(port: Int) -> Result(TcpLockSocket, String)
+
+@external(erlang, "hermes_http", "release_port_lock")
+pub fn release_port_lock(socket: TcpLockSocket) -> Nil
+
 pub fn get_default_prompt() -> String {
-  "You are a helpful assistant. CRITICAL RULE: You MUST default to using Babashka (bb) for any task that requires scripting. NO PYTHON SHOULD EVER BE INVOKED. Use rich hickey path. red/green tdd. When implementing ensure Rich Hickey quality and completeness at every step.\n\nDATALOG & GRAPH PROMPTING GUIDELINES:\n1. All Datalog queries MUST be formatted as a Clojure vector: `[:find ... :where ...]`. Do not write bare keywords or malformed list structures.\n2. Rules are compile-time definitions; specify recursive path rules inside the \":where\" block or resolve them via Clojure helper functions in \"bb_eval\".\n3. For unknown database schemas, audit them using Datalog wildcard queries (e.g. `[:find ?a ?v :where [?e ?a ?v]]` or `[?e :active _]`) rather than guessing predicates.\n4. Avoid sidetracking by doing external web lookups or cloning external codebases to resolve database structure; use \"query_datalog\" directly to inspect state."
+  "You are a helpful assistant. CRITICAL RULE: You MUST default to using Babashka (bb) for any task that requires scripting. NO PYTHON SHOULD EVER BE INVOKED. Use rich hickey path. red/green tdd. When implementing ensure Rich Hickey quality and completeness at every step.\n\nDATALOG & GRAPH PROMPTING GUIDELINES:\n1. All Datalog queries MUST be formatted as a Clojure vector: `[:find ... :where ...]`. Do not write bare keywords or malformed list structures.\n2. Rules are compile-time definitions; specify recursive path rules inside the \":where\" block or resolve them via Clojure helper functions in \"bb_eval\".\n3. For unknown database schemas, audit them using Datalog wildcard queries (e.g. `[:find ?a ?v :where [?e ?a ?v]]` or `[?e :active _]`) rather than guessing predicates.\n4. Avoid sidetracking by doing external web lookups or cloning external codebases to resolve database structure; use \"query_datalog\" directly to inspect state.\n\nGENERAL OUTPUT QUALITY GUIDELINES:\n1. Decomplect HTTP response headers from body reflection payload. Retrieve the actual response headers map, not the reflected JSON body.\n2. Ensure all log or list outputs write each entry on its own line followed by a newline delimiter (\\n) to avoid joined string concatenation.\n3. Clean up regex search outputs. Extract only clean tokens, explicitly stripping trailing non-alphanumeric syntax characters (e.g., closing parentheses, brackets, or semicolons).\n4. Format path query results as a single Clojure EDN vector (e.g. [\"A\" \"B\" \"C\" \"D\"]) rather than a flat, unstructured text list."
 }
 
 pub fn get_tools_prompt() -> String {
-  "You are a helpful assistant with access to shell tools. When you need to run a command, use the run_command tool. When you need to read a file, use read_file. When you need to write a file, use write_file. CRITICAL RULE: You MUST default to using Babashka (bb) for any task that requires scripting. NO PYTHON SHOULD EVER BE INVOKED. Use rich hickey path. red/green tdd. When implementing ensure Rich Hickey quality and completeness at every step.\n\nDATALOG & GRAPH PROMPTING GUIDELINES:\n1. All Datalog queries MUST be formatted as a Clojure vector: `[:find ... :where ...]`. Do not write bare keywords or malformed list structures.\n2. Rules are compile-time definitions; specify recursive path rules inside the \":where\" block or resolve them via Clojure helper functions in \"bb_eval\".\n3. For unknown database schemas, audit them using Datalog wildcard queries (e.g. `[:find ?a ?v :where [?e ?a ?v]]` or `[?e :active _]`) rather than guessing predicates.\n4. Avoid sidetracking by doing external web lookups or cloning external codebases to resolve database structure; use \"query_datalog\" directly to inspect state."
+  "You are a helpful assistant with access to shell tools. When you need to run a command, use the run_command tool. When you need to read a file, use read_file. When you need to write a file, use write_file. CRITICAL RULE: You MUST default to using Babashka (bb) for any task that requires scripting. NO PYTHON SHOULD EVER BE INVOKED. Use rich hickey path. red/green tdd. When implementing ensure Rich Hickey quality and completeness at every step.\n\nDATALOG & GRAPH PROMPTING GUIDELINES:\n1. All Datalog queries MUST be formatted as a Clojure vector: `[:find ... :where ...]`. Do not write bare keywords or malformed list structures.\n2. Rules are compile-time definitions; specify recursive path rules inside the \":where\" block or resolve them via Clojure helper functions in \"bb_eval\".\n3. For unknown database schemas, audit them using Datalog wildcard queries (e.g. `[:find ?a ?v :where [?e ?a ?v]]` or `[?e :active _]`) rather than guessing predicates.\n4. Avoid sidetracking by doing external web lookups or cloning external codebases to resolve database structure; use \"query_datalog\" directly to inspect state.\n\nGENERAL OUTPUT QUALITY GUIDELINES:\n1. Decomplect HTTP response headers from body reflection payload. Retrieve the actual response headers map, not the reflected JSON body.\n2. Ensure all log or list outputs write each entry on its own line followed by a newline delimiter (\\n) to avoid joined string concatenation.\n3. Clean up regex search outputs. Extract only clean tokens, explicitly stripping trailing non-alphanumeric syntax characters (e.g., closing parentheses, brackets, or semicolons).\n4. Format path query results as a single Clojure EDN vector (e.g. [\"A\" \"B\" \"C\" \"D\"]) rather than a flat, unstructured text list."
 }
 
 pub fn get_goal_prompt(goal: String) -> String {
@@ -41,9 +53,10 @@ pub fn get_goal_prompt(goal: String) -> String {
     "" -> goal
     ctx -> goal <> "\n\n<context>\n" <> ctx <> "\n</context>"
   }
-  "GOAL MODE ENGAGED. You must act completely autonomously. Do not ask for user input. Continue calling tools until the goal is completely achieved. If you hit a roadblock, keep trying different approaches. CRITICAL RULE: You MUST default to using Babashka (bb) for any task that requires scripting. NO PYTHON SHOULD EVER BE INVOKED. Use rich hickey path. red/green tdd. When implementing ensure Rich Hickey quality and completeness at every step.\n\nDATALOG & GRAPH PROMPTING GUIDELINES:\n1. All Datalog queries MUST be formatted as a Clojure vector: `[:find ... :where ...]`. Do not write bare keywords or malformed list structures.\n2. Rules are compile-time definitions; specify recursive path rules inside the \":where\" block or resolve them via Clojure helper functions in \"bb_eval\".\n3. For unknown database schemas, audit them using Datalog wildcard queries (e.g. `[:find ?a ?v :where [?e ?a ?v]]` or `[?e :active _]`) rather than guessing predicates.\n4. Avoid sidetracking by doing external web lookups or cloning external codebases to resolve database structure; use \"query_datalog\" directly to inspect state.\n\nGoal: "
+  "GOAL MODE ENGAGED. You must act completely autonomously. Do not ask for user input. Continue calling tools until the goal is completely achieved. If you hit a roadblock, keep trying different approaches. CRITICAL RULE: You MUST default to using Babashka (bb) for any task that requires scripting. NO PYTHON SHOULD EVER BE INVOKED. Use rich hickey path. red/green tdd. When implementing ensure Rich Hickey quality and completeness at every step.\n\nDATALOG & GRAPH PROMPTING GUIDELINES:\n1. All Datalog queries MUST be formatted as a Clojure vector: `[:find ... :where ...]`. Do not write bare keywords or malformed list structures.\n2. Rules are compile-time definitions; specify recursive path rules inside the \":where\" block or resolve them via Clojure helper functions in \"bb_eval\".\n3. For unknown database schemas, audit them using Datalog wildcard queries (e.g. `[:find ?a ?v :where [?e ?a ?v]]` or `[?e :active _]`) rather than guessing predicates.\n4. Avoid sidetracking by doing external web lookups or cloning external codebases to resolve database structure; use \"query_datalog\" directly to inspect state.\n\nGENERAL OUTPUT QUALITY GUIDELINES:\n1. Decomplect HTTP response headers from body reflection payload. Retrieve the actual response headers map, not the reflected JSON body.\n2. Ensure all log or list outputs write each entry on its own line followed by a newline delimiter (\\n) to avoid joined string concatenation.\n3. Clean up regex search outputs. Extract only clean tokens, explicitly stripping trailing non-alphanumeric syntax characters (e.g., closing parentheses, brackets, or semicolons).\n4. Format path query results as a single Clojure EDN vector (e.g. [\"A\" \"B\" \"C\" \"D\"]) rather than a flat, unstructured text list.\n\nGoal: "
   <> prompt_with_context
 }
+
 
 // ─── REPL State ───────────────────────────────────────────────────────────────
 
@@ -234,6 +247,8 @@ pub fn repl_loop(state: REPLState) -> Nil {
               get_tools_prompt(),
               90,
               option.None,
+              state.agent_state.circuit_breaker,
+              state.agent_state.token_budget,
             )
           case new_agent_state {
             Ok(new_agent) ->
@@ -387,6 +402,8 @@ pub fn repl_loop(state: REPLState) -> Nil {
               get_tools_prompt(),
               90,
               option.None,
+              state.agent_state.circuit_breaker,
+              state.agent_state.token_budget,
             )
           case new_agent_state {
             Ok(new_agent) ->
@@ -581,11 +598,19 @@ pub fn main() -> Nil {
       io.println("Server mode is disabled (website deleted).")
       Nil
     }
-    ["--discord", token] -> {
-      io.println("Starting Discord Gateway with token: " <> token)
-      let assert Ok(_subj) = discord_gateway.start(token)
-      // Keep main thread alive for the gateway
-      sleep_ms(10_000_000)
+    ["--telegram"] -> {
+      case constants.get_env("HERMES_TELEGRAM_TOKEN") {
+        Some(token) -> {
+          run_telegram_gateway(token)
+        }
+        None -> {
+          io.println("Error: HERMES_TELEGRAM_TOKEN environment variable not set.")
+          Nil
+        }
+      }
+    }
+    ["--telegram", token] -> {
+      run_telegram_gateway(token)
     }
     ["--resume", session_id] -> {
       run_repl_resuming(session_id)
@@ -631,7 +656,47 @@ pub fn run_repl_resuming(target_session_id: String) -> Nil {
       )
     })
   let assert Ok(spawned) = process.receive(temp_subj, 5000)
-  let assert Ok(actor) = state_actor.start(conn, [spawned.intent_subj])
+
+  let state_actor_name = process.new_name("state_actor")
+  let state_actor_subj = process.named_subject(state_actor_name)
+  let uds_supervisor_name = process.new_name("uds_supervisor")
+  let uds_supervisor_subj = process.named_subject(uds_supervisor_name)
+  let cb_name = process.new_name("circuit_breaker")
+  let cb_subj = process.named_subject(cb_name)
+
+  let socket_path =
+    constants.path_join(constants.get_hermes_home(), "subagents.sock")
+
+  let assert Ok(_sup) =
+    static_supervisor.new(static_supervisor.OneForAll)
+    |> static_supervisor.restart_tolerance(intensity: 3, period: 10)
+    |> static_supervisor.add(supervision.worker(fn() {
+         state_actor.start_supervised(state_actor_name, conn, [spawned.intent_subj])
+       }))
+    |> static_supervisor.add(supervision.worker(fn() {
+         subagent_supervisor.start_supervised(uds_supervisor_name, socket_path, state_actor.from_subject(state_actor_subj))
+       }))
+    |> static_supervisor.add(supervision.worker(fn() {
+         circuit_breaker_actor.start_supervised(cb_name, 5, 30)
+       }))
+    |> static_supervisor.start()
+
+  let actor = state_actor.from_subject(state_actor_subj)
+  let cb = circuit_breaker_actor.from_subject(cb_subj)
+
+  let token_limit = case constants.get_env("HERMES_TOKEN_BUDGET") {
+    Some(val) -> {
+      case int.parse(val) {
+        Ok(n) -> n
+        Error(_) -> 500_000
+      }
+    }
+    None -> 500_000
+  }
+  let tb = case token_budget.start(token_limit) {
+    Ok(tb_actor) -> Some(tb_actor)
+    Error(_) -> None
+  }
 
   let model = case constants.get_env("HERMES_MODEL") {
     Some(val) -> val
@@ -678,6 +743,8 @@ pub fn run_repl_resuming(target_session_id: String) -> Nil {
       get_tools_prompt(),
       90,
       None,
+      Some(cb),
+      tb,
     )
   {
     Error(err) -> io.println("Failed to initialise agent: " <> err)
@@ -689,16 +756,11 @@ pub fn run_repl_resuming(target_session_id: String) -> Nil {
           history: list.reverse(restored_history),
         )
 
-      let socket_path =
-        constants.path_join(constants.get_hermes_home(), "subagents.sock")
-      let assert Ok(supervisor_subj) =
-        subagent_supervisor.start_supervisor(socket_path, actor)
-
       process.send(
         spawned.init_subj,
         IntentLoopInit(
           mcp_client_opt: None,
-          supervisor_subj: supervisor_subj,
+          supervisor_subj: uds_supervisor_subj,
           agent_state: resumed_agent,
         ),
       )
@@ -753,9 +815,32 @@ pub fn run_repl() -> Nil {
     })
   let assert Ok(spawned) = process.receive(temp_subj, 5000)
 
-  let subjects = [spawned.intent_subj]
+  let state_actor_name = process.new_name("state_actor")
+  let state_actor_subj = process.named_subject(state_actor_name)
+  let uds_supervisor_name = process.new_name("uds_supervisor")
+  let uds_supervisor_subj = process.named_subject(uds_supervisor_name)
+  let cb_name = process.new_name("circuit_breaker")
+  let cb_subj = process.named_subject(cb_name)
 
-  let assert Ok(actor) = state_actor.start(conn, subjects)
+  let socket_path =
+    constants.path_join(constants.get_hermes_home(), "subagents.sock")
+
+  let assert Ok(_sup) =
+    static_supervisor.new(static_supervisor.OneForAll)
+    |> static_supervisor.restart_tolerance(intensity: 3, period: 10)
+    |> static_supervisor.add(supervision.worker(fn() {
+         state_actor.start_supervised(state_actor_name, conn, [spawned.intent_subj])
+       }))
+    |> static_supervisor.add(supervision.worker(fn() {
+         subagent_supervisor.start_supervised(uds_supervisor_name, socket_path, state_actor.from_subject(state_actor_subj))
+       }))
+    |> static_supervisor.add(supervision.worker(fn() {
+         circuit_breaker_actor.start_supervised(cb_name, 5, 30)
+       }))
+    |> static_supervisor.start()
+
+  let actor = state_actor.from_subject(state_actor_subj)
+  let cb = circuit_breaker_actor.from_subject(cb_subj)
 
   // 1b. Seed/persist local skills
   let routing_skill =
@@ -878,11 +963,6 @@ pub fn run_repl() -> Nil {
     None -> None
   }
 
-  let socket_path =
-    constants.path_join(constants.get_hermes_home(), "subagents.sock")
-  let assert Ok(supervisor_subj) =
-    subagent_supervisor.start_supervisor(socket_path, actor)
-
   // 3. Create session
   let session_id = hermes_exec.generate_uuid()
   let assert Ok(Nil) =
@@ -914,6 +994,20 @@ pub fn run_repl() -> Nil {
   io.println("CWD        : " <> exec_env.cwd)
   io.println("\nType /help to see commands. Press Ctrl+D or /quit to exit.")
 
+  let token_limit = case constants.get_env("HERMES_TOKEN_BUDGET") {
+    Some(val) -> {
+      case int.parse(val) {
+        Ok(n) -> n
+        Error(_) -> 500_000
+      }
+    }
+    None -> 500_000
+  }
+  let tb = case token_budget.start(token_limit) {
+    Ok(tb_actor) -> Some(tb_actor)
+    Error(_) -> None
+  }
+
   // 5. Build initial AgentState (max 90 iterations per conversation turn)
   let agent_result =
     hermes_agent.new_agent_state(
@@ -927,6 +1021,8 @@ pub fn run_repl() -> Nil {
       get_tools_prompt(),
       90,
       mcp_client_opt,
+      Some(cb),
+      tb,
     )
 
   case agent_result {
@@ -937,7 +1033,7 @@ pub fn run_repl() -> Nil {
     Ok(agent_state) -> {
       process.send(
         spawned.init_subj,
-        IntentLoopInit(mcp_client_opt, supervisor_subj, agent_state),
+        IntentLoopInit(mcp_client_opt, uds_supervisor_subj, agent_state),
       )
 
       let state =
@@ -953,6 +1049,161 @@ pub fn run_repl() -> Nil {
         )
 
       repl_loop(state)
+    }
+  }
+}
+
+fn extract_content_from_history_msg(msg: String) -> String {
+  let decoder = {
+    use content <- decode.field("content", decode.string)
+    decode.success(content)
+  }
+  case json.parse(from: msg, using: decoder) {
+    Ok(content) -> content
+    Error(_) -> msg
+  }
+}
+
+pub fn run_telegram_gateway(token: String) -> Nil {
+  let lock_port = case constants.get_env("HERMES_GATEWAY_LOCK_PORT") {
+    Some(val) -> case int.parse(val) {
+      Ok(p) -> p
+      Error(_) -> 8555
+    }
+    None -> 8555
+  }
+
+  case acquire_port_lock(lock_port) {
+    Ok(_lock_socket) -> {
+      io.println("Successfully acquired gateway port lock on port " <> int.to_string(lock_port))
+      io.println("══════════════════════════════════════════════════")
+      io.println("  Hermes BEAM — Headless Telegram Gateway v2.0.0")
+      io.println("══════════════════════════════════════════════════")
+
+      let db_path = constants.path_join(constants.get_hermes_home(), "state.db")
+      let assert Ok(conn) = hermes_state.connect(db_path)
+      let assert Ok(Nil) = hermes_state.init_schema(conn)
+
+      let state_actor_name = process.new_name("state_actor")
+      let state_actor_subj = process.named_subject(state_actor_name)
+      let uds_supervisor_name = process.new_name("uds_supervisor")
+      let _uds_supervisor_subj = process.named_subject(uds_supervisor_name)
+      let cb_name = process.new_name("circuit_breaker")
+      let cb_subj = process.named_subject(cb_name)
+
+      let socket_path =
+        constants.path_join(constants.get_hermes_home(), "subagents.sock")
+
+      let assert Ok(_sup) =
+        static_supervisor.new(static_supervisor.OneForAll)
+        |> static_supervisor.restart_tolerance(intensity: 3, period: 10)
+        |> static_supervisor.add(supervision.worker(fn() {
+             state_actor.start_supervised(state_actor_name, conn, [])
+           }))
+        |> static_supervisor.add(supervision.worker(fn() {
+             subagent_supervisor.start_supervised(uds_supervisor_name, socket_path, state_actor.from_subject(state_actor_subj))
+           }))
+        |> static_supervisor.add(supervision.worker(fn() {
+             circuit_breaker_actor.start_supervised(cb_name, 5, 30)
+           }))
+        |> static_supervisor.start()
+
+      let run_agent_cb = fn(prompt: String, session_id: String) -> String {
+        let actor = state_actor.from_subject(state_actor_subj)
+        let cb = circuit_breaker_actor.from_subject(cb_subj)
+
+        let #(api_key, base_url) = resolve_api_credentials()
+        let model = case constants.get_env("HERMES_MODEL") {
+          Some(val) -> val
+          None -> "meta-llama/llama-3-8b-instruct:free"
+        }
+
+        let restored_history = case state_actor.get_session_history(actor, session_id) {
+          Ok(msgs) -> msgs
+          Error(_) -> []
+        }
+        let restored_cwd = case state_actor.get_session_cwd(actor, session_id) {
+          Ok(cwd) if cwd != "" -> cwd
+          _ -> hermes_exec.get_temp_dir()
+        }
+
+        let _ = case restored_history {
+          [] -> {
+            let _ = state_actor.create_session(
+              actor,
+              session_id,
+              "telegram",
+              model,
+              get_tools_prompt(),
+              int.to_float(system_time()) /. 1_000_000_000.0,
+            )
+            Nil
+          }
+          _ -> Nil
+        }
+
+        let exec_env = hermes_exec.new_terminal_env(restored_cwd, 120_000, [])
+        let exec_env = hermes_exec.init_session(exec_env)
+
+        let token_limit = case constants.get_env("HERMES_TOKEN_BUDGET") {
+          Some(val) -> case int.parse(val) {
+            Ok(n) -> n
+            Error(_) -> 500_000
+          }
+          None -> 500_000
+        }
+        let tb = case token_budget.start(token_limit) {
+          Ok(tb_actor) -> Some(tb_actor)
+          Error(_) -> None
+        }
+
+        let agent_res = hermes_agent.new_agent_state(
+          session_id,
+          model,
+          restored_cwd,
+          actor,
+          exec_env,
+          api_key,
+          base_url,
+          get_tools_prompt(),
+          90,
+          None,
+          Some(cb),
+          tb,
+        )
+
+        case agent_res {
+          Ok(base_agent) -> {
+            let resumed_agent = hermes_agent.AgentState(
+              ..base_agent,
+              history: list.reverse(restored_history),
+            )
+
+            case hermes_agent.run_conversation(resumed_agent, prompt) {
+              Ok(new_state) -> {
+                case list.first(new_state.history) {
+                  Ok(last_msg) -> {
+                    extract_content_from_history_msg(last_msg)
+                  }
+                  Error(_) -> "Error: empty response"
+                }
+              }
+              Error(err) -> "Conversation error: " <> err
+            }
+          }
+          Error(err) -> "Failed to initialize agent: " <> err
+        }
+      }
+
+      io.println("Telegram bot polling started...")
+      let _ = telegram_gateway.start(token, run_agent_cb)
+
+      process.sleep_forever()
+    }
+    Error(err) -> {
+      io.println("Error: Failed to acquire gateway port lock on port " <> int.to_string(lock_port))
+      io.println("Another instance of the gateway is likely already running (" <> err <> "). Exiting.")
+      Nil
     }
   }
 }
@@ -1043,6 +1294,7 @@ fn intent_loop(
               api_key,
               base_url,
               tools,
+              agent_state.model,
             ),
           )
           intent_loop(

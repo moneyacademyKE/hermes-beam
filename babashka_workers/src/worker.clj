@@ -70,7 +70,12 @@
                :parameters {:type "object"
                             :properties {:command {:type "string" :description "Shell command to execute"}
                                          :allowed_write_paths {:type "array" :items {:type "string"} :description "Optional list of additional directories permitted for writing"}}
-                            :required ["command"]}}}])
+                            :required ["command"]}}}
+   {:type "function"
+    :function {:name "get_repl_state"
+               :description "List all defined variables and functions in the persistent sandbox-user namespace."
+               :parameters {:type "object"
+                            :properties {}}}}])
 
 (defn connect-uds [path]
   (let [addr (UnixDomainSocketAddress/of path)
@@ -364,20 +369,19 @@
   [clause bound-vars]
   (cond
     ;; Negative clause: (not [?e :blocked true]) or [not [?e :blocked true]]
-    (or (and (seq? clause) (= (first clause) 'not))
-        (and (vector? clause) (= (first clause) 'not)))
+    (and (sequential? clause) (= (first clause) 'not))
     (let [inner (second clause)
           vars (clause-vars inner)]
       (if (clojure.set/subset? vars bound-vars) 5 5000))
 
     ;; Filter clause: [(> ?a 25)] or (or ...)
-    (let [first-el (if (vector? clause) (first clause) (first clause))]
-      (and (list? first-el) (contains? #{'> '< '>= '<= '= '!= 'not= 'and 'or} (first first-el))))
+    (let [first-el (if (sequential? clause) (first clause) clause)]
+      (and (sequential? first-el) (contains? #{'> '< '>= '<= '= '!= 'not= 'and 'or} (first first-el))))
     (let [vars (clause-vars clause)]
       (if (clojure.set/subset? vars bound-vars) 2 8000))
 
     ;; Also direct list starting with comparison operator
-    (and (seq? clause) (contains? #{'> '< '>= '<= '= '!= 'not= 'and 'or} (first clause)))
+    (and (sequential? clause) (contains? #{'> '< '>= '<= '= '!= 'not= 'and 'or} (first clause)))
     (let [vars (clause-vars clause)]
       (if (clojure.set/subset? vars bound-vars) 2 8000))
 
@@ -436,8 +440,8 @@
 (defn eval-filter
   "Recursively evaluate comparison and logical filter expressions."
   [expr env]
-  (let [expr (if (and (vector? expr) (seq? (first expr))) (first expr) expr)]
-    (if (seq? expr)
+  (let [expr (if (and (sequential? expr) (sequential? (first expr))) (first expr) expr)]
+    (if (sequential? expr)
       (let [op (first expr)
             args (rest expr)
             resolve-arg (fn [x] (let [r (resolve-term x env)]
@@ -476,16 +480,15 @@
 ;; ── negation-as-failure helpers (P0) ─────────────────────────────────────────
 
 (defn negative-clause? [clause]
-  (or (and (seq? clause) (= (first clause) 'not))
-      (and (vector? clause) (= (first clause) 'not))))
+  (and (sequential? clause) (= (first clause) 'not)))
 
 (defn extract-negative-inner [clause]
   (second clause))
 
 (defn filter-clause? [clause]
-  (or (and (seq? clause) (contains? #{'> '< '>= '<= '= '!= 'not= 'and 'or} (first clause)))
-      (and (vector? clause)
-           (seq? (first clause))
+  (or (and (sequential? clause) (contains? #{'> '< '>= '<= '= '!= 'not= 'and 'or} (first clause)))
+      (and (sequential? clause)
+           (sequential? (first clause))
            (contains? #{'> '< '>= '<= '= '!= 'not= 'and 'or} (first (first clause))))))
 
 (defn solve-negative [inner-clause rules db env visited]
@@ -1113,12 +1116,29 @@
                                extensions))
                        paths))))))))))
 
+(defn parse-robust-json [s]
+  (try
+    (json/parse-string s true)
+    (catch Exception _
+      (try
+        (let [cleaned (clojure.string/replace s #"(?:\"|')?(inputs|facts)(?:\"|')?\s*:\s*(\[[\s\S]*\])"
+                                              (fn [[_ key-val inputs-val]]
+                                                (str "\"" key-val "\": " (clojure.string/replace inputs-val #"[\\\\\"]+" "\""))))
+              edn-str (-> cleaned
+                          (clojure.string/replace #"(?:\"|')?(command|path|content|url|code|image|query|inputs|facts)(?:\"|')?\s*:" ":$1")
+                          (clojure.string/replace #",\s*" " "))
+              edn-val (edn/read-string edn-str)]
+          (walk/keywordize-keys edn-val))
+        (catch Exception e
+          (throw (Exception. (str "JSON/EDN parsing failed: " (.getMessage e) " for string: " s))))))))
+
+
 ;; ─── Tool Execution ───────────────────────────────────────────────────────────
 
 (defn execute-tool [channel name args-str ds-db]
   (send-telemetry channel (str "tool_start:" name " args: " args-str))
   (try
-    (let [args (json/parse-string args-str true)
+    (let [args (parse-robust-json args-str)
           result (case name
                    "run_command"
                    (let [cmd (:command args)
@@ -1140,11 +1160,35 @@
                    "fetch_url" (:body (http/get (:url args)))
 
                    "bb_eval"
-                   (let [tmp-file (java.io.File/createTempFile "bb-eval-" ".clj")
-                         _ (spit tmp-file (:code args))
-                         {:keys [out err exit]} (p/sh "bb" (.getAbsolutePath tmp-file))
-                         _ (.delete tmp-file)]
-                     (str "STDOUT:\n" out "\nSTDERR:\n" err "\nEXIT:" exit))
+                   (let [code (:code args)
+                         sw (java.io.StringWriter.)
+                         se (java.io.StringWriter.)]
+                     (try
+                       (create-ns 'sandbox-user)
+                       (binding [*ns* (find-ns 'sandbox-user)]
+                         (refer 'clojure.core))
+                       (let [eval-res (binding [*out* sw
+                                                *err* se
+                                                *ns* (find-ns 'sandbox-user)]
+                                        (load-string code))]
+                         (str "STDOUT:\n" (str sw)
+                              "\nSTDERR:\n" (str se)
+                              "\nRESULT:\n" (pr-str eval-res)
+                              "\nEXIT:0"))
+                       (catch Exception e
+                         (str "STDOUT:\n" (str sw)
+                              "\nSTDERR:\n" (str se)
+                              "\nERROR:\n" (.getMessage e)
+                              "\nEXIT:1"))))
+
+                    "get_repl_state"
+                    (try
+                      (let [ns (find-ns 'sandbox-user)
+                            interns (if ns (ns-interns ns) {})
+                            var-names (keys interns)]
+                        (json/generate-string {:vars (map str var-names)}))
+                      (catch Exception e
+                        (str "ERROR:\n" (.getMessage e))))
 
                    "run_in_docker"
                    (let [code (:code args)
@@ -1195,7 +1239,7 @@
                           os-name (clojure.string/lower-case (System/getProperty "os.name"))
                           is-mac? (clojure.string/includes? os-name "mac")]
                       (if is-mac?
-                        (let [default-paths ["/tmp" "/private/tmp" "/var/folders" "/Users/moe/Desktop/ayncoder"]
+                        (let [default-paths ["/tmp" "/private/tmp" "/var/folders" (System/getProperty "user.dir")]
                               all-paths (distinct (concat default-paths custom-paths))
                               write-rules (clojure.string/join " " (map #(str "(subpath \"" % "\")") all-paths))
                               profile (str "(version 1) (deny default) (allow process-fork) (allow process-exec) (allow sysctl-read) (allow file-read*) (allow file-write* " write-rules ")")

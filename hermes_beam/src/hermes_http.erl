@@ -1,5 +1,5 @@
 -module(hermes_http).
--export([fetch/1, fetch_with_headers/2, post/4, post_with_retry/4, stream_post/4, decode_http_message/2]).
+-export([fetch/1, fetch_with_headers/2, post/4, post_with_retry/4, stream_post/4, decode_http_message/2, acquire_port_lock/1, release_port_lock/1, identity/1]).
 
 %% ─── Retry helper ────────────────────────────────────────────────────────────
 %% Retries the given fun up to MaxRetries times with exponential backoff
@@ -122,3 +122,15 @@ decode_http_message(Payload, TargetReqId) ->
         _ ->
             decoded_ignored
     end.
+
+acquire_port_lock(Port) ->
+    case gen_tcp:listen(Port, [binary, {active, false}, {reuseaddr, false}]) of
+        {ok, Socket} -> {ok, Socket};
+        {error, Reason} -> {error, list_to_binary(io_lib:format("~p", [Reason]))}
+    end.
+
+release_port_lock(Socket) ->
+    gen_tcp:close(Socket).
+
+identity(X) ->
+    X.

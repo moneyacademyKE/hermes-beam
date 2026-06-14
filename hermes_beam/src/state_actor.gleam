@@ -102,6 +102,10 @@ pub fn get_subject(actor: StateActor) -> Subject(Message) {
   actor.subject
 }
 
+pub fn from_subject(subject: Subject(Message)) -> StateActor {
+  StateActor(subject)
+}
+
 pub fn start(
   conn: sqlight.Connection,
   intent_subjs: List(process.Subject(Datom)),
@@ -125,6 +129,35 @@ pub fn start(
   |> actor.on_message(handle_message)
   |> actor.start
   |> result.map(fn(started) { StateActor(started.data) })
+}
+
+pub fn start_supervised(
+  name: process.Name(Message),
+  conn: sqlight.Connection,
+  intent_subjs: List(process.Subject(Datom)),
+) -> Result(actor.Started(StateActor), actor.StartError) {
+  // Ensure datoms schema is initialized
+  let _ =
+    sqlight.exec(
+      "
+      CREATE TABLE IF NOT EXISTS datoms (
+          entity TEXT NOT NULL,
+          attribute TEXT NOT NULL,
+          value TEXT NOT NULL,
+          tx INTEGER NOT NULL,
+          PRIMARY KEY (entity, attribute, value, tx)
+      );
+    ",
+      conn,
+    )
+
+  actor.new(ActorState(conn, intent_subjs))
+  |> actor.on_message(handle_message)
+  |> actor.named(name)
+  |> actor.start
+  |> result.map(fn(started) {
+    actor.Started(pid: started.pid, data: StateActor(started.data))
+  })
 }
 
 fn handle_message(

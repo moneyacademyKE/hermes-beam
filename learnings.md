@@ -587,3 +587,110 @@ This document summarizes the core learnings from porting python codebase element
     - **Explicit HTTP Validation**: Run `http/post` with `:throw false`, inspect the status code, and throw an explicit exception with the error body if status is `>= 400`. This triggers retry loops and prints the exact server error in logs.
     - **Timeout Realignment**: Set the HTTP client timeout to 25s and limit retries to 2 (max 50s total) to guarantee clean termination and error logging before the runner's 75s process threshold.
 *   **Impact**: Resolves subagent prompting locks and silent failures, providing immediate visibility into key limit errors (e.g. daily key quota exceeded 403) and ensuring clean termination of goal execution tasks.
+
+## 71. Context-Free Subagent Prompts and Robust JSON/EDN Tool Argument Parsing
+
+*   **Problem**:
+    *   **LLM JSON Escape Errors**: LLMs frequently output malformed tool argument JSON strings when generating complex structures like Datalog facts. They write Clojure vector syntax (spaces instead of commas), single quotes around keys, or unescaped quotes inside nested lists (e.g. `[["\"A\" \"B\"] ...]`).
+    *   **Subagent Resource Consumption**: Without constraints, subagents will attempt to slurp large project files (e.g., 60KB source files) into their context windows, causing timeouts and exceeding maximum token lengths. Or they will use global `find` commands to scan log files, causing process timeouts.
+    *   **Restored Session pollution**: When testing iteratively, the agent database (`state.db`) persists session history. If the test runner deletes target output files but does not reset the agent database, subsequent subagents restore their previous successful histories and believe they have already written the files, skipping tool calls entirely and producing false-pass responses.
+*   **Resolution**:
+    - **Robust JSON/EDN Healers**: Implemented a two-stage tool argument parser. Standard JSON is tried first. On failure, we apply a key-restricted regex replacement to clean malformed array bounds (`inputs` or `facts`) by removing escaped quotes, then convert only known schema keys (`query`, `inputs`, `facts`, etc.) to EDN keywords before reading the payload as valid Clojure EDN (which natively supports missing commas and space-separated vectors).
+    - **Structured Supervisor Prompt Injection**: Modified the Gleam subagent supervisor to dynamically build and inject a system instruction. This explicit system prompt enforces context hygiene (use local `grep/sed/awk` instead of slurping files) and provides the exact file locations of logs (`~/.hermes/logs/`).
+    - **Test Run State Purging**: Modified the automated test runner to proactively delete the agent database (`state.db`) and old log folders before every suite execution, ensuring a clean slate.
+*   **Impact**: Yields a perfect 10/10 automated dogfooding suite pass rate. Prevents LLM parsing syntax errors, subagent timeouts, and state leakage across test runs.
+
+## 72. Eliminating Hardcoded Environment Paths for Sandbox Portability
+
+*   **Problem**: Development environments tend to leak local absolute paths (e.g., `/Users/moe/...`) into sandboxing allowed list profiles or utility fallback functions. When the code is executed in another user's machine, CI, or production containment (like Docker), these hardcoded links cause permission errors or incorrect workspace path resolution.
+*   **Resolution**: 
+    - Replace raw developer path strings in sandboxing logic with dynamic queries to environment directory parameters (e.g. Clojure's `(System/getProperty "user.dir")`).
+    - Resolve parent directory fallbacks using native relative indicators `"."` to let executing programs run context-freely based on their active process context rather than absolute location assumptions.
+*   **Impact**: Establishes a completely portable, sandbox-compliant, and environment-agnostic execution baseline.
+
+## 73. Transparent Actor Restart & State-Preserving Processes
+
+*   **Problem**: When supervising stateful actors under an OTP supervision tree (like the state database actor or the subagent supervisor), child restarts change their Process IDs (PIDs). Any dynamic subjects or PIDs held by client/loop processes become stale, causing message-routing failures or crashes on subsequent turns.
+*   **Resolution**:
+    - Leveraged BEAM named processes (`process.Name` / `NamedSubject`) to register actors statically using `actor.named`.
+    - Resolved process handles dynamically using `process.named_subject(name)` instead of storing hardcoded/direct PIDs. This enables restarted processes to transparently receive messages sent to the constant atom name, decoupling lifecycle management from client routing.
+*   **Impact**: Ensures robust, transparent crash recovery without breaking message passing or actor coordination.
+
+## 74. Stateful Cost Safeguard (Token Budget Actor)
+
+*   **Problem**: Multi-agent loops can run away and consume massive quantities of tokens, leading to cost runaways. The tracking mechanism must be preemptive, thread-safe, and independent of any single model request or provider capability.
+*   **Resolution**:
+    - Implemented a stateful OTP actor (`token_budget.gleam`) that maintains token limits and consumed counts.
+    - Added preemptive checks at each iteration step (before invoking LLM completions), blocking calls if the budget is exhausted.
+    - Integrated native usage tracking via `"stream_options":{"include_usage":true}` for streaming-capable endpoints, with a fallback character-count character estimator (1 char = 0.25 tokens) for non-conforming providers.
+*   **Impact**: Guarantees strict financial bounds on agent runtimes, halting cost runaway instantly.
+
+## 75. Robust Headless Gateway daemonisation: macOS launchd Service, Startup Backfill, and TCP Port Lock Single-Instance Guard
+
+*   **Problem**: In production multi-agent systems, gateways must run autonomously in the background, heal themselves immediately on failure, backfill missed messages received while offline, and prevent split-brain polling when duplicate listener processes are accidentally spawned.
+*   **Resolution**:
+    - **Self-Healing (macOS launchd)**: Configured a macOS `LaunchAgent` plist with `<key>KeepAlive</key> <true/>` and a `<key>ThrottleInterval</key> <integer>2</integer>`. This tells the OS to restart the gateway binary within seconds of any failure/crash, while protecting the CPU from rapid crash-loop storms.
+    - **Backfill on Startup**: Explicitly initialized the Telegram updates polling loop with an initial `offset` of `0`. This leverages the Telegram Bot API server-side queue to replay all unconfirmed messages received during offline periods, ensuring zero loss of user communication.
+    - **Single-Instance Guard (TCP Port Lock)**: Implemented an FFI binding to Erlang's `gen_tcp:listen/2` with `{reuseaddr, false}`. Opening a socket on a designated port (e.g. `8555`) acts as a lock. If a duplicate process starts, it fails to bind and exits immediately. The OS kernel automatically cleans up and releases the port socket when a process terminates, avoiding stale lock state bugs inherent to file-based lockfiles.
+*   **Impact**: Guarantees highly reliable, fault-tolerant background execution on the host, preventing message duplication or loss.
+
+## 76. Structured Concurrency in Gleam/BEAM: Replacing bare process spawns with `taskle` for monitored, timeout-safe, and crash-trapped tasks
+
+*   **Problem**: Bare BEAM process spawns (`process.spawn`) are unlinked and unmonitored. If a spawned background task (such as message routing, tool execution, or agent loops) crashes or hangs, the parent process is not notified. This leads to silent background failures, resource leaks, or permanent hangs.
+*   **Resolution**:
+    - Integrated the `taskle` library to manage concurrent asynchronous computations.
+    - Wrapped agent executions in `taskle.async`, returning a monitored `Task(t)` handle.
+    - Spawned a separate monitor process that awaits completion via `taskle.await(task, TimeoutMs)`. If the task times out, it is explicitly killed and resources are reclaimed.
+    - If the task crashes, `taskle.await` traps the exception and returns a clean `Error(taskle.Crashed(reason))` wrapper, allowing the parent to log and recover from the failure without crashing the gateway.
+*   **Impact**: Eliminates background process leaks and guarantees that all asynchronous agent tasks respect safety timeout boundaries and gracefully handle crashes.
+
+## 77. Hybrid Third-Party Decoder/API Integration Pattern (telega-gleam)
+
+*   **Problem**: Writing and maintaining custom, spec-compliant decoders for complex third-party APIs (like the Telegram Bot API) in Gleam is verbose and error-prone. Hand-rolled parsers easily reject valid payloads when new/non-text fields are present or format requirements shift. However, fully adopting the third-party framework's state/polling/routing actors can introduce duplicate supervision structures and complect existing lifecycle setups.
+*   **Resolution**:
+    - Leveraged a hybrid integration style. Imported `telega`'s complete autogenerated models (`telega/model/types`) and spec-compliant decoders (`telega/model/decoder.update_decoder()`) to parse updates robustly.
+    - Preserved our custom OTP supervision loop, startup offsets, and TCP port lock, maintaining control of process lifecycles.
+    - Implemented a custom `FetchClient` adapter mapped directly to our `hermes_http` Erlang FFI, permitting `telega`'s high-level API modules (`telega/api`) to dispatch messages and typing actions type-safely.
+*   **Impact**: Decomplectes updates polling/lifecycle management from message typings. Eliminates manual JSON string serialization, escaping, and decoding errors while maintaining custom supervision structures.
+
+## 78. Full Third-Party Supervision Refactor & Order-Guaranteed Dynamic Routing
+
+*   **Problem**: While the hybrid model parses updates robustly, manual HTTP updates polling loops lack dynamic chat process isolation and delivery order guarantees. If a user sends messages in rapid succession, stateless loops can execute them concurrently out-of-order, causing state updates or database operations to collide.
+*   **Resolution**:
+    - Performed a full refactor to `telega`'s native supervision tree by utilizing `telega.init_for_polling_nil_session`.
+    - This automatically initializes a dynamic factory supervisor (`fsup`), an updates registry, a central router, and a supervised polling worker.
+    - Each Telegram Chat ID dynamically spawns its own supervised actor process, which receives updates via its mailbox. This isolates failures (crashes in one chat's agent execution cannot crash other chats) and guarantees strict sequential processing of updates *per user*.
+    - Retained safety limits and error containment inside the router text handler using `taskle` async tasks with timeouts and crash trapping.
+*   **Impact**: Simplifies gateway codebase, reduces hand-rolled loop complexity, guarantees order of execution per user, isolates chat process crashes, and improves rate-limiting and connection backoff behavior natively.
+
+## 79. Stateful Clojure/Babashka Evaluation via Process-Bound Sandbox Namespaces
+
+*   **Problem**: Spawn-based scripting environments (e.g. executing `bb <file>`) run in a stateless and transient manner. Var and function definitions do not persist across multiple agent tool calls, necessitating redundant code generation and preventing interactive development.
+*   **Resolution**: Refactored the `bb_eval` tool inside the persistent Babashka daemon `worker.clj` to run evaluations dynamically within a process-bound namespace `sandbox-user`. Utilized Clojure's `load-string` and namespace bindings (`binding [*ns* (find-ns 'sandbox-user)]`), capturing evaluation outputs via `*out*` and `*err*` bound to `StringWriter` streams.
+*   **Impact**: Enables interactive development where the agent can dynamically compile, test, and reuse functions across turns in the same session without the overhead of subprocess spawning.
+
+## 80. Stateful OTP Cron Scheduler Actor with Pure Time Calculations and Non-Blocking Spawns
+
+*   **Problem**: In-memory scheduled task loops must periodically match cron expressions against the system clock. Typical designs block the scheduler's mailbox when running heavy tasks, fail when timezone calculations skew, or double-trigger tasks if the loop polls multiple times in a single minute.
+*   **Resolution**:
+    *   Designed a stateful OTP actor (`cron_scheduler.gleam`) managing schedules via mailbox actions (`AddJob`, `RemoveJob`, `ListJobs`).
+    *   Decoupled time calculations: implemented a pure 5-field cron parsing matcher (`match_cron`) in Gleam, allowing unit tests to verify complex ranges (`1-5`), steps (`*/15`), wildcards (`*`), and comma-separated lists (`0,7`) deterministically.
+    *   Added a minute-level Gregorian epoch check: compared the Unix epoch at minute resolution (`job.last_run == Some(current_minute_secs)`) to guarantee a job triggers at most once per scheduled minute, regardless of polling frequency.
+    *   Asynchronous execution: spawned matching conversations in background processes (`process.spawn`), ensuring LLM networking tasks do not block the scheduler's main tick loop or mailbox.
+*   **Impact**: Enables high-performance, fault-tolerant cron orchestration directly within the BEAM runtime without external system dependencies.
+
+## 81. Native Datalog Graph Memory & Dialectic Contradiction Detection (Honcho/mem0/Supermemory replacement)
+
+*   **Problem**: Relying on external third-party memory SaaS APIs (like Honcho, mem0, Supermemory) introduces latency, privacy risks, and adds configuration complexity (API keys).
+*   **Resolution**: 
+    - Designed user profile memories as native relational datoms `[Entity, Attribute, Value]` stored locally within the GleamDB Datalog store.
+    - Implemented a dialectic query check using recursive Datalog reachability rules and negation queries. Conflicting datoms (e.g. VS Code vs. Emacs preference) are detected directly by querying the database using rule-matching patterns.
+    - Added a local vector similarity module utilizing SQLite storage and cosine-similarity computations to handle cross-session semantic searches locally.
+*   **Impact**: Keeps all memory operations local, secure, and fast, removing SaaS dependencies and ensuring privacy.
+
+## 82. Clojure/Babashka JSON Deserialization Type Mismatch (Cheshire Vector Parsing vs. seq? checks)
+
+*   **Problem**: Cheshire/json parses JSON lists as Clojure vectors rather than lists/seqs. In custom Datalog engines, functions that assert types using `seq?` (like `eval-filter` and `filter-clause?`) will fail to recognize these nested JSON-parsed filters (e.g., `[[!= ?v1 ?v2]]`), leading to query fall-throughs.
+*   **Resolution**: Replaced strict `seq?` and `list?` predicates with `sequential?` (which matches both vectors and seqs) in evaluation and cost estimation handlers within `worker.clj`.
+*   **Impact**: Ensures that JSON-transpiled Datalog queries containing nested filter constraints evaluate correctly and produce exact query results.
+

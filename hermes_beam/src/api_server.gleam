@@ -6,7 +6,7 @@ import gleam/int
 import gleam/io
 import gleam/json
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/string_tree
 import hermes_agent
 import hermes_exec
@@ -14,6 +14,7 @@ import mist
 import state_actor.{type StateActor}
 import wisp
 import wisp/wisp_mist
+import circuit_breaker_actor
 
 pub fn start_server(
   db_conn: StateActor,
@@ -22,7 +23,8 @@ pub fn start_server(
   port: Int,
 ) -> Result(Nil, String) {
   let secret_key_base = wisp.random_string(64)
-  let handler = handle_request(_, db_conn, api_key, base_url)
+  let assert Ok(cb) = circuit_breaker_actor.start(5, 30)
+  let handler = handle_request(_, db_conn, api_key, base_url, cb)
 
   io.println("Starting API Server on http://localhost:" <> int.to_string(port))
 
@@ -41,6 +43,7 @@ fn handle_request(
   db_conn: StateActor,
   api_key: String,
   base_url: String,
+  cb: circuit_breaker_actor.CircuitBreaker,
 ) -> wisp.Response {
   use <- wisp.log_request(req)
   use <- wisp.rescue_crashes
@@ -48,7 +51,7 @@ fn handle_request(
 
   case req.method, wisp.path_segments(req) {
     Post, ["v1", "chat", "completions"] -> {
-      handle_chat_completion(req, db_conn, api_key, base_url)
+      handle_chat_completion(req, db_conn, api_key, base_url, cb)
     }
     _, _ -> wisp.not_found()
   }
@@ -59,6 +62,7 @@ fn handle_chat_completion(
   db_conn: StateActor,
   api_key: String,
   base_url: String,
+  cb: circuit_breaker_actor.CircuitBreaker,
 ) -> wisp.Response {
   // Read request body as JSON
   use body_json <- wisp.require_json(req)
@@ -82,6 +86,8 @@ fn handle_chat_completion(
       base_url,
       "You are a helpful assistant responding via the OpenAI-compatible API.",
       15,
+      None,
+      Some(cb),
       None,
     )
 

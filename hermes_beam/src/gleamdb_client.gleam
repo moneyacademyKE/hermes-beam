@@ -25,7 +25,7 @@ pub fn run_query(
             False -> cwd
           }
         }
-        Error(_) -> "/Users/moe/Desktop/ayncoder"
+        Error(_) -> "."
       }
       let worker_path = root_dir <> "/babashka_workers/src/worker.clj"
       let cmd = "bb " <> worker_path <> " --datalog-query < " <> tmp_file
