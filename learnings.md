@@ -694,3 +694,10 @@ This document summarizes the core learnings from porting python codebase element
 *   **Resolution**: Replaced strict `seq?` and `list?` predicates with `sequential?` (which matches both vectors and seqs) in evaluation and cost estimation handlers within `worker.clj`.
 *   **Impact**: Ensures that JSON-transpiled Datalog queries containing nested filter constraints evaluate correctly and produce exact query results.
 
+## 83. Hooking up Dynamic Curator Skill Synthesis on Session Termination
+
+*   **Problem**: While a cognitive curator module (`curator.gleam`) was implemented to synthesize reusable skills from session transcripts, it was completely un-invoked within the active REPL or Gateway life cycles, rendering it dead code.
+*   **Resolution**: Hooked up `curator.synthesize_skill` to trigger during the REPL's `/quit` and `/exit` commands. It takes the session's accumulated message history (reversed to preserve chronological order), API credentials, and saves any newly synthesized skills to the local `skills` directory under `HERMES_HOME`.
+*   **Impact**: Enables autonomous agent learning by analyzing transcripts and compiling reusable skills dynamically upon exit, closing the gap with the Python reference implementation.
+
+

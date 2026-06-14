@@ -1,6 +1,7 @@
 import argv
 import constants
 import context_engine
+import curator
 import datom.{type Datom, Datom, Rule, Triple}
 import telegram_gateway
 import evolutionary
@@ -212,6 +213,18 @@ pub fn repl_loop(state: REPLState) -> Nil {
         _ if is_quit -> {
           io.println("Cleaning up terminal environment...")
           let _ = hermes_exec.cleanup(state.exec_env)
+
+          io.println("Curating session and checking for reusable skills...")
+          let skills_dir = constants.path_join(constants.get_hermes_home(), "skills")
+          let _ = curator.synthesize_skill(
+            state.session_id,
+            list.reverse(state.agent_state.history),
+            state.base_url,
+            state.api_key,
+            state.model,
+            skills_dir,
+          )
+
           let timestamp = 1_700_000_000.0
           let _ =
             state_actor.end_session(

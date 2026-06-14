@@ -1539,3 +1539,23 @@ External integrations introduce security risks, network dependency failures, and
 ### Benefit
 Guarantees absolute privacy, reduces network round-trips to zero, and allows highly complex graph queries to execute locally under OTP supervisors.
 
+---
+
+## 39. Session-Exit Curator Hook Pattern (Autonomous Learning)
+
+### Context
+AI agents that learn dynamically should compile successful patterns into reusable skills (such as instructions, rules, and datoms) to optimize future session runs without cluttering user context or adding prompt overhead.
+
+### Problem
+Executing LLM-based skill curation synchronously inside the conversation loop adds significant response latency. Conversely, ignoring history after the session exits discards valuable context.
+
+### Pattern
+1. Accumulate message history strings inside the `AgentState` record during the session's active turns.
+2. Hook into session exit hooks (such as `/quit` or `/exit` command handlers or dynamic shutdown triggers).
+3. Reverse the history list to restore the chronological flow of conversation: `list.reverse(state.agent_state.history)`.
+4. Asynchronously invoke the curator model (`curator.synthesize_skill`) using the chronological transcript to extract reusable patterns and serialize them to the local `skills/` directory.
+
+### Benefit
+Isolates cognitive curation from real-time response generation, maintaining fast conversation response times while enabling persistent, autonomous learning across sessions.
+
+

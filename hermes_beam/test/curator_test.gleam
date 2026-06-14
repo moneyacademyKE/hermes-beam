@@ -45,3 +45,31 @@ pub fn improve_skill_test() {
 
   let _ = simplifile.delete(temp_dir)
 }
+
+pub fn synthesize_skill_from_session_test() {
+  let temp_dir = "test_skills_dir_session"
+  let _ = simplifile.delete(temp_dir)
+
+  let history = [
+    "{\"role\": \"user\", \"content\": \"How do I calculate paths recursively?\"}",
+    "{\"role\": \"assistant\", \"content\": \"We can write a recursive route rule in Datalog.\"}",
+    "{\"role\": \"user\", \"content\": \"Let's save this as a network routing skill.\"}",
+  ]
+
+  let assert Ok(Nil) =
+    curator.synthesize_skill(
+      "session-2",
+      history,
+      "mock-url",
+      "test-key",
+      "mock-model",
+      temp_dir,
+    )
+
+  // Verify file was written
+  let skill_file = temp_dir <> "/mock-skill/SKILL.md"
+  let assert Ok(True) = simplifile.is_file(skill_file)
+
+  let _ = simplifile.delete(temp_dir)
+}
+
