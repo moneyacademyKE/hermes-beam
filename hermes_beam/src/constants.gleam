@@ -80,6 +80,9 @@ fn ffi_apply_ipv4_preference(force: Bool) -> Nil
 @external(erlang, "hermes_constants_ffi", "resolve_path")
 pub fn resolve_path(path: String) -> String
 
+@external(erlang, "hermes_constants_ffi", "find_executable")
+pub fn find_executable(command: String) -> Result(String, Nil)
+
 @external(erlang, "filename", "join")
 pub fn path_join(base: String, sub: String) -> String
 
@@ -399,6 +402,43 @@ pub fn get_config_path() -> String {
 
 pub fn get_skills_dir() -> String {
   path_join(get_hermes_home(), "skills")
+}
+
+pub fn get_logs_dir() -> String {
+  path_join(get_hermes_home(), "logs")
+}
+
+pub fn prepare_runtime_dirs() -> Result(Nil, String) {
+  let home = get_hermes_home()
+  case string.trim(home) == "" {
+    True -> Error("HERMES_HOME resolved to an empty path")
+    False -> {
+      case result_try_create_dir(home, "Hermes home") {
+        Error(err) -> Error(err)
+        Ok(Nil) -> {
+          case result_try_create_dir(get_logs_dir(), "Hermes logs") {
+            Error(err) -> Error(err)
+            Ok(Nil) -> result_try_create_dir(get_skills_dir(), "Hermes skills")
+          }
+        }
+      }
+    }
+  }
+}
+
+fn result_try_create_dir(path: String, label: String) -> Result(Nil, String) {
+  case simplifile.create_directory_all(path) {
+    Ok(Nil) -> Ok(Nil)
+    Error(err) ->
+      Error(
+        "Failed to create "
+        <> label
+        <> " directory at "
+        <> path
+        <> ": "
+        <> string.inspect(err),
+      )
+  }
 }
 
 pub fn get_env_path() -> String {

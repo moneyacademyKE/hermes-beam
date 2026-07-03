@@ -3,10 +3,14 @@ import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import gleeunit/should
+import constants
 import hermes_agent.{
-  ToolCall, all_tool_schemas, assistant_message, assistant_tool_calls_message,
-  build_request_body, parse_finish_reason, parse_tool_calls_from_json,
-  tool_result_message, user_message,
+  ReadFile, RunCommand, ToolCall, ToolPolicy, UseWorkers, WriteFile,
+  all_tool_schemas, all_tool_schemas_with_policy, assistant_message,
+  assistant_tool_calls_message, build_request_body, decode_file_path,
+  parse_finish_reason, parse_tool_calls_from_json, restricted_tool_policy,
+  tool_policy_allows, tool_policy_allows_tool, tool_result_message, user_message,
 }
 import hermes_client
 
@@ -107,19 +111,96 @@ pub fn tool_result_message_test() {
 // ─── Tool Schemas ──────────────────────────────────────────────────────────────
 
 pub fn all_tool_schemas_valid_json_test() {
+  constants.set_env("HERMES_ENABLE_SEMANTIC_SEARCH", "false")
   let schemas = all_tool_schemas(option.None)
   // Should parse as a JSON array without error
   let result = json.parse(from: schemas, using: decode.list(decode.dynamic))
   let assert Ok(items) = result
-  // Should have 3 tools: run_command, write_file, read_file
-  let assert 5 = list.length(items)
+  // semantic_search_history is hidden unless explicitly enabled.
+  let assert 4 = list.length(items)
 }
 
 pub fn tool_schemas_contain_required_names_test() {
+  constants.set_env("HERMES_ENABLE_SEMANTIC_SEARCH", "false")
   let schemas = all_tool_schemas(option.None)
   let assert True = string.contains(schemas, "\"run_command\"")
   let assert True = string.contains(schemas, "\"write_file\"")
   let assert True = string.contains(schemas, "\"read_file\"")
+}
+
+pub fn semantic_search_schema_hidden_by_default_test() {
+  constants.set_env("HERMES_ENABLE_SEMANTIC_SEARCH", "false")
+  let schemas = all_tool_schemas(option.None)
+  let assert False = string.contains(schemas, "semantic_search_history")
+}
+
+pub fn semantic_search_schema_exposed_when_enabled_test() {
+  constants.set_env("HERMES_ENABLE_SEMANTIC_SEARCH", "true")
+  let schemas = all_tool_schemas(option.None)
+  let assert True = string.contains(schemas, "semantic_search_history")
+  constants.set_env("HERMES_ENABLE_SEMANTIC_SEARCH", "false")
+}
+
+pub fn restricted_tool_schemas_hide_shell_write_tools_test() {
+  constants.set_env("HERMES_ENABLE_SEMANTIC_SEARCH", "false")
+  let schemas = all_tool_schemas_with_policy(option.None, restricted_tool_policy())
+  let assert False = string.contains(schemas, "\"run_command\"")
+  let assert False = string.contains(schemas, "\"write_file\"")
+  let assert True = string.contains(schemas, "\"read_file\"")
+}
+
+pub fn tool_policy_exposes_explicit_capabilities_test() {
+  let policy = ToolPolicy(capabilities: [ReadFile, UseWorkers])
+  let assert True = tool_policy_allows(policy, ReadFile)
+  let assert True = tool_policy_allows(policy, UseWorkers)
+  let assert False = tool_policy_allows(policy, RunCommand)
+  let assert False = tool_policy_allows(policy, WriteFile)
+}
+
+pub fn tool_policy_filters_core_schema_by_capability_test() {
+  constants.set_env("HERMES_ENABLE_SEMANTIC_SEARCH", "false")
+  let policy = ToolPolicy(capabilities: [ReadFile, WriteFile])
+  let schemas = all_tool_schemas_with_policy(option.None, policy)
+  let assert False = string.contains(schemas, "\"run_command\"")
+  let assert True = string.contains(schemas, "\"write_file\"")
+  let assert True = string.contains(schemas, "\"read_file\"")
+  let assert False = string.contains(schemas, "\"handoff_session\"")
+}
+
+pub fn schema_and_dispatch_policy_share_tool_mapping_test() {
+  let policy = ToolPolicy(capabilities: [ReadFile])
+  let schemas = all_tool_schemas_with_policy(option.None, policy)
+  let assert True = tool_policy_allows_tool(policy, "read_file")
+  let assert False = tool_policy_allows_tool(policy, "run_command")
+  let assert False = tool_policy_allows_tool(policy, "write_file")
+  let assert False = tool_policy_allows_tool(policy, "handoff_session")
+  let assert True = string.contains(schemas, "\"read_file\"")
+  let assert False = string.contains(schemas, "\"run_command\"")
+  let assert False = string.contains(schemas, "\"write_file\"")
+  let assert False = string.contains(schemas, "\"handoff_session\"")
+}
+
+pub fn file_tool_schemas_use_path_test() {
+  constants.set_env("HERMES_ENABLE_SEMANTIC_SEARCH", "false")
+  let schemas = all_tool_schemas(option.None)
+  let assert True = string.contains(schemas, "\"path\"")
+  let assert False = string.contains(schemas, "\"file_path\"")
+}
+
+pub fn file_tool_argument_decoder_accepts_path_test() {
+  json.parse(
+    from: "{\"path\":\"notes.txt\"}",
+    using: decode_file_path(),
+  )
+  |> should.equal(Ok("notes.txt"))
+}
+
+pub fn file_tool_argument_decoder_accepts_legacy_file_path_test() {
+  json.parse(
+    from: "{\"file_path\":\"legacy.txt\"}",
+    using: decode_file_path(),
+  )
+  |> should.equal(Ok("legacy.txt"))
 }
 
 // ─── Request Body Builder ──────────────────────────────────────────────────────

@@ -89,10 +89,32 @@
     (.write channel buf)))
 
 (defn send-telemetry [channel status]
-  (send-msg channel (json/generate-string {:jsonrpc "2.0"
-                                           :method "telemetry"
-                                           :params {:status status
-                                                    :memory (.freeMemory (Runtime/getRuntime))}})))
+  (when channel
+    (send-msg channel (json/generate-string {:jsonrpc "2.0"
+                                             :method "telemetry"
+                                             :params {:status status
+                                                      :memory (.freeMemory (Runtime/getRuntime))}}))))
+
+(defn- env-long [name default]
+  (try
+    (if-let [v (System/getenv name)]
+      (Long/parseLong v)
+      default)
+    (catch Exception _ default)))
+
+(defn- env-list [name]
+  (some-> (System/getenv name)
+          (clojure.string/split #",")
+          (->> (map clojure.string/trim)
+               (remove clojure.string/blank?)
+               set)))
+
+(defn- log-event [level event data]
+  (binding [*out* *err*]
+    (println (json/generate-string (merge {:level level
+                                           :event event
+                                           :ts (str (java.time.Instant/now))}
+                                          data)))))
 
 (defn docker-available? []
   (try
@@ -120,13 +142,22 @@
       (= 0 exit))
     (catch Exception _ false)))
 
-(defn recv-tool-response [channel expected-id]
-  (let [buf (ByteBuffer/allocate 4096)]
-    (loop [acc ""]
-      (if (clojure.string/includes? acc "\n")
-        (let [lines (clojure.string/split acc #"\n")
-              line (first lines)
-              remaining (clojure.string/join "\n" (rest lines))]
+(defn recv-tool-response
+  ([channel expected-id]
+   (recv-tool-response channel expected-id (env-long "HERMES_WORKER_TOOL_TIMEOUT_MS" 30000)))
+  ([channel expected-id timeout-ms]
+   (let [buf (ByteBuffer/allocate 4096)
+         deadline (+ (System/currentTimeMillis) timeout-ms)
+         was-blocking (.isBlocking channel)]
+     (try
+       (.configureBlocking channel false)
+       (loop [acc ""]
+         (when (> (System/currentTimeMillis) deadline)
+           (throw (Exception. (str "Timed out waiting " timeout-ms "ms for delegated tool response id " expected-id))))
+       (if (clojure.string/includes? acc "\n")
+         (let [lines (clojure.string/split acc #"\n")
+               line (first lines)
+               remaining (clojure.string/join "\n" (rest lines))]
           (let [parsed (try {:ok (json/parse-string line true)}
                             (catch Exception _ {:err true}))]
             (if (:err parsed)
@@ -137,16 +168,26 @@
                     (throw (Exception. (str "Gleam tool error: " (:message err))))
                     (:result resp))
                   (recur remaining))))))
-        (do
-          (.clear buf)
-          (let [bytes-read (.read channel buf)]
-            (if (pos? bytes-read)
-              (do
-                (.flip buf)
-                (let [bytes (byte-array (.remaining buf))]
-                  (.get buf bytes)
-                  (recur (str acc (String. bytes "UTF-8")))))
-              (throw (Exception. "Socket closed while waiting for tool response")))))))))
+         (do
+           (.clear buf)
+           (let [bytes-read (.read channel buf)]
+             (cond
+               (pos? bytes-read)
+               (do
+                 (.flip buf)
+                 (let [bytes (byte-array (.remaining buf))]
+                   (.get buf bytes)
+                   (recur (str acc (String. bytes "UTF-8")))))
+
+               (= bytes-read 0)
+               (do
+                 (Thread/sleep 25)
+                 (recur acc))
+
+               :else
+               (throw (Exception. "Socket closed while waiting for tool response")))))))
+       (finally
+         (.configureBlocking channel was-blocking))))))
 
 (defn merge-tool-schemas [gleam-tools]
   (let [native-names (set (map #(get-in % [:function :name]) tool-schemas))
@@ -1114,7 +1155,38 @@
                                  (let [bin-file (io/file dir (str first-word ext))]
                                    (and (.exists bin-file) (not (.isDirectory bin-file)) (or is-windows? (.canExecute bin-file)))))
                                extensions))
-                       paths))))))))))
+                        paths))))))))))
+
+(defn- shell-first-word [cmd]
+  (or (first (filter #(not (clojure.string/includes? % "="))
+                     (clojure.string/split (or cmd "") #"\s+")))
+      "command"))
+
+(defn- shell-policy-violation [cmd]
+  (let [first-word (shell-first-word cmd)
+        allowlist (env-list "HERMES_WORKER_SHELL_ALLOWLIST")]
+    (cond
+      (re-find #"(?i)\bpython(?:3)?\b" (or cmd ""))
+      "Python invocation blocked; use Babashka (bb) instead."
+
+      (and (seq allowlist) (not (contains? allowlist first-word)))
+      (str "Executable '" first-word "' is not in HERMES_WORKER_SHELL_ALLOWLIST.")
+
+      :else nil)))
+
+(defn- format-command-result [{:keys [out err exit]}]
+  (str "STDOUT:\n" out "\nSTDERR:\n" err "\nEXIT:" exit))
+
+(defn- run-shell-command [cmd]
+  (if-let [violation (shell-policy-violation cmd)]
+    (do
+      (log-event "warn" "shell_policy_block" {:command cmd :reason violation})
+      (str "STDOUT:\n[BLOCKED] " violation "\nSTDERR:\n\nEXIT:126"))
+    (if-not (executable-in-path? cmd)
+      (let [bin-name (shell-first-word cmd)]
+        (log-event "warn" "shell_executable_missing" {:command cmd :executable bin-name})
+        (str "STDOUT:\n[WARN] Executable '" bin-name "' not found in PATH. Execution bypassed.\nSTDERR:\n\nEXIT:0"))
+      (format-command-result (p/sh "sh" "-c" cmd)))))
 
 (defn parse-robust-json [s]
   (try
@@ -1140,18 +1212,11 @@
   (try
     (let [args (parse-robust-json args-str)
           result (case name
-                   "run_command"
-                   (let [cmd (:command args)
-                         _ (when (re-find #"(?i)\bpython\b|\bpython3\b" cmd)
-                             (send-telemetry channel "[POLICY] Python invocation blocked — use Babashka (bb) instead"))
-                         safe-cmd (if (re-find #"(?i)\bpython\b|\bpython3\b" cmd)
-                                    (str "echo '[BLOCKED: Python] Use Babashka instead: bb -e \"...\"'")
-                                    cmd)]
-                     (if-not (executable-in-path? safe-cmd)
-                       (let [bin-name (or (first (filter #(not (clojure.string/includes? % "=")) (clojure.string/split safe-cmd #"\s+"))) "command")]
-                         (str "STDOUT:\n[WARN] Executable '" bin-name "' not found in PATH. Execution bypassed.\nSTDERR:\n\nEXIT:0"))
-                       (let [{:keys [out err exit]} (p/sh "sh" "-c" safe-cmd)]
-                         (str "STDOUT:\n" out "\nSTDERR:\n" err "\nEXIT:" exit))))
+                    "run_command"
+                    (let [cmd (:command args)]
+                      (when-let [violation (shell-policy-violation cmd)]
+                        (send-telemetry channel (str "[POLICY] " violation)))
+                      (run-shell-command cmd))
 
                    "read_file" (slurp (:path args))
 
@@ -1233,20 +1298,23 @@
                      (reset! (:indexes ds-db) (build-indexes @(:facts ds-db)))
                      "Facts transacted successfully.")
 
-                    "run_sandboxed_command"
-                    (let [cmd (:command args)
-                          custom-paths (or (:allowed_write_paths args) [])
-                          os-name (clojure.string/lower-case (System/getProperty "os.name"))
-                          is-mac? (clojure.string/includes? os-name "mac")]
-                      (if is-mac?
-                        (let [default-paths ["/tmp" "/private/tmp" "/var/folders" (System/getProperty "user.dir")]
-                              all-paths (distinct (concat default-paths custom-paths))
-                              write-rules (clojure.string/join " " (map #(str "(subpath \"" % "\")") all-paths))
-                              profile (str "(version 1) (deny default) (allow process-fork) (allow process-exec) (allow sysctl-read) (allow file-read*) (allow file-write* " write-rules ")")
-                              {:keys [out err exit]} (p/sh "sandbox-exec" "-p" profile "sh" "-c" cmd)]
-                          (str "STDOUT:\n" out "\nSTDERR:\n" err "\nEXIT:" exit))
-                        (let [{:keys [out err exit]} (p/sh "sh" "-c" cmd)]
-                          (str "[WARN: Not on macOS, running without sandboxing]\nSTDOUT:\n" out "\nSTDERR:\n" err "\nEXIT:" exit))))
+                     "run_sandboxed_command"
+                     (let [cmd (:command args)
+                           custom-paths (or (:allowed_write_paths args) [])
+                           os-name (clojure.string/lower-case (System/getProperty "os.name"))
+                           is-mac? (clojure.string/includes? os-name "mac")]
+                       (if-let [violation (shell-policy-violation cmd)]
+                         (do
+                           (send-telemetry channel (str "[POLICY] " violation))
+                           (run-shell-command cmd))
+                         (if is-mac?
+                           (let [default-paths ["/tmp" "/private/tmp" "/var/folders" (System/getProperty "user.dir")]
+                                 all-paths (distinct (concat default-paths custom-paths))
+                                 write-rules (clojure.string/join " " (map #(str "(subpath \"" % "\")") all-paths))
+                                 profile (str "(version 1) (deny default) (allow process-fork) (allow process-exec) (allow sysctl-read) (allow file-read*) (allow file-write* " write-rules ")")
+                                 {:keys [out err exit]} (p/sh "sandbox-exec" "-p" profile "sh" "-c" cmd)]
+                             (format-command-result {:out out :err err :exit exit}))
+                           (str "[WARN: Not on macOS, running without sandboxing]\n" (run-shell-command cmd)))))
 
                    ;; Fallback to Gleam-delegated tool calls
                    (let [msg-id (rand-int 1000000)
@@ -1487,38 +1555,68 @@
     (catch Exception e
       (println "Failed to run diagnostics:" (.getMessage e)))))
 
+(defn health-status []
+  (let [path (System/getenv "PATH")
+        bb-ok (bb-available?)
+        docker-ok (docker-available?)
+        shell-allowlist (env-list "HERMES_WORKER_SHELL_ALLOWLIST")
+        tool-timeout-ms (env-long "HERMES_WORKER_TOOL_TIMEOUT_MS" 30000)]
+    {:status (if bb-ok "ok" "degraded")
+     :checks {:babashka {:ok bb-ok
+                         :message (if bb-ok "bb available" "bb not found in PATH; worker can run, but child bb fallbacks are disabled")}
+              :docker {:ok docker-ok
+                       :message (if docker-ok "docker available" "docker unavailable; run_in_docker will fall back to bb when possible")}
+              :path {:ok (not (clojure.string/blank? path))
+                     :message (if (clojure.string/blank? path) "PATH is empty" "PATH configured")}
+              :delegated-tool-timeout-ms tool-timeout-ms
+              :shell-allowlist (vec (or shell-allowlist []))}}))
+
+(defn print-health [mode]
+  (let [status (health-status)]
+    (println (json/generate-string (assoc status :mode mode)))
+    (= "ok" (:status status))))
+
 (defn -main [& args]
   (let [cmd (first args)]
     (cond
+      (contains? #{"--health" "health"} cmd)
+      (System/exit (if (print-health "health") 0 1))
+
+      (contains? #{"--doctor" "doctor"} cmd)
+      (System/exit (if (print-health "doctor") 0 1))
+
       (= cmd "--datalog-query")
       (let [payload (json/parse-stream *in* true)]
         (handle-cli-query payload))
-        
+         
       :else
       (let [path cmd]
-        (println "Worker started, targeting UDS path:" path)
+        (when (clojure.string/blank? path)
+          (log-event "error" "worker_missing_uds_path" {:message "Usage: bb src/worker.clj <uds-path>|--health|--doctor|--datalog-query"})
+          (System/exit 2))
+        (log-event "info" "worker_started" {:uds_path path})
         (loop [attempt 1
                last-exception nil]
           (let [res (try
-                      (let [channel (connect-uds path)]
-                        (println "Connected to UDS.")
-                        (send-msg channel "{\"jsonrpc\":\"2.0\",\"method\":\"init\",\"params\":{\"status\":\"ready\"}}")
-                        (telemetry-loop channel)
-                        (read-loop channel)
-                        (println "Read loop exited. Disconnected.")
-                        {:ok true})
-                      (catch Exception e
-                        (println (str "Connection attempt " attempt "/3 failed targeting UDS: " (.getMessage e)))
-                        {:error e}))]
+                       (let [channel (connect-uds path)]
+                         (log-event "info" "uds_connected" {:uds_path path})
+                         (send-msg channel "{\"jsonrpc\":\"2.0\",\"method\":\"init\",\"params\":{\"status\":\"ready\"}}")
+                         (telemetry-loop channel)
+                         (read-loop channel)
+                         (log-event "warn" "uds_read_loop_exited" {:uds_path path})
+                         {:ok true})
+                       (catch Exception e
+                         (log-event "warn" "uds_connection_failed" {:attempt attempt :max_attempts 3 :uds_path path :message (.getMessage e)})
+                         {:error e}))]
             (if (:ok res)
               (recur 1 nil)
               (if (< attempt 3)
                 (do
-                  (println "Auto-healing UDS connection in 1s...")
+                  (log-event "info" "uds_autoheal_retry" {:delay_ms 1000 :next_attempt (inc attempt) :max_attempts 3})
                   (Thread/sleep 1000)
                   (recur (inc attempt) (:error res)))
                 (do
-                  (println "Error: UDS connection auto-healing exhausted. Maximum retries (3) reached. Exiting worker process.")
+                  (log-event "error" "uds_autoheal_exhausted" {:max_attempts 3 :uds_path path})
                   (diagnose-uds-failure path (:error res))
                   (System/exit 1))))))))))
 

@@ -8,8 +8,7 @@ name: Skills Index Freshness Check
 # Triggered every 4 hours so we catch a stuck cron within one tick.
 
 on:
-  schedule:
-    - cron: '0 */4 * * *'
+  # Quarantined with the docs/skills site workflows; keep manual probing only.
   workflow_dispatch:
 
 permissions:
@@ -130,12 +129,11 @@ jobs:
           **Detail:** $DETAIL
 
           The Skills Hub at /docs/skills depends on \`/docs/api/skills-index.json\`.
-          The unified index is rebuilt by \`.github/workflows/skills-index.yml\` (cron 6/18 UTC)
-          and \`.github/workflows/deploy-site.yml\` (on every push affecting website/skills).
-          If this issue keeps reopening, check the latest runs:
+          The unified index is rebuilt by \`.github/workflows/skills-index.yml\` (cron 6/18 UTC).
+          The former website deployment workflow has been removed with the retired legacy workflow set.
+          If this issue keeps reopening, check the latest run:
 
           - https://github.com/${{ github.repository }}/actions/workflows/skills-index.yml
-          - https://github.com/${{ github.repository }}/actions/workflows/deploy-site.yml
 
           This issue was opened by \`.github/workflows/skills-index-freshness.yml\`. Close it once the underlying problem is fixed; the next probe will reopen if it's still broken."
           if [ -n "$existing" ]; then

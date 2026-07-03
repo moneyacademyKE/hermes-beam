@@ -4,6 +4,7 @@ import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/json
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/string
 import hermes_exec
@@ -56,6 +57,7 @@ pub type Request {
     arguments: String,
     reply: Subject(Result(String, String)),
   )
+  ClearPending(id: Int)
   Stop
 }
 
@@ -182,7 +184,7 @@ fn send_rpc(
   method: String,
   params: json.Json,
   subj: Subject(Result(Dynamic, String)),
-) -> State {
+) -> #(State, Int) {
   let id = state.next_id
   let payload =
     json.object([
@@ -194,7 +196,19 @@ fn send_rpc(
   let msg = json.to_string(payload) <> "\n"
 
   let _ = hermes_exec.send_input(state.port, msg)
-  State(..state, next_id: id + 1, pending: dict.insert(state.pending, id, subj))
+  #(
+    State(..state, next_id: id + 1, pending: dict.insert(state.pending, id, subj)),
+    id,
+  )
+}
+
+fn clear_pending(state: State, id: Int) -> State {
+  State(..state, pending: dict.delete(state.pending, id))
+}
+
+fn fail_all_pending(state: State, reason: String) -> Nil {
+  dict.values(state.pending)
+  |> list.each(fn(reply) { process.send(reply, Error(reason)) })
 }
 
 fn loop(state: State, subj: Subject(Message)) -> Nil {
@@ -204,9 +218,13 @@ fn loop(state: State, subj: Subject(Message)) -> Nil {
 
   case process.selector_receive(selector, 600_000) {
     Ok(UserRequest(Stop)) -> {
+      fail_all_pending(state, "MCP client stopped")
       hermes_exec.kill_port_process(state.port)
       hermes_exec.close_port(state.port)
       Nil
+    }
+    Ok(UserRequest(ClearPending(id))) -> {
+      loop(clear_pending(state, id), subj)
     }
     Ok(UserRequest(Initialize(reply))) -> {
       let params =
@@ -222,13 +240,16 @@ fn loop(state: State, subj: Subject(Message)) -> Nil {
           ),
         ])
       let wrap_subj = process.new_subject()
-      let next_state = send_rpc(state, "initialize", params, wrap_subj)
+      let #(next_state, request_id) = send_rpc(state, "initialize", params, wrap_subj)
       let _ =
         process.spawn(fn() {
           let res = case process.receive(wrap_subj, 5000) {
             Ok(Ok(_)) -> Ok(Nil)
             Ok(Error(e)) -> Error(e)
-            Error(_) -> Error("Timeout")
+            Error(_) -> {
+              process.send(subj, UserRequest(ClearPending(request_id)))
+              Error("Timeout")
+            }
           }
           process.send(reply, res)
         })
@@ -236,7 +257,8 @@ fn loop(state: State, subj: Subject(Message)) -> Nil {
     }
     Ok(UserRequest(ListTools(reply))) -> {
       let wrap_subj = process.new_subject()
-      let next_state = send_rpc(state, "tools/list", json.object([]), wrap_subj)
+      let #(next_state, request_id) =
+        send_rpc(state, "tools/list", json.object([]), wrap_subj)
       let _ =
         process.spawn(fn() {
           let res = case process.receive(wrap_subj, 5000) {
@@ -264,7 +286,10 @@ fn loop(state: State, subj: Subject(Message)) -> Nil {
               }
             }
             Ok(Error(e)) -> Error(e)
-            Error(_) -> Error("Timeout")
+            Error(_) -> {
+              process.send(subj, UserRequest(ClearPending(request_id)))
+              Error("Timeout")
+            }
           }
           process.send(reply, res)
         })
@@ -306,7 +331,10 @@ fn loop(state: State, subj: Subject(Message)) -> Nil {
           let res = case process.receive(wrap_subj, 60_000) {
             Ok(Ok(dyn)) -> Ok(encode_json(dyn))
             Ok(Error(e)) -> Error(e)
-            Error(_) -> Error("Timeout")
+            Error(_) -> {
+              process.send(subj, UserRequest(ClearPending(id)))
+              Error("Timeout")
+            }
           }
           process.send(reply, res)
         })
@@ -317,7 +345,8 @@ fn loop(state: State, subj: Subject(Message)) -> Nil {
       let next_state = process_buffer(State(..state, buffer: new_buffer))
       loop(next_state, subj)
     }
-    Ok(PortExit(_status)) -> {
+    Ok(PortExit(status)) -> {
+      fail_all_pending(state, "MCP server exited with status " <> int.to_string(status))
       Nil
     }
     Error(_) -> {

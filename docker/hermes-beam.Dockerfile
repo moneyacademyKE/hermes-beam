@@ -1,9 +1,7 @@
 # syntax=docker/dockerfile:1
 
-# Default container path for this checkout: build and run the Hermes BEAM
-# Gleam application. The previous Python/Node image definition is quarantined
-# at docker/legacy-python-node.Dockerfile because it references legacy app
-# assets that are not the authoritative runtime here.
+# Minimal Hermes BEAM container. This mirrors the root Dockerfile so callers can
+# use either `docker build .` or an explicit `-f docker/hermes-beam.Dockerfile`.
 
 FROM ghcr.io/gleam-lang/gleam:v1.12.0-erlang-alpine AS build
 WORKDIR /app/hermes_beam

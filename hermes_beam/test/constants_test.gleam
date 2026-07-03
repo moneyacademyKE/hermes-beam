@@ -1,6 +1,7 @@
 import constants
 import gleam/option.{None, Some}
 import gleeunit/should
+import simplifile
 
 pub fn platform_test() {
   // We are running on macOS, so is_windows should be false
@@ -108,4 +109,28 @@ pub fn display_hermes_home_test() {
   constants.display_hermes_home()
   |> should.equal("~/.hermes")
   constants.reset_hermes_home_override(token2)
+}
+
+pub fn prepare_runtime_dirs_creates_home_logs_and_skills_test() {
+  let temp_home = "/tmp/hermes_runtime_dirs_test"
+  let _ = simplifile.delete(temp_home <> "/logs")
+  let _ = simplifile.delete(temp_home <> "/skills")
+  let _ = simplifile.delete(temp_home)
+
+  let token = constants.set_hermes_home_override(Some(temp_home))
+  constants.prepare_runtime_dirs()
+  |> should.equal(Ok(Nil))
+
+  simplifile.is_directory(temp_home)
+  |> should.equal(Ok(True))
+  simplifile.is_directory(temp_home <> "/logs")
+  |> should.equal(Ok(True))
+  simplifile.is_directory(temp_home <> "/skills")
+  |> should.equal(Ok(True))
+
+  constants.reset_hermes_home_override(token)
+  let _ = simplifile.delete(temp_home <> "/logs")
+  let _ = simplifile.delete(temp_home <> "/skills")
+  let _ = simplifile.delete(temp_home)
+  Nil
 }

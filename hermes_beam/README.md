@@ -11,9 +11,9 @@ Hermes BEAM is a pure Gleam port of the reference `hermes-agent` implementation.
 *   **Erlang/OTP Actor Concurrency**: Dynamic supervision trees (`static_supervisor`), circuit breakers (`circuit_breaker_actor`), token budgets, and mailboxes ensure 100% thread safety and isolated failure containment.
 *   **Native GleamDB Memory Stack**: Uses a local, Clojure-backed Datalog database (via out-of-process Babashka workers). Custom relational facts are transacted as `[Entity, Attribute, Value]` Datoms.
 *   **Dialectic Contradiction Detection**: Runs deterministic inequality query constraints (`[[!= ?v1 ?v2]]`) in local Datalog to flag conflicting user preferences (e.g. VS Code vs. Emacs preference) instantly for agent-guided reconciliation.
-*   **Local Semantic Cross-Session Search**: Generates session context summaries, runs cosine similarity calculations in pure Gleam, and queries nearest-neighbor session embeddings from a local SQLite database.
-*   **Stateful Cron Scheduler Actor**: Features a pure 5-field cron parser (`*/15`, `1-5`, `0,7`) with minute-resolution Unix-epoch check limits to prevent double triggering, spawning conversations in background processes to keep the tick loop non-blocking.
-*   **Autonomous Curation Hook**: Hooked directly into the REPL session exit. On `/quit` or `/exit`, the curator analyzes the chronological session transcript and compiles reusable patterns into standard `SKILL.md` files.
+*   **Semantic Search Placeholder**: Hidden from tool schemas unless `HERMES_ENABLE_SEMANTIC_SEARCH=true`; no persisted embedding index is wired by default.
+*   **Cron Scheduler Library**: Provides a tested 5-field cron parser and actor module, but no CLI or supervisor path starts it by default.
+*   **Opt-In Curation Hook**: REPL exit skill synthesis runs only when `HERMES_ENABLE_SKILL_SYNTHESIS=true`.
 
 ---
 
@@ -62,6 +62,9 @@ HERMES_API_KEY="your-llm-api-key"
 HERMES_BASE_URL="https://api.openai.com/v1" # Or OpenRouter, Portal, etc.
 HERMES_MODEL="meta-llama/llama-3-8b-instruct:free"
 HERMES_TELEGRAM_TOKEN="your-telegram-bot-token"
+HERMES_ENABLE_SKILL_SYNTHESIS=false
+HERMES_ENABLE_SEMANTIC_SEARCH=false
+HERMES_MEMORY_BACKEND=""
 ```
 
 ---
@@ -86,7 +89,7 @@ gleam run --telegram
 
 ### Run Tests
 
-Runs the full test suite verifying cron ticks, Datalog queries, vector similarity, and skill synthesis:
+Runs the full test suite verifying cron parsing, Datalog queries, vector similarity, and direct skill synthesis functions:
 
 ```bash
 gleam test
@@ -96,7 +99,7 @@ gleam test
 
 ## 📚 Interactive REPL Commands
 
-*   `/quit` or `/exit` — Cleanly terminates REPL, curating the session transcript to synthesize new skills.
+*   `/quit` or `/exit` — Cleanly terminates REPL. Skill synthesis is skipped unless `HERMES_ENABLE_SKILL_SYNTHESIS=true`.
 *   `/help` — Prints the command listing.
 *   `/clear` — Wipes the current in-memory conversation history.
 *   `/sessions` — Lists the 10 most recent sessions stored in the SQLite DB.

@@ -14,6 +14,7 @@
     write_stderr/1,
     apply_ipv4_preference/1,
     resolve_path/1,
+    find_executable/1,
     is_wsl/0,
     is_container/0
 ]).
@@ -111,6 +112,12 @@ apply_ipv4_preference(false) ->
 
 resolve_path(Path) ->
     list_to_binary(filename:absname(binary_to_list(Path))).
+
+find_executable(Command) ->
+    case os:find_executable(binary_to_list(Command)) of
+        false -> {error, nil};
+        Path -> {ok, list_to_binary(Path)}
+    end.
 
 is_wsl() ->
     case erlang:get(hermes_wsl_detected) of

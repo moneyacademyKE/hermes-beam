@@ -1,7 +1,9 @@
+import constants
 import gleam/dict.{type Dict}
 import gleam/json
 import gleam/list
 import gleam/string
+import gleam/option.{None, Some}
 
 // ─── Tool Definitions ─────────────────────────────────────────────────────────
 
@@ -40,21 +42,21 @@ pub fn core_tools() -> List(ToolDef) {
       name: "write_file",
       description: "Write content to a file at the given absolute or relative path, overwriting it if it already exists.",
       parameters: dict.from_list([
-        #("file_path", ParamDef("string", "The path to the file to write.")),
+        #("path", ParamDef("string", "The path to the file to write.")),
         #(
           "content",
           ParamDef("string", "The full content to write into the file."),
         ),
       ]),
-      required: ["file_path", "content"],
+      required: ["path", "content"],
     ),
     ToolDef(
       name: "read_file",
       description: "Read the complete contents of a file at the given path.",
       parameters: dict.from_list([
-        #("file_path", ParamDef("string", "The path to the file to read.")),
+        #("path", ParamDef("string", "The path to the file to read.")),
       ]),
-      required: ["file_path"],
+      required: ["path"],
     ),
     ToolDef(
       name: "semantic_search_history",
@@ -86,6 +88,31 @@ pub fn core_tools() -> List(ToolDef) {
       required: ["target_session_id", "handoff_context"],
     ),
   ]
+}
+
+pub fn semantic_search_enabled() -> Bool {
+  case constants.get_env("HERMES_ENABLE_SEMANTIC_SEARCH") {
+    Some(value) -> case string.lowercase(string.trim(value)) {
+      "1" | "true" | "yes" | "on" -> True
+      _ -> False
+    }
+    None -> False
+  }
+}
+
+pub fn enabled_core_tools() -> List(ToolDef) {
+  core_tools()
+  |> list.filter(fn(tool) {
+    case tool.name {
+      "semantic_search_history" -> semantic_search_enabled()
+      _ -> True
+    }
+  })
+}
+
+pub fn core_tools_with_policy(allowed: fn(String) -> Bool) -> List(ToolDef) {
+  enabled_core_tools()
+  |> list.filter(fn(tool) { allowed(tool.name) })
 }
 
 // ─── Schema Generator ─────────────────────────────────────────────────────────
@@ -128,7 +155,15 @@ pub fn to_json_schema(tool: ToolDef) -> String {
 /// Helper: Auto-generate the full JSON list of schemas for the core tools.
 pub fn all_core_tool_schemas() -> String {
   let schemas =
-    core_tools()
+    enabled_core_tools()
+    |> list.map(to_json_schema)
+    |> string.join(",")
+  schemas
+}
+
+pub fn all_core_tool_schemas_with_policy(allowed: fn(String) -> Bool) -> String {
+  let schemas =
+    core_tools_with_policy(allowed)
     |> list.map(to_json_schema)
     |> string.join(",")
   schemas

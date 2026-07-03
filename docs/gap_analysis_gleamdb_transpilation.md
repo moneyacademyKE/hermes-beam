@@ -94,6 +94,6 @@ Y      |
 
 ## 5. Actionable Next Steps
 
-1.  **Keep `aarondb` isolated** under `scratch_gleam/gleamdb` as a reference.
+1.  **Do not retain the `aarondb` scratch tree** in this repository; keep the active worker integration focused on the simplified transpiler/client boundary.
 2.  **Verify the current compiler and client integration** using the simplified, custom `gleamdb_transpiler` and `gleamdb_client` implementations.
 3.  **Establish unit tests** to certify the transpiler and query runner work reliably under target workloads.

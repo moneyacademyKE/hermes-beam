@@ -1,5 +1,7 @@
 import telegram_gateway
 import gleam/option.{None, Some}
+import constants
+import hermes_agent
 import hermes_beam
 import taskle
 import telega/client
@@ -38,6 +40,45 @@ pub fn parse_telegram_updates_test() {
 
   let assert Some(42) = max_id
   let assert [telegram_gateway.TelegramMessage(chat_id: 1001, text: "Hello bot")] = messages
+}
+
+pub fn parse_allowlist_trims_and_drops_empty_items_test() {
+  let assert ["123", "abc", "-55"] = telegram_gateway.parse_allowlist(" 123, abc ,, -55 ")
+}
+
+pub fn telegram_access_policy_allows_unconfigured_lists_test() {
+  let policy = telegram_gateway.TelegramAccessPolicy(allowed_users: [], allowed_chats: [])
+  let assert True = telegram_gateway.is_allowed(policy, "1001", None)
+}
+
+pub fn telegram_access_policy_rejects_unlisted_chat_test() {
+  let policy = telegram_gateway.TelegramAccessPolicy(allowed_users: [], allowed_chats: ["1001"])
+  let assert False = telegram_gateway.is_allowed(policy, "2002", None)
+}
+
+pub fn telegram_access_policy_requires_user_when_user_allowlist_configured_test() {
+  let policy = telegram_gateway.TelegramAccessPolicy(allowed_users: ["42"], allowed_chats: [])
+  let assert False = telegram_gateway.is_allowed(policy, "1001", None)
+  let assert True = telegram_gateway.is_allowed(policy, "1001", Some("42"))
+}
+
+pub fn telegram_tool_policy_denies_run_and_write_by_default_test() {
+  constants.set_env("HERMES_TELEGRAM_ENABLE_RUN_COMMAND", "")
+  constants.set_env("HERMES_TELEGRAM_ENABLE_WRITE_FILE", "")
+  let policy = hermes_beam.telegram_tool_policy_from_env()
+  let assert False = hermes_agent.tool_policy_allows(policy, hermes_agent.RunCommand)
+  let assert False = hermes_agent.tool_policy_allows(policy, hermes_agent.WriteFile)
+  let assert True = hermes_agent.tool_policy_allows(policy, hermes_agent.ReadFile)
+}
+
+pub fn telegram_tool_policy_env_can_enable_run_and_write_test() {
+  constants.set_env("HERMES_TELEGRAM_ENABLE_RUN_COMMAND", "true")
+  constants.set_env("HERMES_TELEGRAM_ENABLE_WRITE_FILE", "1")
+  let policy = hermes_beam.telegram_tool_policy_from_env()
+  let assert True = hermes_agent.tool_policy_allows(policy, hermes_agent.RunCommand)
+  let assert True = hermes_agent.tool_policy_allows(policy, hermes_agent.WriteFile)
+  constants.set_env("HERMES_TELEGRAM_ENABLE_RUN_COMMAND", "")
+  constants.set_env("HERMES_TELEGRAM_ENABLE_WRITE_FILE", "")
 }
 
 pub fn port_lock_test() {

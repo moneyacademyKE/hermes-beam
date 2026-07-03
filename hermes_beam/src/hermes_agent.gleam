@@ -55,7 +55,56 @@ pub type AgentState {
     router: Option(ModelRouter),
     circuit_breaker: Option(circuit_breaker_actor.CircuitBreaker),
     token_budget: Option(token_budget.TokenBudget),
+    tool_policy: ToolPolicy,
   )
+}
+
+pub type ToolCapability {
+  RunCommand
+  ReadFile
+  WriteFile
+  UseMcp
+  UseWorkers
+}
+
+pub type ToolPolicy {
+  ToolPolicy(capabilities: List(ToolCapability))
+}
+
+pub fn default_tool_policy() -> ToolPolicy {
+  ToolPolicy(capabilities: [RunCommand, ReadFile, WriteFile, UseMcp, UseWorkers])
+}
+
+pub fn restricted_tool_policy() -> ToolPolicy {
+  ToolPolicy(capabilities: [ReadFile])
+}
+
+pub fn tool_policy_allows(policy: ToolPolicy, capability: ToolCapability) -> Bool {
+  list.any(policy.capabilities, fn(allowed) { allowed == capability })
+}
+
+pub fn tool_policy_allows_tool(policy: ToolPolicy, name: String) -> Bool {
+  case name {
+    "run_command" -> tool_policy_allows(policy, RunCommand)
+    "read_file" -> tool_policy_allows(policy, ReadFile)
+    "write_file" -> tool_policy_allows(policy, WriteFile)
+    "handoff_session" -> tool_policy_allows(policy, UseWorkers)
+    _ -> True
+  }
+}
+
+fn env_flag_enabled(name: String) -> Bool {
+  case constants.get_env(name) {
+    Some(value) -> case string.lowercase(string.trim(value)) {
+      "1" | "true" | "yes" | "on" -> True
+      _ -> False
+    }
+    None -> False
+  }
+}
+
+pub fn with_tool_policy(state: AgentState, tool_policy: ToolPolicy) -> AgentState {
+  AgentState(..state, tool_policy: tool_policy)
 }
 
 pub fn with_event_handler(
@@ -88,185 +137,251 @@ pub fn dispatch_tool(
 ) -> #(hermes_exec.TerminalEnv, String) {
   let exec_env = state.exec_env
   hermes_logger.info(state.session_id, "Dispatching tool call: " <> call.name)
+  hermes_logger.event("INFO", state.session_id, "tool_call_started", [
+    #("tool", call.name),
+  ])
   case call.name {
     "run_command" -> {
-      let command = case
-        json.parse(from: call.arguments, using: {
-          use cmd <- decode.field("command", decode.string)
-          decode.success(cmd)
-        })
-      {
-        Ok(cmd) -> cmd
-        Error(_) -> "echo 'Error: could not parse command argument'"
-      }
-      case quiet {
-        False -> io.println("  [tool: run_command] $ " <> command)
-        True -> Nil
-      }
-      let #(new_env, result) = hermes_exec.execute(exec_env, command, "", None)
-      case result {
-        Ok(#(output, exit_code)) -> {
-          let result_json =
-            json.object([
-              #("output", json.string(output)),
-              #("exit_code", json.int(exit_code)),
-            ])
-            |> json.to_string
-          #(new_env, result_json)
-        }
-        Error(err) -> {
-          let result_json =
-            json.object([#("error", json.string(err))])
-            |> json.to_string
-          #(new_env, result_json)
+      case tool_policy_allows(state.tool_policy, RunCommand) {
+        False -> #(
+          exec_env,
+          json.object([#("error", json.string("run_command is disabled for this session"))])
+            |> json.to_string,
+        )
+        True -> {
+          let command = case
+            json.parse(from: call.arguments, using: {
+              use cmd <- decode.field("command", decode.string)
+              decode.success(cmd)
+            })
+          {
+            Ok(cmd) -> cmd
+            Error(_) -> "echo 'Error: could not parse command argument'"
+          }
+          case quiet {
+            False -> io.println("  [tool: run_command] $ " <> command)
+            True -> Nil
+          }
+          let #(new_env, result) = hermes_exec.execute(exec_env, command, "", None)
+          case result {
+            Ok(#(output, exit_code)) -> {
+              let result_json =
+                json.object([
+                  #("output", json.string(output)),
+                  #("exit_code", json.int(exit_code)),
+                ])
+                |> json.to_string
+              #(new_env, result_json)
+            }
+            Error(err) -> {
+              hermes_logger.failure(state.session_id, "tool_call_failed", err, [
+                #("tool", call.name),
+              ])
+              let result_json =
+                json.object([#("error", json.string(err))])
+                |> json.to_string
+              #(new_env, result_json)
+            }
+          }
         }
       }
     }
 
     "write_file" -> {
-      let parsed =
-        json.parse(from: call.arguments, using: {
-          use path <- decode.field("path", decode.string)
-          use content <- decode.field("content", decode.string)
-          decode.success(#(path, content))
-        })
-      case parsed {
-        Ok(#(path, content)) -> {
-          case quiet {
-            False -> io.println("  [tool: write_file] -> " <> path)
-            True -> Nil
-          }
-          let full_path = case string.starts_with(path, "/") {
-            True -> path
-            False -> exec_env.cwd <> "/" <> path
-          }
-          let write_result = do_write_file(full_path, content)
-          let result_json = case write_result {
-            Ok(_) ->
-              json.object([
-                #("status", json.string("ok")),
-                #("path", json.string(full_path)),
-              ])
-              |> json.to_string
-            Error(err) ->
-              json.object([#("error", json.string(err))])
-              |> json.to_string
-          }
-          #(exec_env, result_json)
-        }
-        Error(_) -> #(
+      case tool_policy_allows(state.tool_policy, WriteFile) {
+        False -> #(
           exec_env,
-          json.object([#("error", json.string("Invalid write_file arguments"))])
+          json.object([#("error", json.string("write_file is disabled for this session"))])
             |> json.to_string,
         )
+        True -> {
+          let parsed =
+            json.parse(from: call.arguments, using: {
+              use path <- decode_file_path_argument()
+              use content <- decode.field("content", decode.string)
+              decode.success(#(path, content))
+            })
+          case parsed {
+            Ok(#(path, content)) -> {
+              case quiet {
+                False -> io.println("  [tool: write_file] -> " <> path)
+                True -> Nil
+              }
+              let full_path = case string.starts_with(path, "/") {
+                True -> path
+                False -> exec_env.cwd <> "/" <> path
+              }
+              let write_result = do_write_file(full_path, content)
+              let result_json = case write_result {
+                Ok(_) ->
+                  json.object([
+                    #("status", json.string("ok")),
+                    #("path", json.string(full_path)),
+                  ])
+                  |> json.to_string
+                Error(err) -> {
+                  hermes_logger.failure(state.session_id, "tool_call_failed", err, [
+                    #("tool", call.name),
+                  ])
+                  json.object([#("error", json.string(err))])
+                  |> json.to_string
+                }
+              }
+              #(exec_env, result_json)
+            }
+            Error(_) -> {
+              let err = "Invalid write_file arguments"
+              hermes_logger.failure(state.session_id, "tool_call_failed", err, [
+                #("tool", call.name),
+              ])
+              #(
+                exec_env,
+                json.object([#("error", json.string(err))])
+                  |> json.to_string,
+              )
+            }
+          }
+        }
       }
     }
 
     "read_file" -> {
-      let parsed =
-        json.parse(from: call.arguments, using: {
-          use path <- decode.field("path", decode.string)
-          decode.success(path)
-        })
-      case parsed {
-        Ok(path) -> {
-          case quiet {
-            False -> io.println("  [tool: read_file] <- " <> path)
-            True -> Nil
-          }
-          let full_path = case string.starts_with(path, "/") {
-            True -> path
-            False -> exec_env.cwd <> "/" <> path
-          }
-          let read_result = do_read_file(full_path)
-          let result_json = case read_result {
-            Ok(contents) ->
-              json.object([#("contents", json.string(contents))])
-              |> json.to_string
-            Error(err) ->
-              json.object([#("error", json.string(err))])
-              |> json.to_string
-          }
-          #(exec_env, result_json)
-        }
-        Error(_) -> #(
+      case tool_policy_allows(state.tool_policy, ReadFile) {
+        False -> #(
           exec_env,
-          json.object([#("error", json.string("Invalid read_file arguments"))])
+          json.object([#("error", json.string("read_file is disabled for this session"))])
             |> json.to_string,
         )
+        True -> {
+          let parsed =
+            json.parse(from: call.arguments, using: decode_file_path())
+          case parsed {
+            Ok(path) -> {
+              case quiet {
+                False -> io.println("  [tool: read_file] <- " <> path)
+                True -> Nil
+              }
+              let full_path = case string.starts_with(path, "/") {
+                True -> path
+                False -> exec_env.cwd <> "/" <> path
+              }
+              let read_result = do_read_file(full_path)
+              let result_json = case read_result {
+                Ok(contents) ->
+                  json.object([#("contents", json.string(contents))])
+                  |> json.to_string
+                Error(err) -> {
+                  hermes_logger.failure(state.session_id, "tool_call_failed", err, [
+                    #("tool", call.name),
+                  ])
+                  json.object([#("error", json.string(err))])
+                  |> json.to_string
+                }
+              }
+              #(exec_env, result_json)
+            }
+            Error(_) -> {
+              let err = "Invalid read_file arguments"
+              hermes_logger.failure(state.session_id, "tool_call_failed", err, [
+                #("tool", call.name),
+              ])
+              #(
+                exec_env,
+                json.object([#("error", json.string(err))])
+                  |> json.to_string,
+              )
+            }
+          }
+        }
       }
     }
 
     "semantic_search_history" -> {
-      let parsed =
-        json.parse(from: call.arguments, using: {
-          use query <- decode.field("query", decode.string)
-          decode.success(query)
-        })
-      case parsed {
-        Ok(query) -> {
-          case quiet {
-            False -> io.println("  [tool: semantic_search_history] ? " <> query)
-            True -> Nil
-          }
-          // The semantic search uses our new semantic_search.gleam module to generate embedding 
-          // (Mock response for pure gleam math)
-          let result_json =
-            json.object([
-              #("status", json.string("embedded and matched mock")),
-              #("query", json.string(query)),
-            ])
-            |> json.to_string
-          #(exec_env, result_json)
-        }
-        Error(_) -> #(
+      case env_flag_enabled("HERMES_ENABLE_SEMANTIC_SEARCH") {
+        False -> #(
           exec_env,
-          json.object([#("error", json.string("Invalid search arguments"))])
+          json.object([#("error", json.string("semantic_search_history is disabled; set HERMES_ENABLE_SEMANTIC_SEARCH=true to expose it"))])
             |> json.to_string,
         )
+        True -> {
+          let parsed =
+            json.parse(from: call.arguments, using: {
+              use query <- decode.field("query", decode.string)
+              decode.success(query)
+            })
+          case parsed {
+            Ok(query) -> {
+              case quiet {
+                False -> io.println("  [tool: semantic_search_history] ? " <> query)
+                True -> Nil
+              }
+              let result_json =
+                json.object([
+                  #("status", json.string("semantic search placeholder enabled; no persisted embedding index is wired yet")),
+                  #("query", json.string(query)),
+                ])
+                |> json.to_string
+              #(exec_env, result_json)
+            }
+            Error(_) -> #(
+              exec_env,
+              json.object([#("error", json.string("Invalid search arguments"))])
+                |> json.to_string,
+            )
+          }
+        }
       }
     }
 
     "handoff_session" -> {
-      let parsed =
-        json.parse(from: call.arguments, using: {
-          use target <- decode.field("target_session_id", decode.string)
-          use context <- decode.field("handoff_context", decode.string)
-          decode.success(#(target, context))
-        })
-      case parsed {
-        Ok(#(target, context)) -> {
-          case quiet {
-            False -> io.println("  [tool: handoff_session] -> " <> target)
-            True -> Nil
-          }
-          let timestamp = int.to_float(system_time_ms()) /. 1000.0
-          let handoff_msg =
-            "<handoff_context>\n" <> context <> "\n</handoff_context>"
-          let _ =
-            state_actor.insert_message(
-              state.db_conn,
-              target,
-              "system",
-              handoff_msg,
-              handoff_msg,
-              timestamp,
-            )
-          let result_json =
-            json.object([
-              #(
-                "status",
-                json.string("handoff payload injected to target session"),
-              ),
-            ])
-            |> json.to_string
-          #(exec_env, result_json)
-        }
-        Error(_) -> #(
+      case tool_policy_allows(state.tool_policy, UseWorkers) {
+        False -> #(
           exec_env,
-          json.object([#("error", json.string("Invalid handoff arguments"))])
+          json.object([#("error", json.string("handoff_session is disabled for this session"))])
             |> json.to_string,
         )
+        True -> {
+          let parsed =
+            json.parse(from: call.arguments, using: {
+              use target <- decode.field("target_session_id", decode.string)
+              use context <- decode.field("handoff_context", decode.string)
+              decode.success(#(target, context))
+            })
+          case parsed {
+            Ok(#(target, context)) -> {
+              case quiet {
+                False -> io.println("  [tool: handoff_session] -> " <> target)
+                True -> Nil
+              }
+              let timestamp = int.to_float(system_time_ms()) /. 1000.0
+              let handoff_msg =
+                "<handoff_context>\n" <> context <> "\n</handoff_context>"
+              let _ =
+                state_actor.insert_message(
+                  state.db_conn,
+                  target,
+                  "system",
+                  handoff_msg,
+                  handoff_msg,
+                  timestamp,
+                )
+              let result_json =
+                json.object([
+                  #(
+                    "status",
+                    json.string("handoff payload injected to target session"),
+                  ),
+                ])
+                |> json.to_string
+              #(exec_env, result_json)
+            }
+            Error(_) -> #(
+              exec_env,
+              json.object([#("error", json.string("Invalid handoff arguments"))])
+                |> json.to_string,
+            )
+          }
+        }
       }
     }
 
@@ -277,13 +392,27 @@ pub fn dispatch_tool(
       }
       let result_json = case state.mcp_client {
         Some(client) -> {
-          case mcp_client.call_tool(client, unknown, call.arguments) {
-            Ok(res) -> res
-            Error(err) ->
-              json.object([#("error", json.string(err))]) |> json.to_string
+          case tool_policy_allows(state.tool_policy, UseMcp) {
+            False ->
+              json.object([#("error", json.string("MCP tools are disabled for this session"))])
+              |> json.to_string
+            True -> {
+              case mcp_client.call_tool(client, unknown, call.arguments) {
+                Ok(res) -> res
+                Error(err) -> {
+                  hermes_logger.failure(state.session_id, "mcp_tool_call_failed", err, [
+                    #("tool", unknown),
+                  ])
+                  json.object([#("error", json.string(err))]) |> json.to_string
+                }
+              }
+            }
           }
         }
         None -> {
+          hermes_logger.failure(state.session_id, "tool_call_failed", "Unknown tool", [
+            #("tool", unknown),
+          ])
           json.object([
             #(
               "error",
@@ -302,6 +431,29 @@ pub fn dispatch_tool(
   }
 }
 
+/// Decode the canonical `path` tool argument, while accepting the older
+/// `file_path` spelling from stale clients or model context.
+pub fn decode_file_path() -> decode.Decoder(String) {
+  decode.one_of(
+    {
+      use path <- decode.field("path", decode.string)
+      decode.success(path)
+    },
+    or: [
+      {
+        use file_path <- decode.field("file_path", decode.string)
+        decode.success(file_path)
+      },
+    ],
+  )
+}
+
+pub fn decode_file_path_argument(
+  next: fn(String) -> decode.Decoder(t),
+) -> decode.Decoder(t) {
+  decode.then(decode_file_path(), next)
+}
+
 // ─── FFI Bindings for file I/O ─────────────────────────────────────────────────
 
 @external(erlang, "hermes_agent_ffi", "write_file")
@@ -317,28 +469,48 @@ fn system_time_ms() -> Int
 
 /// Returns the JSON string for all registered tool schemas to include in API requests.
 pub fn all_tool_schemas(mcp_client: Option(mcp_client.McpClient)) -> String {
-  let base_schemas = tools_registry.all_core_tool_schemas()
+  all_tool_schemas_with_policy(mcp_client, default_tool_policy())
+}
+
+pub fn all_tool_schemas_with_policy(
+  mcp_client: Option(mcp_client.McpClient),
+  tool_policy: ToolPolicy,
+) -> String {
+  let base_schemas =
+    tools_registry.all_core_tool_schemas_with_policy(fn(name) {
+      tool_policy_allows_tool(tool_policy, name)
+    })
   case mcp_client {
     Some(client) -> {
-      case mcp_client.list_tools(client) {
-        Ok(tools) -> {
-          let mcp_schemas =
-            list.map(tools, fn(t) {
-              "{\"type\":\"function\",\"function\":{\"name\":\""
-              <> t.name
-              <> "\",\"description\":\""
-              <> t.description
-              <> "\",\"parameters\":"
-              <> t.input_schema
-              <> "}}"
-            })
-            |> string.join(",")
-          case mcp_schemas == "" {
-            True -> "[" <> base_schemas <> "]"
-            False -> "[" <> base_schemas <> "," <> mcp_schemas <> "]"
+      case tool_policy_allows(tool_policy, UseMcp) {
+        False -> "[" <> base_schemas <> "]"
+        True -> {
+          case mcp_client.list_tools(client) {
+            Ok(tools) -> {
+              let mcp_schemas =
+                list.map(tools, fn(t) {
+                  "{\"type\":\"function\",\"function\":{\"name\":\""
+                  <> t.name
+                  <> "\",\"description\":\""
+                  <> t.description
+                  <> "\",\"parameters\":"
+                  <> t.input_schema
+                  <> "}}"
+                })
+                |> string.join(",")
+              case base_schemas, mcp_schemas {
+                "", "" -> "[]"
+                "", schemas -> "[" <> schemas <> "]"
+                schemas, "" -> "[" <> schemas <> "]"
+                schemas, mcp -> "[" <> schemas <> "," <> mcp <> "]"
+              }
+            }
+            Error(err) -> {
+              hermes_logger.failure("global", "mcp_list_tools_failed", err, [])
+              "[" <> base_schemas <> "]"
+            }
           }
         }
-        Error(_) -> "[" <> base_schemas <> "]"
       }
     }
     None -> "[" <> base_schemas <> "]"
@@ -1130,18 +1302,14 @@ pub fn agent_turn_loop(
         True -> None
       }
 
-      let honcho = memory_plugin.honcho_adapter(state.api_key, "user-default")
-      let mem_ctx = case honcho.retrieve_context(state.session_id) {
-        Ok(ctx) -> ctx
-        Error(_) -> ""
-      }
+      let mem_ctx = memory_context(state)
 
       let body =
         build_request_body(
           active_model2,
           state.system_prompt,
           list.reverse(state.history),
-          all_tool_schemas(state.mcp_client),
+          all_tool_schemas_with_policy(state.mcp_client, state.tool_policy),
           True,
           mem_ctx,
         )
@@ -1168,6 +1336,9 @@ pub fn agent_turn_loop(
             None -> Nil
           }
           let err = "Circuit breaker blocked request to " <> active_model2 <> " due to consecutive failures."
+          hermes_logger.failure(state.session_id, "llm_request_blocked", err, [
+            #("model", active_model2),
+          ])
           case quiet {
             False -> io.println("\n[" <> err <> "]")
             True -> Nil
@@ -1180,6 +1351,9 @@ pub fn agent_turn_loop(
             None -> Nil
           }
           let err = "Token budget exhausted."
+          hermes_logger.failure(state.session_id, "llm_request_blocked", err, [
+            #("model", active_model2),
+          ])
           case quiet {
             False -> io.println("\n[" <> err <> "]")
             True -> Nil
@@ -1207,6 +1381,9 @@ pub fn agent_turn_loop(
                 None -> Nil
               }
               span.set_error_message(span_ctx, "API request failed: " <> err)
+              hermes_logger.failure(state.session_id, "llm_request_failed", err, [
+                #("model", active_model2),
+              ])
               case spinner {
                 Some(s) -> kawaii_spinner.stop(s)
                 None -> Nil
@@ -1282,6 +1459,9 @@ pub fn agent_turn_loop(
                             None -> Nil
                           }
                           span.set_error_message(span_ctx, "Stream failed: " <> reason)
+                          hermes_logger.failure(state.session_id, "llm_stream_failed", reason, [
+                            #("model", active_model2),
+                          ])
                           ErrorResponse("Stream failed: " <> reason)
                         }
                         False -> {
@@ -1400,6 +1580,9 @@ pub fn agent_turn_loop(
             // Inspired by lm-eval-harness per-error-type retry config:
             // auth errors advance immediately, timeouts retry then advance.
             ErrorResponse(reason) -> {
+              hermes_logger.failure(state.session_id, "llm_response_failed", reason, [
+                #("model", active_model2),
+              ])
               let classified = error_classifier.classify(reason)
               case quiet {
                 False ->
@@ -1504,18 +1687,14 @@ pub fn fetch_fallback_non_streaming(
       ])
 
       // Build non-streaming body
-      let honcho = memory_plugin.honcho_adapter(state.api_key, "user-default")
-      let mem_ctx = case honcho.retrieve_context(state.session_id) {
-        Ok(ctx) -> ctx
-        Error(_) -> ""
-      }
+      let mem_ctx = memory_context(state)
 
       let body =
         build_request_body(
           state.model,
           state.system_prompt,
           list.reverse(state.history),
-          all_tool_schemas(state.mcp_client),
+          all_tool_schemas_with_policy(state.mcp_client, state.tool_policy),
           False,
           mem_ctx,
         )
@@ -1558,13 +1737,16 @@ pub fn fetch_fallback_non_streaming(
             }
           }
         }
-        Error(err) -> {
+            Error(err) -> {
           let _ = case state.circuit_breaker {
             Some(cb) -> circuit_breaker_actor.record_failure(cb, state.model)
             None -> Nil
-          }
-          span.set_error_message(span_ctx, "API request failed: " <> err)
-          ErrorResponse(err)
+              }
+              span.set_error_message(span_ctx, "API request failed: " <> err)
+              hermes_logger.failure(state.session_id, "llm_request_failed", err, [
+                #("model", state.model),
+              ])
+              ErrorResponse(err)
         }
       }
     }
@@ -1572,6 +1754,29 @@ pub fn fetch_fallback_non_streaming(
 }
 
 // ─── Public Entry Point ────────────────────────────────────────────────────────
+
+fn memory_context(state: AgentState) -> String {
+  let backend = case constants.get_env("HERMES_MEMORY_BACKEND") {
+    Some(value) -> string.lowercase(string.trim(value))
+    None -> ""
+  }
+
+  let plugin = case backend {
+    "honcho" -> Some(memory_plugin.honcho_adapter(state.api_key, "user-default"))
+    "mem0" -> Some(memory_plugin.mem0_adapter(state.api_key, "user-default"))
+    "supermemory" -> Some(memory_plugin.supermemory_adapter(state.api_key, "user-default"))
+    "gleamdb" -> Some(memory_plugin.gleamdb_memory_adapter(state.db_conn))
+    _ -> None
+  }
+
+  case plugin {
+    Some(memory) -> case memory.retrieve_context(state.session_id) {
+      Ok(ctx) -> ctx
+      Error(_) -> ""
+    }
+    None -> ""
+  }
+}
 
 pub fn compress_history(
   history: List(String),
@@ -1661,6 +1866,9 @@ pub fn compress_history(
             None -> Nil
           }
           span.set_error_message(span_ctx, "Compression API request failed: " <> err_str)
+          hermes_logger.failure(state.session_id, "llm_compression_failed", err_str, [
+            #("model", summary_model),
+          ])
           Error("Compression API request failed: " <> err_str)
         }
       }
@@ -1729,6 +1937,9 @@ pub fn run_conversation(
   case result {
     Error(err) -> {
       span.set_error_message(span_ctx, err)
+      hermes_logger.failure(state.session_id, "session_run_failed", err, [
+        #("model", state.model),
+      ])
       result
     }
     Ok(_) -> result
@@ -1768,6 +1979,7 @@ pub fn new_agent_state(
         router: Some(model_router.from_env()),
         circuit_breaker: circuit_breaker,
         token_budget: token_budget,
+        tool_policy: default_tool_policy(),
       ))
     Error(_) -> Error("Failed to start iteration budget actor")
   }

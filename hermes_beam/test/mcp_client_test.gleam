@@ -1,6 +1,7 @@
 import gleam/list
 import gleam/string
 import gleeunit/should
+import hermes_logger
 import qcheck
 
 // A pure version of the buffer logic used in mcp_client
@@ -46,4 +47,17 @@ pub fn buffer_reconstitution_property_test() {
 
   should.equal(final_buf1, final_buf2)
   should.equal(lines1, lines2)
+}
+
+pub fn structured_event_message_test() {
+  hermes_logger.event_message("mcp_tool_call_failed", [
+    #("reason", "Timeout"),
+    #("tool", "demo_tool"),
+  ])
+  |> should.equal("event=mcp_tool_call_failed reason=Timeout tool=demo_tool")
+}
+
+pub fn structured_event_message_without_fields_test() {
+  hermes_logger.event_message("session_run_failed", [])
+  |> should.equal("event=session_run_failed")
 }

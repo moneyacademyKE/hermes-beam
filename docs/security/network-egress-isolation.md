@@ -61,8 +61,7 @@ agent on the internal network.
 
 ## Compose Configuration
 
-Override the default `docker-compose.yml` with a
-`docker-compose.override.yml`:
+The former Docker Compose stack targeted the legacy Python/Node Hermes Agent container and has been removed from the repository. If a Docker Compose deployment is deliberately revived, start from the active Hermes BEAM container entry points and include network isolation in the primary compose file:
 
 ```yaml
 # docker-compose.override.yml
@@ -192,4 +191,3 @@ docker compose exec gateway \
 
 - [SECURITY.md](../../SECURITY.md) — Hermes trust model and vulnerability reporting
 - [Terminal backends](../../README.md) — sandboxed execution targets
-- [docker-compose.yml](../../docker-compose.yml) — default compose configuration

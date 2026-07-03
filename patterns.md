@@ -1558,4 +1558,90 @@ Executing LLM-based skill curation synchronously inside the conversation loop ad
 ### Benefit
 Isolates cognitive curation from real-time response generation, maintaining fast conversation response times while enabling persistent, autonomous learning across sessions.
 
+---
+
+## 40. JVM-Free Dependency Vendoring & Task Integration Pattern (Babashka)
+
+### Context
+When developing Clojure/Babashka workers designed for 100% JVM-Free native execution (e.g. inside Docker or resource-constrained developer setups), declaring dynamic external dependencies (`:deps`) in `bb.edn` forces Babashka to spawn a JVM-based dependency resolver. This breaks portability on machines lacking a JDK/JRE runtime.
+
+### Problem
+Runtime dependency resolution complects program execution with package fetching and requires a heavy Java Runtime Environment (JRE/JDK) to parse Maven or Git trees, defeating the speed and simplicity of standalone native binaries.
+
+### Pattern
+1. **Source Vendoring**: Download the raw `.clj` source files of third-party libraries (e.g. `babashka/nrepl-client` and `nextdoc/ai-tools`) directly into folders within the local `src/` hierarchy (e.g., `src/babashka/`, `src/io/nextdoc/`).
+2. **Local Classpath Resolution**: Ensure the `bb.edn` paths include the vendored directories: `{:paths ["src" "test"]}`.
+3. **Dynamic Task Registration**: Declare CLI tasks in `bb.edn` that require the local namespaces directly, removing the `:deps` map completely:
+   ```clojure
+   :tasks
+   {nrepl:test {:requires [[io.nextdoc.tools :as tools]]
+                :task (System/exit (tools/run-tests-task *command-line-args*))}}
+   ```
+
+### Benefit
+Allows complex external utility frameworks and nREPL connection setups to execute with sub-10ms startup latency entirely within the standalone native Babashka binary, achieving zero external JRE/JDK runtime dependencies.
+
+---
+
+## 41. Stdio-to-Socket Relay Bridge Pattern (MCP)
+
+### Context
+When integrating agents with graphical IDE extensions (such as VS Code's Calva Backseat Driver), the extension publishes its capabilities via a local TCP socket server. Standard agent frameworks (like Model Context Protocol) require stdio processes.
+
+### Problem
+Directly connecting standard stdio-bound agents to editor-bound TCP socket ports is impossible without a local proxy or relay script.
+
+### Pattern
+1. **Find Port Dynamically**: Look up the socket port from the designated IDE state directory (e.g. `<workspace>/.calva/mcp-server/port`).
+2. **Setup Socket Connection**: Open a TCP Socket to `127.0.0.1` using the parsed port.
+3. **Asynchronous Bidirectional Piping**: Spawn two concurrent threads or futures (in Clojure, using `future`) to pipe input streams to output streams:
+   * Thread 1: Read from standard input (`System/in`) and write to socket output.
+   * Thread 2: Read from socket input and write to standard output (`System/out`).
+4. **Clean Shutdown**: Wrap streams in `with-open` so that if either stream hits EOF or throws an exception, all resources close cleanly.
+
+### Example
+```clojure
+(defn- pipe [^InputStream in ^OutputStream out]
+  (let [buffer (byte-array 4096)]
+    (try
+      (loop []
+        (let [n (.read in buffer)]
+          (when (pos? n)
+            (.write out buffer 0 n)
+            (.flush out)
+            (recur))))
+      (catch Exception _ nil))))
+
+(defn start-bridge [port]
+  (with-open [socket (Socket. "127.0.0.1" port)
+              sin (.getInputStream socket)
+              sout (.getOutputStream socket)]
+    (let [t1 (future (pipe System/in sout))
+          t2 (future (pipe sin System/out))]
+      @t1
+      @t2)))
+```
+
+### Benefit
+Allows standard Stdio-based AI agent hosts to interact seamlessly with socket-based IDE extension servers, enabling visual editor evaluations and AST-safe edits.
+
+---
+
+## 42. Explicit Learning Log Pattern (Model-Agnostic Coding Taste)
+
+### Context
+When building autonomous coding agents that adapt to the developer's coding styles, choices, and corrections, the agent needs a persistent preference representation.
+
+### Problem
+Implicit neuro-symbolic taste profiles are opaque, proprietary, and complected with the AI model weights and synchronization server lifecycles, causing lock-in and auditability challenges.
+
+### Pattern
+1. **Explicit Data Representation**: Record style guidelines, framework rules, bug resolutions, and patterns inside standard Markdown files (`learnings.md` and `patterns.md`) located in the root of the workspace.
+2. **Standard Git Versioning**: Save and version the logs directly in the project repository using standard Git commands. This makes preferences portable and shareable with team members out-of-the-box without requiring special sync tools.
+3. **Structured Entry Synthesis**: At the end of a coding session, task the agent with analyzing the execution transcript and compiling key lessons into new log entries following a strict format (Problem -> Resolution -> Impact).
+4. **Context Injection**: Require the agent to read these log files at the start of a session to dynamically shape its behavior according to the project's coding style.
+
+### Benefit
+Guarantees absolute transparency and human-editability of agent preferences, ensures 100% model agnosticism, and enables teams to track style evolution using standard version control histories.
+
 

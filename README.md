@@ -1,114 +1,79 @@
-# Hermes BEAM ☤
+# Hermes BEAM
 
-**The highly concurrent, fault-tolerant, and stateful AI agent ecosystem built on Erlang/OTP, written in Gleam.**
+Hermes BEAM is the primary runtime in this repository: a Gleam application on Erlang/OTP for supervised, stateful AI-agent execution.
 
-Hermes BEAM is a pure Gleam port of the reference `hermes-agent` implementation. By leveraging the Erlang Virtual Machine (BEAM) and the Open Telecom Platform (OTP), it decomplectates runtime orchestration, platform gatekeepings, and sandbox executions into clean failure domains managed by supervised actors.
+The active implementation lives in `hermes_beam/`. Other directories are support material, optional skills/MCP manifests, examples, historical analysis, or operational documentation.
 
----
+## Focus
 
-## 🚀 Key Features
+- `hermes_beam/` contains the BEAM runtime, tests, gateway entry points, actors, and worker orchestration.
+- `babashka_workers/` contains the Babashka worker sidecar used by subagent supervision.
+- `docs/` contains gap analyses, roadmap notes, and architecture walkthroughs for the BEAM migration.
+- `skills/` and `optional-mcps/` are bundled capability catalogs, not the runtime core.
 
-*   **Erlang/OTP Actor Concurrency**: Dynamic supervision trees (`static_supervisor`), circuit breakers (`circuit_breaker_actor`), token budgets, and mailboxes ensure 100% thread safety and isolated failure containment.
-*   **Native GleamDB Memory Stack**: Uses a local, Clojure-backed Datalog database (via out-of-process Babashka workers). Custom relational facts are transacted as `[Entity, Attribute, Value]` Datoms.
-*   **Dialectic Contradiction Detection**: Runs deterministic inequality query constraints (`[[!= ?v1 ?v2]]`) in local Datalog to flag conflicting user preferences (e.g. VS Code vs. Emacs preference) instantly for agent-guided reconciliation.
-*   **Local Semantic Cross-Session Search**: Generates session context summaries, runs cosine similarity calculations in pure Gleam, and queries nearest-neighbor session embeddings from a local SQLite database.
-*   **Stateful Cron Scheduler Actor**: Features a pure 5-field cron parser (`*/15`, `1-5`, `0,7`) with minute-resolution Unix-epoch check limits to prevent double triggering, spawning conversations in background processes to keep the tick loop non-blocking.
-*   **Autonomous Curation Hook**: Hooked directly into the REPL session exit. On `/quit` or `/exit`, the curator analyzes the chronological session transcript and compiles reusable patterns into standard `SKILL.md` files.
+## Requirements
 
----
+- Erlang/OTP 26 or newer
+- Gleam 1.2 or newer
+- Babashka for worker-side Datalog/subagent support
+- `make` for the top-level command shortcuts
 
-## 🛠 Architecture & Supervision
+## Quick Start
 
-```mermaid
-graph TD
-    App[hermes_beam] --> Sup[static_supervisor: OneForAll]
-    Sup --> SA[state_actor]
-    Sup --> CB[circuit_breaker_actor]
-    Sup --> US[subagent_supervisor]
-    US --> BB[Babashka Worker UDS Daemon]
-    SA --> SQLite[(SQLite Session Store)]
-    App --> TG[Telegram Gateway Bot]
-    App --> REPL[REPL Input Loop]
+```sh
+cp .env.example .env
+make build
+make test
+make doctor
+make run
 ```
 
-*   **State Isolation**: The SQLite session database is managed by a single state actor, eliminating write contention.
-*   **Process Boundaries**: Network I/O (LLM completion calls) and terminal commands are executed under monitored, asynchronous `taskle` processes to guarantee safety boundaries and recover from crashes.
+Telegram gateway mode requires `HERMES_TELEGRAM_TOKEN`:
 
----
-
-## 📦 Installation & Setup
-
-### Prerequisites
-
-Ensure you have the following installed on your system:
-*   [Gleam](https://gleam.run/) (v1.2+)
-*   [Erlang/OTP](https://www.erlang.org/) (v26+)
-*   [Babashka](https://babashka.org/) (for out-of-process Datalog queries)
-
-### 1. Clone & Build
-
-```bash
-git clone https://github.com/criticalinsight/hermes-beam-port.git
-cd hermes-beam-port/hermes_beam
-gleam build
+```sh
+make telegram
 ```
 
-### 2. Environment Variables
+## Command Reference
 
-Create a `.env` file in the root of your home directory (`~/.hermes/.env`) or configure these in your shell environment:
+Top-level commands are defined in `Makefile` and documented in `COMMANDS.md`.
+
+- `make build` builds `hermes_beam`.
+- `make test` runs the Gleam test suite.
+- `make run` starts the interactive Hermes BEAM runner.
+- `make telegram` starts the Telegram gateway.
+- `make worker-test` runs the worker/supervisor-focused tests.
+- `make doctor` checks required local tools, Hermes home directories, credentials, optional MCP command configuration, Babashka availability, and Telegram gateway hardening hints.
+
+Retired Python/Node packaging, Nix, old Docker Compose, website deployment, PyPI/uv, Windows installer, WhatsApp bridge, and scratch Gleam surfaces have been removed from the repository. New runtime work should stay subordinate to `hermes_beam/` unless it has an explicit support plan.
+
+## Runtime Configuration
+
+Use `.env.example` as the concise list of supported Hermes BEAM environment variables. The application loads `.env` from `HERMES_HOME` when configured, and shell-exported variables also work.
+
+Minimum useful variables:
 
 ```env
-HERMES_API_KEY="your-llm-api-key"
-HERMES_BASE_URL="https://api.openai.com/v1" # Or OpenRouter, Portal, etc.
-HERMES_MODEL="meta-llama/llama-3-8b-instruct:free"
-HERMES_TELEGRAM_TOKEN="your-telegram-bot-token"
+HERMES_API_KEY=...
+HERMES_BASE_URL=https://openrouter.ai/api/v1
+HERMES_MODEL=openai/gpt-4o-mini
+HERMES_HOME=~/.hermes
 ```
 
----
+Production setup and operational hardening are documented in `docs/production.md`; credential handling and gateway security guidance are documented in `docs/security.md`.
 
-## 🎮 Usage
+Optional subsystems are off unless explicitly configured:
 
-### Start Interactive REPL
+- `HERMES_ENABLE_SKILL_SYNTHESIS=true` enables REPL-exit synthesis of `SKILL.md` files.
+- `HERMES_ENABLE_SEMANTIC_SEARCH=true` exposes the placeholder `semantic_search_history` tool schema; leave it unset until a persisted embedding index is available.
+- `HERMES_MEMORY_BACKEND=gleamdb|honcho|mem0|supermemory` selects a memory context backend; unset disables memory injection.
+- `--server` is intentionally disabled and exits without starting an API listener.
+- `cron_scheduler` is a tested library module, not started by any CLI or supervisor entry point.
 
-Runs the pure command-line console loop. Command autocomplete is automatically wired to the Erlang shell.
+## Roadmap Context
 
-```bash
-gleam run
-```
+The stabilization roadmap is tracked in `docs/walkthrough_hermes_beam_roadmap.md` and adjacent `docs/gap_analysis_*` files. Repository-level maintenance should keep Hermes BEAM as the clear default and avoid reintroducing high-complexity non-BEAM entry points.
 
-### Start Telegram Gateway
+## License
 
-Boots the supervised Telegram updates poller. Message queues are handled sequentially per chat ID.
-
-```bash
-gleam run --telegram
-```
-
-### Run Tests
-
-Runs the full test suite verifying cron ticks, Datalog queries, vector similarity, and skill synthesis:
-
-```bash
-gleam test
-```
-
----
-
-## 📚 Interactive REPL Commands
-
-*   `/quit` or `/exit` — Cleanly terminates REPL, curating the session transcript to synthesize new skills.
-*   `/help` — Prints the command listing.
-*   `/clear` — Wipes the current in-memory conversation history.
-*   `/sessions` — Lists the 10 most recent sessions stored in the SQLite DB.
-*   `/resume <session_id>` — Resumes a session, loading history and current working directory.
-*   `/rollback <N>` — Rolls back the active session history by `N` turns.
-*   `/search <query>` — Runs SQLite FTS5 search across historical transcripts.
-*   `/goal <prompt>` — Enters Goal Mode (background worker execution).
-*   `/cwd <path>` — Updates the active session's terminal working directory.
-*   `/run <command>` — Runs a shell command locally (under macOS sandbox constraints if enabled).
-
----
-
-## 📄 License
-
-MIT License. See `LICENSE` for details.
+MIT. See `LICENSE` when present in this checkout.

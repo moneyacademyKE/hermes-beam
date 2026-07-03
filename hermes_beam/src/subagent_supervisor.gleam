@@ -56,31 +56,36 @@ pub fn start_supervisor(
   socket_path: String,
   db_conn: StateActor,
 ) -> Result(Subject(SupervisorMessage), String) {
-  case uds_ffi.listen_uds(socket_path) {
-    Ok(lsock) -> {
-      let res =
-        actor.new_with_initialiser(1000, fn(subj) {
-          let state =
-            SupervisorState(socket_path, lsock, [], db_conn, subj, 5, [])
-          let selector = process.new_selector() |> process.select(subj)
-          actor.initialised(state)
-          |> actor.selecting(selector)
-          |> actor.returning(subj)
-          |> Ok
-        })
-        |> actor.on_message(handle_message)
-        |> actor.start()
+  case prepare_socket_path(socket_path) {
+    Error(err) -> Error(err)
+    Ok(Nil) -> {
+      case uds_ffi.listen_uds(socket_path) {
+        Ok(lsock) -> {
+          let res =
+            actor.new_with_initialiser(1000, fn(subj) {
+              let state =
+                SupervisorState(socket_path, lsock, [], db_conn, subj, 5, [])
+              let selector = process.new_selector() |> process.select(subj)
+              actor.initialised(state)
+              |> actor.selecting(selector)
+              |> actor.returning(subj)
+              |> Ok
+            })
+            |> actor.on_message(handle_message)
+            |> actor.start()
 
-      case res {
-        Ok(started) -> {
-          let subj = started.data
-          let _ = process.spawn(fn() { accept_loop(lsock, subj) })
-          Ok(subj)
+          case res {
+            Ok(started) -> {
+              let subj = started.data
+              let _ = process.spawn(fn() { accept_loop(lsock, subj) })
+              Ok(subj)
+            }
+            Error(e) -> Error("Actor start failed: " <> string.inspect(e))
+          }
         }
-        Error(e) -> Error("Actor start failed: " <> string.inspect(e))
+        Error(e) -> Error("Failed to start UDS supervisor: " <> string.inspect(e))
       }
     }
-    Error(e) -> Error("Failed to start UDS supervisor: " <> string.inspect(e))
   }
 }
 
@@ -89,32 +94,59 @@ pub fn start_supervised(
   socket_path: String,
   db_conn: StateActor,
 ) -> Result(actor.Started(Subject(SupervisorMessage)), actor.StartError) {
-  case uds_ffi.listen_uds(socket_path) {
-    Ok(lsock) -> {
-      let res =
-        actor.new_with_initialiser(1000, fn(subj) {
-          let state =
-            SupervisorState(socket_path, lsock, [], db_conn, subj, 5, [])
-          let selector = process.new_selector() |> process.select(subj)
-          actor.initialised(state)
-          |> actor.selecting(selector)
-          |> actor.returning(subj)
-          |> Ok
-        })
-        |> actor.on_message(handle_message)
-        |> actor.named(name)
-        |> actor.start()
+  case prepare_socket_path(socket_path) {
+    Error(err) -> Error(actor.InitFailed(err))
+    Ok(Nil) -> {
+      case uds_ffi.listen_uds(socket_path) {
+        Ok(lsock) -> {
+          let res =
+            actor.new_with_initialiser(1000, fn(subj) {
+              let state =
+                SupervisorState(socket_path, lsock, [], db_conn, subj, 5, [])
+              let selector = process.new_selector() |> process.select(subj)
+              actor.initialised(state)
+              |> actor.selecting(selector)
+              |> actor.returning(subj)
+              |> Ok
+            })
+            |> actor.on_message(handle_message)
+            |> actor.named(name)
+            |> actor.start()
 
-      case res {
-        Ok(started) -> {
-          let subj = started.data
-          let _ = process.spawn(fn() { accept_loop(lsock, subj) })
-          Ok(actor.Started(pid: started.pid, data: subj))
+          case res {
+            Ok(started) -> {
+              let subj = started.data
+              let _ = process.spawn(fn() { accept_loop(lsock, subj) })
+              Ok(actor.Started(pid: started.pid, data: subj))
+            }
+            Error(e) -> Error(e)
+          }
         }
-        Error(e) -> Error(e)
+        Error(e) -> Error(actor.InitFailed(string.inspect(e)))
       }
     }
-    Error(e) -> Error(actor.InitFailed(string.inspect(e)))
+  }
+}
+
+fn prepare_socket_path(socket_path: String) -> Result(Nil, String) {
+  let parent = constants.dirname(socket_path)
+  case simplifile.create_directory_all(parent) {
+    Ok(Nil) -> {
+      case simplifile.is_directory(socket_path) {
+        Ok(True) -> Error("UDS socket path is a directory: " <> socket_path)
+        _ -> {
+          let _ = simplifile.delete(socket_path)
+          Ok(Nil)
+        }
+      }
+    }
+    Error(err) ->
+      Error(
+        "Failed to create UDS socket directory "
+        <> parent
+        <> ": "
+        <> string.inspect(err),
+      )
   }
 }
 

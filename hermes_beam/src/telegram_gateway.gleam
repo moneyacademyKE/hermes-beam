@@ -4,6 +4,7 @@ import gleam/erlang/process
 import gleam/http
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response, Response}
+import gleam/int
 import gleam/io
 import gleam/json
 import gleam/list
@@ -11,6 +12,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import gleam/uri
+import constants
 import taskle
 import telega
 import telega/api
@@ -21,9 +23,78 @@ import telega/model/decoder
 import telega/model/types
 import telega/reply
 import telega/router
+import telega/update
 
 pub type TelegramMessage {
   TelegramMessage(chat_id: Int, text: String)
+}
+
+pub type TelegramAccessPolicy {
+  TelegramAccessPolicy(allowed_users: List(String), allowed_chats: List(String))
+}
+
+pub fn parse_allowlist(value: String) -> List(String) {
+  value
+  |> string.split(on: ",")
+  |> list.map(string.trim)
+  |> list.filter(fn(item) { item != "" })
+}
+
+pub fn access_policy_from_env() -> TelegramAccessPolicy {
+  let allowed_users = case constants.get_env("HERMES_TELEGRAM_ALLOWED_USERS") {
+    Some(value) -> parse_allowlist(value)
+    None -> case constants.get_env("TELEGRAM_ALLOWED_USERS") {
+      Some(value) -> parse_allowlist(value)
+      None -> case constants.get_env("GATEWAY_ALLOWED_USERS") {
+        Some(value) -> parse_allowlist(value)
+        None -> []
+      }
+    }
+  }
+  let allowed_chats = case constants.get_env("HERMES_TELEGRAM_ALLOWED_CHATS") {
+    Some(value) -> parse_allowlist(value)
+    None -> case constants.get_env("TELEGRAM_ALLOWED_CHATS") {
+      Some(value) -> parse_allowlist(value)
+      None -> []
+    }
+  }
+  TelegramAccessPolicy(allowed_users: allowed_users, allowed_chats: allowed_chats)
+}
+
+pub fn is_allowed_chat(policy: TelegramAccessPolicy, chat_id: String) -> Bool {
+  case policy.allowed_chats {
+    [] -> True
+    allowed -> list.contains(allowed, chat_id)
+  }
+}
+
+pub fn is_allowed_user(policy: TelegramAccessPolicy, user_id: String) -> Bool {
+  case policy.allowed_users {
+    [] -> True
+    allowed -> list.contains(allowed, user_id)
+  }
+}
+
+pub fn is_allowed(
+  policy: TelegramAccessPolicy,
+  chat_id: String,
+  user_id: Option(String),
+) -> Bool {
+  let chat_allowed = is_allowed_chat(policy, chat_id)
+  let user_allowed = case policy.allowed_users, user_id {
+    [], _ -> True
+    _, Some(id) -> is_allowed_user(policy, id)
+    _, None -> False
+  }
+  chat_allowed && user_allowed
+}
+
+pub fn user_id_from_update(raw_update: update.Update) -> Option(String) {
+  case raw_update {
+    update.TextUpdate(from_id, _, _, _, _) -> Some(int.to_string(from_id))
+    update.CommandUpdate(from_id, _, _, _, _) -> Some(int.to_string(from_id))
+    _ -> None
+  }
 }
 
 @external(erlang, "timer", "sleep")
@@ -85,45 +156,68 @@ pub fn make_text_handler(
   bot.Context(Nil, error.TelegaError),
   String,
 ) -> Result(bot.Context(Nil, error.TelegaError), error.TelegaError) {
+  make_text_handler_with_policy(run_agent, access_policy_from_env())
+}
+
+pub fn make_text_handler_with_policy(
+  run_agent: fn(String, String) -> String,
+  policy: TelegramAccessPolicy,
+) -> fn(
+  bot.Context(Nil, error.TelegaError),
+  String,
+) -> Result(bot.Context(Nil, error.TelegaError), error.TelegaError) {
   fn(ctx: bot.Context(Nil, error.TelegaError), text: String) {
     let session_id = "tg_" <> ctx.key
 
-    let task =
-      taskle.async(fn() {
-        send_typing(ctx.config.api_client, ctx.key)
-        let reply_str = run_agent(text, session_id)
-        let _ = reply.with_text(ctx, reply_str)
-        Nil
-      })
+    let user_id = case policy.allowed_users {
+      [] -> None
+      _ -> user_id_from_update(ctx.update)
+    }
 
-    // Sequential wait per chat with 3 min timeout
-    case taskle.await(task, 180_000) {
-      Ok(Nil) -> Ok(ctx)
-      Error(taskle.Timeout) -> {
-        let _ = taskle.cancel(task)
-        let _ =
-          io.println(
-            "Telegram task timed out after 3 minutes for chat_id: " <> ctx.key,
-          )
-        let _ = reply.with_text(ctx, "Request timed out. Please try again.")
+    case is_allowed(policy, ctx.key, user_id) {
+      False -> {
+        io.println("Telegram message rejected by allowlist for chat_id: " <> ctx.key)
         Ok(ctx)
       }
-      Error(taskle.Crashed(reason)) -> {
-        let _ =
-          io.println(
-            "Telegram task crashed: " <> reason <> " for chat_id: " <> ctx.key,
-          )
-        let _ =
-          reply.with_text(ctx, "An internal error occurred. Please try again.")
-        Ok(ctx)
-      }
-      Error(_) -> {
-        let _ =
-          reply.with_text(
-            ctx,
-            "An internal task error occurred. Please try again.",
-          )
-        Ok(ctx)
+      True -> {
+        let task =
+          taskle.async(fn() {
+            send_typing(ctx.config.api_client, ctx.key)
+            let reply_str = run_agent(text, session_id)
+            let _ = reply.with_text(ctx, reply_str)
+            Nil
+          })
+
+        // Sequential wait per chat with 3 min timeout
+        case taskle.await(task, 180_000) {
+          Ok(Nil) -> Ok(ctx)
+          Error(taskle.Timeout) -> {
+            let _ = taskle.cancel(task)
+            let _ =
+              io.println(
+                "Telegram task timed out after 3 minutes for chat_id: " <> ctx.key,
+              )
+            let _ = reply.with_text(ctx, "Request timed out. Please try again.")
+            Ok(ctx)
+          }
+          Error(taskle.Crashed(reason)) -> {
+            let _ =
+              io.println(
+                "Telegram task crashed: " <> reason <> " for chat_id: " <> ctx.key,
+              )
+            let _ =
+              reply.with_text(ctx, "An internal error occurred. Please try again.")
+            Ok(ctx)
+          }
+          Error(_) -> {
+            let _ =
+              reply.with_text(
+                ctx,
+                "An internal task error occurred. Please try again.",
+              )
+            Ok(ctx)
+          }
+        }
       }
     }
   }

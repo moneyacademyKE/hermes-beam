@@ -47,6 +47,43 @@ pub fn get_tools_prompt() -> String {
   "You are a helpful assistant with access to shell tools. When you need to run a command, use the run_command tool. When you need to read a file, use read_file. When you need to write a file, use write_file. CRITICAL RULE: You MUST default to using Babashka (bb) for any task that requires scripting. NO PYTHON SHOULD EVER BE INVOKED. Use rich hickey path. red/green tdd. When implementing ensure Rich Hickey quality and completeness at every step.\n\nDATALOG & GRAPH PROMPTING GUIDELINES:\n1. All Datalog queries MUST be formatted as a Clojure vector: `[:find ... :where ...]`. Do not write bare keywords or malformed list structures.\n2. Rules are compile-time definitions; specify recursive path rules inside the \":where\" block or resolve them via Clojure helper functions in \"bb_eval\".\n3. For unknown database schemas, audit them using Datalog wildcard queries (e.g. `[:find ?a ?v :where [?e ?a ?v]]` or `[?e :active _]`) rather than guessing predicates.\n4. Avoid sidetracking by doing external web lookups or cloning external codebases to resolve database structure; use \"query_datalog\" directly to inspect state.\n\nGENERAL OUTPUT QUALITY GUIDELINES:\n1. Decomplect HTTP response headers from body reflection payload. Retrieve the actual response headers map, not the reflected JSON body.\n2. Ensure all log or list outputs write each entry on its own line followed by a newline delimiter (\\n) to avoid joined string concatenation.\n3. Clean up regex search outputs. Extract only clean tokens, explicitly stripping trailing non-alphanumeric syntax characters (e.g., closing parentheses, brackets, or semicolons).\n4. Format path query results as a single Clojure EDN vector (e.g. [\"A\" \"B\" \"C\" \"D\"]) rather than a flat, unstructured text list."
 }
 
+pub fn env_flag_enabled(name: String, default: Bool) -> Bool {
+  case constants.get_env(name) {
+    Some(value) -> case string.lowercase(string.trim(value)) {
+      "1" -> True
+      "true" -> True
+      "yes" -> True
+      "on" -> True
+      "0" -> False
+      "false" -> False
+      "no" -> False
+      "off" -> False
+      _ -> default
+    }
+    None -> default
+  }
+}
+
+pub fn telegram_tool_policy_from_env() -> hermes_agent.ToolPolicy {
+  let run_capabilities =
+    case env_flag_enabled("HERMES_TELEGRAM_ENABLE_RUN_COMMAND", False) {
+      True -> [hermes_agent.RunCommand]
+      False -> []
+    }
+  let write_capabilities =
+    case env_flag_enabled("HERMES_TELEGRAM_ENABLE_WRITE_FILE", False) {
+      True -> [hermes_agent.WriteFile]
+      False -> []
+    }
+  let capabilities =
+    list.append(
+      [hermes_agent.ReadFile, hermes_agent.UseMcp, hermes_agent.UseWorkers],
+      run_capabilities,
+    )
+    |> list.append(write_capabilities)
+  hermes_agent.ToolPolicy(capabilities: capabilities)
+}
+
 pub fn get_goal_prompt(goal: String) -> String {
   let dynamic_context =
     context_engine.execute_all(context_engine.default_plugins())
@@ -214,16 +251,25 @@ pub fn repl_loop(state: REPLState) -> Nil {
           io.println("Cleaning up terminal environment...")
           let _ = hermes_exec.cleanup(state.exec_env)
 
-          io.println("Curating session and checking for reusable skills...")
-          let skills_dir = constants.path_join(constants.get_hermes_home(), "skills")
-          let _ = curator.synthesize_skill(
-            state.session_id,
-            list.reverse(state.agent_state.history),
-            state.base_url,
-            state.api_key,
-            state.model,
-            skills_dir,
-          )
+          case env_flag_enabled("HERMES_ENABLE_SKILL_SYNTHESIS", False) {
+            True -> {
+              io.println("Curating session and checking for reusable skills...")
+              let skills_dir = constants.path_join(constants.get_hermes_home(), "skills")
+              let _ = curator.synthesize_skill(
+                state.session_id,
+                list.reverse(state.agent_state.history),
+                state.base_url,
+                state.api_key,
+                state.model,
+                skills_dir,
+              )
+              Nil
+            }
+            False ->
+              io.println(
+                "Skill synthesis disabled; set HERMES_ENABLE_SKILL_SYNTHESIS=true to enable session curation.",
+              )
+          }
 
           let timestamp = 1_700_000_000.0
           let _ =
@@ -602,34 +648,246 @@ pub fn load_env_file() -> Nil {
   }
 }
 
+fn env_trimmed(name: String) -> String {
+  case constants.get_env(name) {
+    Some(value) -> string.trim(value)
+    None -> ""
+  }
+}
+
+fn env_present(name: String) -> Bool {
+  env_trimmed(name) != ""
+}
+
+fn doctor_line(status: String, name: String, detail: String) -> Nil {
+  io.println("[" <> status <> "] " <> name <> " - " <> detail)
+}
+
+fn doctor_env_any(names: List(String)) -> Bool {
+  list.any(names, env_present)
+}
+
+pub fn run_doctor() -> Nil {
+  io.println("Hermes BEAM doctor")
+
+  let home = constants.get_hermes_home()
+  doctor_line("ok", "HERMES_HOME", home)
+
+  case constants.prepare_runtime_dirs() {
+    Ok(Nil) ->
+      doctor_line(
+        "ok",
+        "runtime directories",
+        "home, logs, and skills directories are available",
+      )
+    Error(err) -> doctor_line("error", "runtime directories", err)
+  }
+
+  case simplifile.is_directory(constants.get_logs_dir()) {
+    Ok(True) -> doctor_line("ok", "logs directory", constants.get_logs_dir())
+    _ ->
+      doctor_line(
+        "warn",
+        "logs directory",
+        "not found at " <> constants.get_logs_dir(),
+      )
+  }
+
+  case simplifile.is_directory(constants.get_skills_dir()) {
+    Ok(True) -> doctor_line("ok", "skills directory", constants.get_skills_dir())
+    _ ->
+      doctor_line(
+        "warn",
+        "skills directory",
+        "not found at " <> constants.get_skills_dir(),
+      )
+  }
+
+  let #(api_key, base_url) = resolve_api_credentials()
+  case string.trim(api_key) == "" {
+    True ->
+      doctor_line(
+        "warn",
+        "LLM credentials",
+        "HERMES_API_KEY, OPENROUTER_API_KEY, or OPENAI_API_KEY is unset; REPL will use mock completion mode",
+      )
+    False ->
+      doctor_line(
+        "ok",
+        "LLM credentials",
+        "API key configured for " <> base_url,
+      )
+  }
+
+  case constants.find_executable("bb") {
+    Ok(path) -> doctor_line("ok", "Babashka", "bb found at " <> path)
+    Error(_) ->
+      doctor_line(
+        "warn",
+        "Babashka",
+        "bb not found in PATH; subagent worker fallbacks and Datalog tooling may be degraded",
+      )
+  }
+
+  case env_trimmed("HERMES_MCP_CMD") {
+    "" ->
+      doctor_line(
+        "info",
+        "MCP command",
+        "HERMES_MCP_CMD is unset; optional MCP client startup is disabled",
+      )
+    cmd -> {
+      let executable = case string.split(cmd, on: " ") {
+        [first, ..] -> first
+        [] -> cmd
+      }
+      case constants.find_executable(executable) {
+        Ok(path) ->
+          doctor_line(
+            "ok",
+            "MCP command",
+            "first executable found at " <> path,
+          )
+        Error(_) ->
+          doctor_line(
+            "warn",
+            "MCP command",
+            "HERMES_MCP_CMD is set but first executable is not in PATH: "
+            <> executable,
+          )
+      }
+    }
+  }
+
+  case env_present("HERMES_TELEGRAM_TOKEN") {
+    True -> doctor_line("ok", "Telegram token", "HERMES_TELEGRAM_TOKEN is set")
+    False ->
+      doctor_line(
+        "info",
+        "Telegram token",
+        "HERMES_TELEGRAM_TOKEN is unset; required only for Telegram gateway mode",
+      )
+  }
+
+  case doctor_env_any(["HERMES_TELEGRAM_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS"]) {
+    True ->
+      doctor_line(
+        "ok",
+        "Telegram allowlist",
+        "allowlist environment is configured",
+      )
+    False ->
+      doctor_line(
+        "warn",
+        "Telegram allowlist",
+        "set HERMES_TELEGRAM_ALLOWED_USERS or GATEWAY_ALLOWED_USERS before exposing the gateway beyond trusted local testing",
+      )
+  }
+
+  case env_flag_enabled("HERMES_ENABLE_SKILL_SYNTHESIS", False) {
+    True ->
+      doctor_line(
+        "ok",
+        "Skill synthesis",
+        "enabled via HERMES_ENABLE_SKILL_SYNTHESIS",
+      )
+    False ->
+      doctor_line(
+        "info",
+        "Skill synthesis",
+        "disabled by default; set HERMES_ENABLE_SKILL_SYNTHESIS=true to synthesize SKILL.md files on REPL exit",
+      )
+  }
+
+  case env_flag_enabled("HERMES_ENABLE_SEMANTIC_SEARCH", False) {
+    True ->
+      doctor_line(
+        "warn",
+        "Semantic search",
+        "placeholder tool schema is exposed, but no persisted embedding index is wired yet",
+      )
+    False ->
+      doctor_line(
+        "info",
+        "Semantic search",
+        "disabled by default; semantic_search_history is hidden from tool schemas",
+      )
+  }
+
+  let memory_backend = string.lowercase(env_trimmed("HERMES_MEMORY_BACKEND"))
+  case memory_backend {
+    "" ->
+      doctor_line(
+        "info",
+        "Memory backend",
+        "disabled by default; set HERMES_MEMORY_BACKEND to gleamdb, honcho, mem0, or supermemory",
+      )
+    "none" | "disabled" ->
+      doctor_line("info", "Memory backend", "disabled via HERMES_MEMORY_BACKEND")
+    "gleamdb" | "honcho" | "mem0" | "supermemory" ->
+      doctor_line("ok", "Memory backend", "selected " <> memory_backend)
+    other ->
+      doctor_line(
+        "warn",
+        "Memory backend",
+        "unknown HERMES_MEMORY_BACKEND value: " <> other,
+      )
+  }
+
+  doctor_line(
+    "info",
+    "API server",
+    "disabled; --server exits without starting a listener",
+  )
+  doctor_line(
+    "info",
+    "Cron scheduler",
+    "library-only; no CLI or supervisor entry point starts cron jobs",
+  )
+
+  io.println("Doctor completed. Warnings identify optional or production-hardening gaps.")
+}
+
 pub fn main() -> Nil {
   // Load environment variables from config
   load_env_file()
+  let args = argv.load().arguments
 
-  case argv.load().arguments {
-    ["--server"] -> {
-      io.println("Server mode is disabled (website deleted).")
-      Nil
-    }
-    ["--telegram"] -> {
-      case constants.get_env("HERMES_TELEGRAM_TOKEN") {
-        Some(token) -> {
-          run_telegram_gateway(token)
-        }
-        None -> {
-          io.println("Error: HERMES_TELEGRAM_TOKEN environment variable not set.")
-          Nil
-        }
-      }
-    }
-    ["--telegram", token] -> {
-      run_telegram_gateway(token)
-    }
-    ["--resume", session_id] -> {
-      run_repl_resuming(session_id)
+  case args {
+    ["--doctor"] | ["doctor"] -> {
+      run_doctor()
     }
     _ -> {
-      run_repl()
+      let assert Ok(Nil) = constants.prepare_runtime_dirs()
+
+      case args {
+        ["--server"] -> {
+          io.println("Server mode is disabled (website deleted).")
+          Nil
+        }
+        ["--telegram"] -> {
+          case constants.get_env("HERMES_TELEGRAM_TOKEN") {
+            Some(token) -> {
+              run_telegram_gateway(token)
+            }
+            None -> {
+              io.println(
+                "Error: HERMES_TELEGRAM_TOKEN environment variable not set.",
+              )
+              Nil
+            }
+          }
+        }
+        ["--telegram", token] -> {
+          run_telegram_gateway(token)
+        }
+        ["--resume", session_id] -> {
+          run_repl_resuming(session_id)
+        }
+        _ -> {
+          run_repl()
+        }
+      }
     }
   }
 }
@@ -637,6 +895,7 @@ pub fn main() -> Nil {
 /// Resume an existing session by ID — for crash recovery.
 /// Boots the full REPL stack, then restores history + CWD from DB.
 pub fn run_repl_resuming(target_session_id: String) -> Nil {
+  let assert Ok(Nil) = constants.prepare_runtime_dirs()
   io.println("══════════════════════════════════════════════════")
   io.println("  Hermes BEAM — Pure Gleam Agentic Runner v2.0.0")
   io.println("  🔄 RESUMING SESSION: " <> target_session_id)
@@ -795,6 +1054,7 @@ pub fn run_repl_resuming(target_session_id: String) -> Nil {
 }
 
 pub fn run_repl() -> Nil {
+  let assert Ok(Nil) = constants.prepare_runtime_dirs()
   io.println("══════════════════════════════════════════════════")
   io.println("  Press Ctrl+C twice to exit. Type /help for commands.")
   io.println("══════════════════════════════════════════════════\n")
@@ -1190,6 +1450,7 @@ pub fn run_telegram_gateway(token: String) -> Nil {
             let resumed_agent = hermes_agent.AgentState(
               ..base_agent,
               history: list.reverse(restored_history),
+              tool_policy: telegram_tool_policy_from_env(),
             )
 
             case hermes_agent.run_conversation(resumed_agent, prompt) {
@@ -1278,12 +1539,18 @@ fn intent_loop(
             <> datom.value
           io.println(msg)
           log_event(msg)
-          case mcp_client_opt {
-            option.Some(client) -> {
-              let _ = mcp_client.call_tool(client, "reactive_task", datom.value)
-              Nil
+          case hermes_agent.tool_policy_allows(
+            agent_state.tool_policy,
+            hermes_agent.UseMcp,
+          ) {
+            False -> log_event("[Policy Denied] MCP tool use disabled for this session")
+            True -> case mcp_client_opt {
+              option.Some(client) -> {
+                let _ = mcp_client.call_tool(client, "reactive_task", datom.value)
+                Nil
+              }
+              option.None -> Nil
             }
-            option.None -> Nil
           }
           intent_loop(
             selector,
@@ -1298,18 +1565,30 @@ fn intent_loop(
           let msg = "[Side Effect] Spawning subagent worker: " <> datom.entity
           io.println(msg)
           log_event(msg)
-          let tools = hermes_agent.all_tool_schemas(mcp_client_opt)
-          process.send(
-            supervisor_subj,
-            subagent_supervisor.StartSubagent(
-              datom.entity,
-              datom.value,
-              api_key,
-              base_url,
-              tools,
-              agent_state.model,
-            ),
-          )
+          case hermes_agent.tool_policy_allows(
+            agent_state.tool_policy,
+            hermes_agent.UseWorkers,
+          ) {
+            False -> log_event("[Policy Denied] Worker use disabled for this session")
+            True -> {
+              let tools =
+                hermes_agent.all_tool_schemas_with_policy(
+                  mcp_client_opt,
+                  agent_state.tool_policy,
+                )
+              process.send(
+                supervisor_subj,
+                subagent_supervisor.StartSubagent(
+                  datom.entity,
+                  datom.value,
+                  api_key,
+                  base_url,
+                  tools,
+                  agent_state.model,
+                ),
+              )
+            }
+          }
           intent_loop(
             selector,
             mcp_client_opt,
@@ -1325,14 +1604,22 @@ fn intent_loop(
             <> datom.entity
           io.println(msg)
           log_event(msg)
-          let msg_str =
-            "{\"jsonrpc\":\"2.0\",\"method\":\"execute_task\",\"params\":"
-            <> datom.value
-            <> "}"
-          process.send(
-            supervisor_subj,
-            subagent_supervisor.SendSubagentMsg(datom.entity, msg_str),
-          )
+          case hermes_agent.tool_policy_allows(
+            agent_state.tool_policy,
+            hermes_agent.UseWorkers,
+          ) {
+            False -> log_event("[Policy Denied] Worker use disabled for this session")
+            True -> {
+              let msg_str =
+                "{\"jsonrpc\":\"2.0\",\"method\":\"execute_task\",\"params\":"
+                <> datom.value
+                <> "}"
+              process.send(
+                supervisor_subj,
+                subagent_supervisor.SendSubagentMsg(datom.entity, msg_str),
+              )
+            }
+          }
           intent_loop(
             selector,
             mcp_client_opt,

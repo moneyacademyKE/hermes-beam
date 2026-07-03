@@ -1,1 +1,9 @@
-{:paths ["src" "test"]}
+{:paths ["src" "test"]
+ :tasks
+ {nrepl:test        {:requires [[io.nextdoc.tools :as tools]]
+                     :doc      "Run a test in the JVM using an nrepl connection i.e. fast test runner from cli"
+                     :task     (System/exit (tools/run-tests-task *command-line-args*))}
+
+  nrepl:test-shadow {:requires [[io.nextdoc.tools :as tools]]
+                     :doc      "Run a test in Shadow-CLJS using an nrepl connection for ClojureScript testing"
+                     :task     (System/exit (tools/run-cljs-tests-task *command-line-args*))}}}

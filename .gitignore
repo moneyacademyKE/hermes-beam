@@ -1,4 +1,6 @@
 .DS_Store
+*.swp
+*.swo
 /venv/
 /venv.old/
 /_pycache/
@@ -41,6 +43,7 @@ source-data/*
 run_datagen_megascience_glm4-6.sh
 data/*
 node_modules/
+**/node_modules/
 browser-use/
 agent-browser/
 # Private keys
@@ -52,6 +55,13 @@ __pycache__/
 hermes_agent.egg-info/
 wandb/
 testlogs
+*.log
+*.log.*
+logs/**/*.log
+erl_crash.dump
+**/erl_crash.dump
+crash.dump
+*.crashdump
 
 # CLI config (may contain sensitive SSH paths)
 cli-config.yaml
@@ -68,6 +78,21 @@ apps/desktop/build/
 apps/desktop/dist/
 apps/desktop/release/
 apps/desktop/*.tsbuildinfo
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Hermes BEAM / Erlang generated output
+hermes_beam/build/
+hermes_beam/ebin/
+hermes_beam/.eunit/
+hermes_beam/*.beam
+hermes_beam/*.ez
+hermes_beam/*.log
+hermes_beam/build_output.txt
+hermes_beam/compile_errors.txt
+hermes_beam/claw_eval_results.json
 
 # Web UI assets — synced from @nous-research/ui at build time via
 # `npm run sync-assets` (see web/package.json).

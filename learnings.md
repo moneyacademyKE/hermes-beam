@@ -700,4 +700,22 @@ This document summarizes the core learnings from porting python codebase element
 *   **Resolution**: Hooked up `curator.synthesize_skill` to trigger during the REPL's `/quit` and `/exit` commands. It takes the session's accumulated message history (reversed to preserve chronological order), API credentials, and saves any newly synthesized skills to the local `skills` directory under `HERMES_HOME`.
 *   **Impact**: Enables autonomous agent learning by analyzing transcripts and compiling reusable skills dynamically upon exit, closing the gap with the Python reference implementation.
 
+## 84. JVM-Free Vendoring of nREPL Testing Utilities (nextdoc/ai-tools)
+
+*   **Problem**: Dynamic Clojure dependencies (`:deps` in `bb.edn`) typically require a JVM/Java runtime at startup to download and compile git/maven dependency trees. In 100% JVM-Free architectures (like our Babashka worker daemon), this constraint breaks standalone execution and introduces heavy startup latencies.
+*   **Resolution**: Vendored the required source namespaces (`babashka.nrepl-client`, `impl.babashka.nrepl-client`, `io.nextdoc.tools`, `io.nextdoc.clean`, and `io.nextdoc.shadow-nrepl`) directly inside the local `src/` directory. Removed the `:deps` block from `bb.edn` while keeping the `nrepl:test` and `nrepl:test-shadow` task registrations.
+*   **Impact**: Enables ultra-fast, zero-overhead nREPL testing tasks (JVM Clojure and ClojureScript TDD loops) completely natively on the GraalVM Babashka runtime, without requiring a JDK/JRE on the host system.
+
+## 85. Stdio Socket Relay for Editor-Bound MCP Servers (calva-backseat-driver)
+
+*   **Problem**: Graphical IDE plugins (like Calva Backseat Driver) expose in-editor capabilities (AST-based editing, session-shared evaluations) as local TCP socket servers. However, standard AI agent execution environments connect to MCP servers exclusively via Stdio channels. Operating these editor-bound tools directly from the command line or remote runtimes is impossible without a translation layer.
+*   **Resolution**: Implemented a bidirectional stdio-to-socket bridge script (`calva_mcp_bridge.clj`) in Babashka. The script dynamically extracts the socket port from `.calva/mcp-server/port` and runs two asynchronous futures to continuously pipe bytes between standard input/output and the socket TCP stream.
+*   **Impact**: Decomplectes the stdio-bound agent harness from the socket-bound IDE editor runtime, allowing headless agents to safely interact with the developer's live editor workspace when active.
+
+## 86. Neuro-Symbolic Taste Models vs. Explicit Markdown Logs (command-code)
+
+*   **Problem**: Modern autonomous CLI agents (like `command-code`) capture coding style preferences ("taste") implicitly via neuro-symbolic feedback loops (`taste-1` model config). However, these profiles are opaque, locked into the specific model architecture, and dependent on a proprietary SaaS registry. This makes it impossible for developers to audit, manually edit, or carry their preferences across different models.
+*   **Resolution**: Retained our explicit, human-readable log structure (`learnings.md` and `patterns.md`). These logs are completely decoupled from any model weights, version-controlled using Git, and directly reviewable. To keep the developer's CLI environment aligned, we added a Babashka checker script (`command_code_updater.clj`) that queries the npm registry to ensure the globally installed CLI agent is updated.
+*   **Impact**: Guarantees absolute transparency and model agnosticism in our agent learnings system while providing tool upkeep diagnostics in the local workspace.
+
 
