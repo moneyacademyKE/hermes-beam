@@ -718,4 +718,14 @@ This document summarizes the core learnings from porting python codebase element
 *   **Resolution**: Retained our explicit, human-readable log structure (`learnings.md` and `patterns.md`). These logs are completely decoupled from any model weights, version-controlled using Git, and directly reviewable. To keep the developer's CLI environment aligned, we added a Babashka checker script (`command_code_updater.clj`) that queries the npm registry to ensure the globally installed CLI agent is updated.
 *   **Impact**: Guarantees absolute transparency and model agnosticism in our agent learnings system while providing tool upkeep diagnostics in the local workspace.
 
+## 87. Gleam Dynamic Decode Arity & Standalone Custom Decoders
+
+*   **Problem**: In Gleam's `gleam/dynamic/decode` library, the `decode.field` function requires exactly three arguments. When creating standalone decoders (e.g., inside lists like `decode.one_of`), using `decode.field` without a third argument results in compilation errors. Additionally, referencing a decoder function using `use` syntax fails if the function is a decoder value rather than a callback-receiving function.
+*   **Resolution**:
+    - Wrapped field decoders inside explicit blocks with `use` bindings (e.g. `{ use val <- decode.field(...) ... }`) to supply the callback parameter correctly under the hood.
+    - Defined custom decoders that accept the callback parameter explicitly (e.g. `fn(next: fn(T) -> Decoder(U)) -> Decoder(U)`) so they can be seamlessly bound inside the `use` pipeline.
+    - Retained a clean non-callback value decoder using `decode.then` to link it into the pipeline when mapping values directly.
+*   **Impact**: Prevents compiler arity mismatches, standardizes custom nested decoding structures, and ensures clean backward compatibility for field spellings in tool arguments.
+
+
 

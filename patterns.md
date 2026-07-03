@@ -1644,4 +1644,46 @@ Implicit neuro-symbolic taste profiles are opaque, proprietary, and complected w
 ### Benefit
 Guarantees absolute transparency and human-editability of agent preferences, ensures 100% model agnosticism, and enables teams to track style evolution using standard version control histories.
 
+---
+
+## 43. Fallback Dynamic Decoder Pattern (Gleam)
+
+### Context
+When parsing JSON arguments passed from the LLM or third-party clients, the field keys might change or have legacy variants (e.g. `path` vs `file_path`). The decoder must match any of the variants type-safely.
+
+### Problem
+Directly using `decode.field` inside lists or combinators like `decode.one_of` fails compilation due to arity mismatch (missing callback argument), and combining them using the monadic `use` block at the root level forces complex nesting.
+
+### Pattern
+1. **Base Value Decoder**: Define a standalone decoder function returning `Decoder(T)` that combines individual field decoders using `decode.one_of`. Wrap each field decoder in its own monadic block:
+   ```gleam
+   pub fn decode_file_path() -> decode.Decoder(String) {
+     decode.one_of(
+       {
+         use path <- decode.field("path", decode.string)
+         decode.success(path)
+       },
+       or: [
+         {
+           use file_path <- decode.field("file_path", decode.string)
+           decode.success(file_path)
+         },
+       ],
+     )
+   }
+   ```
+2. **Callback Wrapper Decoder**: Define a companion wrapper function that accepts a callback function `next` to expose the decoder to the standard `use` pipeline:
+   ```gleam
+   pub fn decode_file_path_argument(
+     next: fn(String) -> decode.Decoder(t),
+   ) -> decode.Decoder(t) {
+     decode.then(decode_file_path(), next)
+   }
+   ```
+3. **Usage**: Use the callback wrapper for inline sequential parsing and the base value decoder for standalone direct parsing.
+
+### Benefit
+Resolves compiler arity constraints, keeps key-fallback logic highly cohesive and decoupled from the main parsing loop, and supports both standard and `use`-pipeline decoding formats.
+
+
 
