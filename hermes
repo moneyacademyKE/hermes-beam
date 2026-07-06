@@ -1,30 +1,22 @@
 #!/usr/bin/env bb
 
 (require '[babashka.process :as proc]
-         '[babashka.fs :as fs]
-         '[clojure.string :as str])
+         '[babashka.fs :as fs])
 
 (defn print-help []
-  (println "Hermes CLI Launcher (Babashka Wrapper)")
+  (println "Hermes BEAM CLI Launcher")
   (println "Usage:")
-  (println "  ./hermes              - Start the interactive TUI chat interface (default)")
-  (println "  ./hermes --tui, -t    - Start the interactive TUI chat interface")
-  (println "  ./hermes repl         - Start the Gleam REPL agent interface")
+  (println "  ./hermes              - Start the interactive REPL (default)")
+  (println "  ./hermes --onboard    - Run configuration wizard")
+  (println "  ./hermes --doctor     - Run diagnostics")
+  (println "  ./hermes --version    - Show version")
+  (println "  ./hermes --telegram   - Start Telegram gateway")
+  (println "  ./hermes --discord    - Start Discord gateway")
+  (println "  ./hermes --a2a        - Start A2A Protocol server")
+  (println "  ./hermes --resume <id>- Resume a past session")
   (println "  ./hermes --help, -h   - Show this help message"))
 
-(defn run-tui []
-  (let [root-dir (fs/parent *file*)
-        ui-clj-dir (str (fs/path root-dir "ui-clj"))
-        tui-script (fs/path ui-clj-dir "src" "hermes_tui.clj")]
-    (if (fs/exists? tui-script)
-      (let [res (proc/process {:dir ui-clj-dir :inherit true} "bb" "src/hermes_tui.clj")]
-        (System/exit (:exit @res)))
-      (do
-        (binding [*out* *err*]
-          (println "Error: Clojure TUI client script not found at" (str tui-script)))
-        (System/exit 1)))))
-
-(defn run-repl [args]
+(defn run-gleam [args]
   (let [root-dir (fs/parent *file*)
         beam-dir (str (fs/path root-dir "hermes_beam"))]
     (if (fs/exists? (fs/path beam-dir "gleam.toml"))
@@ -32,7 +24,7 @@
         (System/exit (:exit @res)))
       (do
         (binding [*out* *err*]
-          (println "Error: Gleam project directory not found at" beam-dir))
+          (println "Error: Gleam project not found at" beam-dir))
         (System/exit 1)))))
 
 (defn -main [args]
@@ -41,13 +33,7 @@
       (or (= first-arg "--help") (= first-arg "-h") (= first-arg "help"))
       (print-help)
 
-      (or (nil? first-arg) (= first-arg "--tui") (= first-arg "-t") (= first-arg "--clj") (= first-arg "-c"))
-      (run-tui)
-
-      (= first-arg "repl")
-      (run-repl (rest args))
-
       :else
-      (run-repl args))))
+      (run-gleam args))))
 
 (-main *command-line-args*)

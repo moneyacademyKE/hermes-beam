@@ -2,8 +2,10 @@ import argv
 import constants
 import context_engine
 import curator
+import cron_scheduler
 import datom.{type Datom, Datom, Rule, Triple}
 import telegram_gateway
+import discord_gateway
 import evolutionary
 import gleam/dynamic/decode
 import gleam/erlang/process
@@ -27,6 +29,11 @@ import circuit_breaker_actor
 import gleam/otp/static_supervisor
 import gleam/otp/supervision
 import token_budget
+import updater
+import vector_memory
+import onboarding
+import a2a_server
+import usage_pricing
 
 @external(erlang, "erlang", "system_time")
 fn system_time() -> Int
@@ -180,11 +187,20 @@ pub fn print_help() -> Nil {
     "  /rollback <n>  - Undo the last N messages from memory and database",
   )
   io.println(
+    "  /branch <n>    - Fork conversation from N messages ago (keeps original)",
+  )
+  io.println(
     "  /search <term> - Search past messages across all sessions (FTS5)",
+  )
+  io.println(
+    "  /vsearch <q>   - Semantic vector search across memory (embeddings + RRF)",
   )
   io.println(
     "  /goal <prompt> - Run an autonomous long-running task until finished",
   )
+  io.println("  /cron <cmd>    - Manage scheduled jobs (list|add|remove)")
+  io.println("  /usage         - Show token usage and budget status")
+  io.println("  /onboard       - Run the configuration wizard")
   io.println("  <message>      - Chat with the LLM agent (tools available)")
 }
 
@@ -223,6 +239,61 @@ pub fn log_event(msg: String) -> Nil {
 
 // ─── REPL Loop ────────────────────────────────────────────────────────────────
 
+fn cron_scheduler_name() -> Result(process.Name(cron_scheduler.Message), Nil) {
+  Ok(process.new_name("cron_scheduler"))
+}
+
+fn handle_cron_command(
+  state: REPLState,
+  args: String,
+  cron: cron_scheduler.CronScheduler,
+) -> Nil {
+  let parts = string.split(args, " ")
+  case parts {
+    ["list"] -> {
+      let jobs = cron_scheduler.list_jobs(cron)
+      case jobs {
+        [] -> io.println("No cron jobs configured.")
+        _ -> {
+          io.println("Cron Jobs:")
+          list.each(jobs, fn(job) {
+            io.println("  [" <> job.id <> "] " <> job.schedule <> " — " <> string.slice(job.prompt, 0, 60))
+          })
+        }
+      }
+    }
+    ["add", schedule, ..rest] -> {
+      let prompt = case rest {
+        [p, ..] -> p
+        [] -> ""
+      }
+      let job = cron_scheduler.CronJob(
+        id: "job_" <> int.to_string(list.length(cron_scheduler.list_jobs(cron)) + 1),
+        schedule: schedule,
+        prompt: prompt,
+        last_run: None,
+      )
+      case cron_scheduler.add_job(cron, job) {
+        Ok(_) -> io.println("Added cron job: " <> job.id)
+        Error(err) -> io.println("Failed to add cron job: " <> err)
+      }
+    }
+    ["remove", id] -> {
+      case cron_scheduler.remove_job(cron, id) {
+        Ok(_) -> io.println("Removed cron job: " <> id)
+        Error(err) -> io.println("Failed: " <> err)
+      }
+    }
+    _ -> {
+      io.println("Usage:")
+      io.println("  /cron list")
+      io.println("  /cron add \"*/5 * * * *\" \"prompt text\"")
+      io.println("  /cron remove <id>")
+    }
+  }
+  repl_loop(state)
+}
+
 pub fn repl_loop(state: REPLState) -> Nil {
   let prompt = "\nhermes_beam [" <> state.model <> "] (" <> state.cwd <> ") > "
 
@@ -241,6 +312,11 @@ pub fn repl_loop(state: REPLState) -> Nil {
       let is_rollback = string.starts_with(trimmed, "/rollback ")
       let is_search = string.starts_with(trimmed, "/search ")
       let is_goal = string.starts_with(trimmed, "/goal ")
+      let is_cron = string.starts_with(trimmed, "/cron ")
+      let is_usage = trimmed == "/usage"
+      let is_vsearch = string.starts_with(trimmed, "/vsearch ")
+      let is_branch = string.starts_with(trimmed, "/branch ")
+      let is_onboard = trimmed == "/onboard"
 
       case trimmed {
         // ── Empty input ─────────────────────────────────────────────────────
@@ -432,6 +508,77 @@ pub fn repl_loop(state: REPLState) -> Nil {
             )
           let _ = state_actor.transact(state.db_conn, state.session_id, [datom], 1)
 
+          repl_loop(state)
+        }
+
+        // ── /cron <add|list|remove> ────────────────────────────────────────
+        _ if is_cron -> {
+          let cron_args = string.trim(string.drop_start(trimmed, 6))
+          case cron_scheduler_name() {
+            Ok(name) -> {
+              let subj = process.named_subject(name)
+              let cron = cron_scheduler.from_subject(subj)
+              handle_cron_command(state, cron_args, cron)
+            }
+            Error(_) -> {
+              io.println("Cron scheduler not running.")
+              repl_loop(state)
+            }
+          }
+        }
+
+        // ── /usage ──────────────────────────────────────────────────────────
+        _ if is_usage -> {
+          let tb = state.agent_state.token_budget
+          case tb {
+            Some(budget) -> {
+              let used = token_budget.used(budget)
+              let remaining = token_budget.remaining(budget)
+              io.println("── Token Usage ──")
+              io.println("  Used     : " <> int.to_string(used))
+              io.println("  Remaining: " <> int.to_string(remaining))
+              io.println("  History  : " <> int.to_string(list.length(state.agent_state.history)) <> " messages")
+            }
+            None -> io.println("Token budget not configured.")
+          }
+          repl_loop(state)
+        }
+
+        // ── /vsearch <query> ────────────────────────────────────────────────
+        _ if is_vsearch -> {
+          let query = string.trim(string.drop_start(trimmed, 9))
+          let store = vector_memory.new()
+          let results = vector_memory.search(store, query, state.api_key, limit: 5)
+          io.println(vector_memory.format_results(results))
+          repl_loop(state)
+        }
+
+        // ── /branch <n> ─────────────────────────────────────────────────────
+        _ if is_branch -> {
+          let branch_str = string.trim(string.drop_start(trimmed, 8))
+          case int.parse(branch_str) {
+            Ok(n) -> {
+              let branched = list.drop(state.agent_state.history, n)
+              let new_agent =
+                hermes_agent.AgentState(
+                  ..state.agent_state,
+                  history: branched,
+                )
+              io.println("Branched: dropped " <> int.to_string(n) <> " messages. New history: " <> int.to_string(list.length(branched)) <> " messages.")
+              repl_loop(REPLState(..state, agent_state: new_agent))
+            }
+            Error(_) -> {
+              io.println("Usage: /branch <n> — forks from N messages ago")
+              repl_loop(state)
+            }
+          }
+        }
+
+        // ── /onboard ────────────────────────────────────────────────────────
+        _ if is_onboard -> {
+          let _ = onboarding.run_onboarding()
+          load_env_file()
+          io.println("Configuration reloaded.")
           repl_loop(state)
         }
 
@@ -857,13 +1004,59 @@ pub fn main() -> Nil {
     ["--doctor"] | ["doctor"] -> {
       run_doctor()
     }
+    ["--onboard"] | ["onboard"] -> {
+      let _ = onboarding.run_onboarding()
+      Nil
+    }
+    ["--version"] | ["version"] -> {
+      io.println(updater.format_status())
+    }
+    ["--update"] | ["update"] -> {
+      case updater.check_for_updates() {
+        updater.UpToDate -> io.println("Already up to date.")
+        updater.UpdateAvailable(version, _url) ->
+          io.println("Update available: " <> version)
+        updater.CheckFailed(reason) ->
+          io.println("Update check failed: " <> reason)
+      }
+    }
     _ -> {
       let assert Ok(Nil) = constants.prepare_runtime_dirs()
+      updater.startup_check()
 
       case args {
         ["--server"] -> {
           io.println("Server mode is disabled (website deleted).")
           Nil
+        }
+        ["--a2a"] -> {
+          run_a2a_server()
+        }
+        ["--discord"] -> {
+          case discord_gateway.config_from_env() {
+            Some(config) -> {
+              let #(api_key, base_url) = resolve_api_credentials()
+              let model = case constants.get_env("HERMES_MODEL") {
+                Some(m) -> m
+                None -> "openai/gpt-4o-mini"
+              }
+              let db_path = constants.path_join(constants.get_hermes_home(), "state.db")
+              let assert Ok(conn) = hermes_state.connect(db_path)
+              let assert Ok(Nil) = hermes_state.init_schema(conn)
+              let assert Ok(actor) = state_actor.start(conn, [])
+              discord_gateway.start_gateway(
+                actor,
+                api_key,
+                base_url,
+                model,
+                config,
+              )
+            }
+            None -> {
+              io.println("Error: HERMES_DISCORD_TOKEN not set.")
+              Nil
+            }
+          }
         }
         ["--telegram"] -> {
           case constants.get_env("HERMES_TELEGRAM_TOKEN") {
@@ -935,9 +1128,16 @@ pub fn run_repl_resuming(target_session_id: String) -> Nil {
   let uds_supervisor_subj = process.named_subject(uds_supervisor_name)
   let cb_name = process.new_name("circuit_breaker")
   let cb_subj = process.named_subject(cb_name)
+  let cron_name = process.new_name("cron_scheduler")
+  let cron_subj = process.named_subject(cron_name)
 
   let socket_path =
     constants.path_join(constants.get_hermes_home(), "subagents.sock")
+
+  let model = case constants.get_env("HERMES_MODEL") {
+    Some(val) -> val
+    None -> "meta-llama/llama-3-8b-instruct:free"
+  }
 
   let assert Ok(_sup) =
     static_supervisor.new(static_supervisor.OneForAll)
@@ -950,6 +1150,15 @@ pub fn run_repl_resuming(target_session_id: String) -> Nil {
        }))
     |> static_supervisor.add(supervision.worker(fn() {
          circuit_breaker_actor.start_supervised(cb_name, 5, 30)
+       }))
+    |> static_supervisor.add(supervision.worker(fn() {
+         cron_scheduler.start_supervised(
+           cron_name,
+           state_actor.from_subject(state_actor_subj),
+           api_key,
+           base_url,
+           model,
+         )
        }))
     |> static_supervisor.start()
 
@@ -968,11 +1177,6 @@ pub fn run_repl_resuming(target_session_id: String) -> Nil {
   let tb = case token_budget.start(token_limit) {
     Ok(tb_actor) -> Some(tb_actor)
     Error(_) -> None
-  }
-
-  let model = case constants.get_env("HERMES_MODEL") {
-    Some(val) -> val
-    None -> "meta-llama/llama-3-8b-instruct:free"
   }
 
   // Restore session history and CWD from DB
@@ -1094,9 +1298,16 @@ pub fn run_repl() -> Nil {
   let uds_supervisor_subj = process.named_subject(uds_supervisor_name)
   let cb_name = process.new_name("circuit_breaker")
   let cb_subj = process.named_subject(cb_name)
+  let cron_name = process.new_name("cron_scheduler")
+  let cron_subj = process.named_subject(cron_name)
 
   let socket_path =
     constants.path_join(constants.get_hermes_home(), "subagents.sock")
+
+  let model = case constants.get_env("HERMES_MODEL") {
+    Some(val) -> val
+    None -> "meta-llama/llama-3-8b-instruct:free"
+  }
 
   let assert Ok(_sup) =
     static_supervisor.new(static_supervisor.OneForAll)
@@ -1110,12 +1321,20 @@ pub fn run_repl() -> Nil {
     |> static_supervisor.add(supervision.worker(fn() {
          circuit_breaker_actor.start_supervised(cb_name, 5, 30)
        }))
+    |> static_supervisor.add(supervision.worker(fn() {
+         cron_scheduler.start_supervised(
+           cron_name,
+           state_actor.from_subject(state_actor_subj),
+           api_key,
+           base_url,
+           model,
+         )
+       }))
     |> static_supervisor.start()
 
   let actor = state_actor.from_subject(state_actor_subj)
   let cb = circuit_breaker_actor.from_subject(cb_subj)
-
-  // 1b. Seed/persist local skills
+  let cron = cron_scheduler.from_subject(cron_subj)
   let routing_skill =
     Skill(
       name: "network-routing",
@@ -1199,10 +1418,6 @@ pub fn run_repl() -> Nil {
   }
 
   // 2. Load credentials
-  let model = case constants.get_env("HERMES_MODEL") {
-    Some(val) -> val
-    None -> "meta-llama/llama-3-8b-instruct:free"
-  }
 
   // Start MCP Client if HERMES_MCP_CMD is set
   let mcp_client_opt = case constants.get_env("HERMES_MCP_CMD") {
@@ -1337,6 +1552,29 @@ fn extract_content_from_history_msg(msg: String) -> String {
   }
 }
 
+pub fn run_a2a_server() -> Nil {
+  let db_path = constants.path_join(constants.get_hermes_home(), "state.db")
+  let assert Ok(conn) = hermes_state.connect(db_path)
+  let assert Ok(Nil) = hermes_state.init_schema(conn)
+  let #(api_key, base_url) = resolve_api_credentials()
+  let port = case constants.get_env("HERMES_A2A_PORT") {
+    Some(val) -> case int.parse(val) {
+      Ok(p) -> p
+      Error(_) -> 8080
+    }
+    None -> 8080
+  }
+  let assert Ok(actor) = state_actor.start(conn, [])
+  let _ =
+    a2a_server.start_a2a_server(
+      actor,
+      api_key,
+      base_url,
+      port,
+    )
+  Nil
+}
+
 pub fn run_telegram_gateway(token: String) -> Nil {
   let lock_port = case constants.get_env("HERMES_GATEWAY_LOCK_PORT") {
     Some(val) -> case int.parse(val) {
@@ -1363,7 +1601,6 @@ pub fn run_telegram_gateway(token: String) -> Nil {
       let _uds_supervisor_subj = process.named_subject(uds_supervisor_name)
       let cb_name = process.new_name("circuit_breaker")
       let cb_subj = process.named_subject(cb_name)
-
       let socket_path =
         constants.path_join(constants.get_hermes_home(), "subagents.sock")
 

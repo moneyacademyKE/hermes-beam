@@ -117,7 +117,9 @@ pub fn all_tool_schemas_valid_json_test() {
   let result = json.parse(from: schemas, using: decode.list(decode.dynamic))
   let assert Ok(items) = result
   // semantic_search_history is hidden unless explicitly enabled.
-  let assert 4 = list.length(items)
+  // Core tools: run_command, write_file, read_file, handoff_session
+  // + create_worktree, diff_worktree, browser_navigate, browser_screenshot
+  let assert 8 = list.length(items)
 }
 
 pub fn tool_schemas_contain_required_names_test() {

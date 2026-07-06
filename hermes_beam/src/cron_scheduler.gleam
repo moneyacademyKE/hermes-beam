@@ -44,6 +44,10 @@ pub opaque type CronScheduler {
   CronScheduler(subject: Subject(Message))
 }
 
+pub fn from_subject(subject: Subject(Message)) -> CronScheduler {
+  CronScheduler(subject)
+}
+
 // ─── External calendar FFI ───────────────────────────────────────────────────
 
 @external(erlang, "calendar", "day_of_the_week")
@@ -84,6 +88,35 @@ pub fn start(
   |> actor.on_message(handle_message)
   |> actor.start
   |> result.map(fn(started) { CronScheduler(started.data) })
+}
+
+pub fn start_supervised(
+  name: process.Name(Message),
+  db_conn: StateActor,
+  api_key: String,
+  base_url: String,
+  model: String,
+) -> Result(actor.Started(Subject(Message)), actor.StartError) {
+  actor.new_with_initialiser(1000, fn(subj) {
+    let initial_state =
+      SchedulerState(
+        jobs: [],
+        db_conn: db_conn,
+        api_key: api_key,
+        base_url: base_url,
+        model: model,
+        self_subject: subj,
+      )
+    let _timer = process.send_after(subj, 5000, Tick)
+    let selector = process.new_selector() |> process.select(subj)
+    actor.initialised(initial_state)
+    |> actor.selecting(selector)
+    |> actor.returning(subj)
+    |> Ok
+  })
+  |> actor.on_message(handle_message)
+  |> actor.named(name)
+  |> actor.start
 }
 
 // ─── Client API ───────────────────────────────────────────────────────────────

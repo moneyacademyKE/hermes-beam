@@ -21,6 +21,11 @@ import kawaii_spinner
 import mcp_client
 import memory_plugin
 import model_router.{type ModelRouter}
+import prompt_cache
+import compaction
+import git_worktree
+import browser_cdp
+import vector_memory
 import state_actor.{type StateActor}
 import token_budget
 import tools_registry
@@ -315,10 +320,25 @@ pub fn dispatch_tool(
                 False -> io.println("  [tool: semantic_search_history] ? " <> query)
                 True -> Nil
               }
+              let store = vector_memory.new()
+              let results =
+                vector_memory.search(store, query, state.api_key, limit: 5)
               let result_json =
                 json.object([
-                  #("status", json.string("semantic search placeholder enabled; no persisted embedding index is wired yet")),
+                  #("status", json.string("ok")),
                   #("query", json.string(query)),
+                  #("results", json.array(
+                    list.map(results, fn(r) {
+                      json.object([
+                        #("content", json.string(r.content)),
+                        #("session_id", json.string(r.session_id)),
+                        #("score", json.float(r.score)),
+                        #("source", json.string(r.source)),
+                      ])
+                    }),
+                    of: fn(x) { x },
+                  )),
+                  #("count", json.int(list.length(results))),
                 ])
                 |> json.to_string
               #(exec_env, result_json)
@@ -383,6 +403,74 @@ pub fn dispatch_tool(
           }
         }
       }
+    }
+
+    "create_worktree" -> {
+      let agent_id = case json.parse(from: call.arguments, using: {
+        use aid <- decode.field("agent_id", decode.string)
+        decode.success(aid)
+      }) {
+        Ok(aid) -> aid
+        Error(_) -> "default"
+      }
+      case quiet {
+        False -> io.println("  [tool: create_worktree] agent_id=" <> agent_id)
+        True -> Nil
+      }
+      let result = git_worktree.tool_create_worktree(exec_env.cwd, agent_id)
+      #(exec_env, result)
+    }
+
+    "diff_worktree" -> {
+      let agent_id = case json.parse(from: call.arguments, using: {
+        use aid <- decode.field("agent_id", decode.string)
+        decode.success(aid)
+      }) {
+        Ok(aid) -> aid
+        Error(_) -> "default"
+      }
+      case quiet {
+        False -> io.println("  [tool: diff_worktree] agent_id=" <> agent_id)
+        True -> Nil
+      }
+      let result = git_worktree.tool_diff_worktree(exec_env.cwd, agent_id)
+      #(exec_env, result)
+    }
+
+    "browser_navigate" -> {
+      let url = case json.parse(from: call.arguments, using: {
+        use u <- decode.field("url", decode.string)
+        decode.success(u)
+      }) {
+        Ok(u) -> u
+        Error(_) -> ""
+      }
+      case quiet {
+        False -> io.println("  [tool: browser_navigate] " <> url)
+        True -> Nil
+      }
+      let bstate = browser_cdp.new(True)
+      let #(new_state, result) = browser_cdp.tool_navigate(bstate, url)
+      let _ = browser_cdp.cleanup(new_state)
+      #(exec_env, result)
+    }
+
+    "browser_screenshot" -> {
+      let path = case json.parse(from: call.arguments, using: {
+        use p <- decode.field("path", decode.string)
+        decode.success(p)
+      }) {
+        Ok(p) -> p
+        Error(_) -> "screenshot.png"
+      }
+      case quiet {
+        False -> io.println("  [tool: browser_screenshot] -> " <> path)
+        True -> Nil
+      }
+      let bstate = browser_cdp.new(True)
+      let #(new_state, result) = browser_cdp.tool_screenshot(bstate, path)
+      let _ = browser_cdp.cleanup(new_state)
+      #(exec_env, result)
     }
 
     unknown -> {
@@ -1103,7 +1191,32 @@ pub fn build_request_body(
     False -> history
   }
 
-  let all_messages = [system_msg, ..trimmed_history]
+  // Anthropic prompt caching: add cache_control marker to system + last message
+  // when the provider supports it and there's enough context to benefit.
+  let cache_backend = prompt_cache.detect_backend(
+    case constants.get_env("HERMES_BASE_URL") {
+      Some(u) -> u
+      None -> "https://openrouter.ai/api/v1"
+    },
+  )
+  let all_messages = case cache_backend.supports_cache_control {
+    False -> [system_msg, ..trimmed_history]
+    True -> {
+      case list.length(trimmed_history) >= 3 {
+        False -> [system_msg, ..trimmed_history]
+        True -> {
+          let system_with_cache =
+            json.object([
+              #("role", json.string("system")),
+              #("content", json.string(final_system_prompt)),
+              #("cache_control", json.object([#("type", json.string("ephemeral"))])),
+            ])
+            |> json.to_string
+          [system_with_cache, ..trimmed_history]
+        }
+      }
+    }
+  }
 
   // Parse tools JSON string into a json.Json value for embedding
   let tools_json = case json.parse(from: tools, using: decode.dynamic) {
@@ -1314,11 +1427,21 @@ pub fn agent_turn_loop(
           mem_ctx,
         )
 
-      let headers = [
-        #("Authorization", "Bearer " <> state.api_key),
-        #("Content-Type", "application/json"),
-        #("Accept", "text/event-stream"),
-      ]
+      let cache_backend = prompt_cache.detect_backend(state.base_url)
+      let cache_headers = prompt_cache.cache_headers(cache_backend)
+      let anthropic_headers = case cache_backend.supports_cache_control {
+        True -> prompt_cache.anthropic_beta_headers()
+        False -> []
+      }
+      let headers =
+        list.append(
+          list.append(cache_headers, anthropic_headers),
+          [
+            #("Authorization", "Bearer " <> state.api_key),
+            #("Content-Type", "application/json"),
+            #("Accept", "text/event-stream"),
+          ],
+        )
 
       let cb_allowed = case state.circuit_breaker {
         Some(cb) -> circuit_breaker_actor.check(cb, active_model2)
@@ -1769,12 +1892,54 @@ fn memory_context(state: AgentState) -> String {
     _ -> None
   }
 
-  case plugin {
+  let plugin_ctx = case plugin {
     Some(memory) -> case memory.retrieve_context(state.session_id) {
       Ok(ctx) -> ctx
       Error(_) -> ""
     }
     None -> ""
+  }
+
+  let vector_ctx = case env_flag_enabled("HERMES_ENABLE_SEMANTIC_SEARCH") {
+    False -> ""
+    True -> {
+      let store = vector_memory.new()
+      let latest = case list.first(state.history) {
+        Ok(msg) -> extract_text_from_msg(msg)
+        Error(_) -> ""
+      }
+      case latest == "" {
+        True -> ""
+        False -> {
+          let results =
+            vector_memory.search(store, latest, state.api_key, limit: 3)
+          case results {
+            [] -> ""
+            _ ->
+              "Relevant past context (vector search):\n"
+              <> vector_memory.format_results(results)
+          }
+        }
+      }
+    }
+  }
+
+  case plugin_ctx, vector_ctx {
+    "", "" -> ""
+    ctx, "" -> ctx
+    "", vctx -> vctx
+    ctx, vctx -> ctx <> "\n\n" <> vctx
+  }
+}
+
+fn extract_text_from_msg(msg: String) -> String {
+  let decoder = {
+    use content <- decode.field("content", decode.string)
+    decode.success(content)
+  }
+  case json.parse(from: msg, using: decoder) {
+    Ok(content) -> content
+    Error(_) -> ""
   }
 }
 
@@ -1905,14 +2070,42 @@ pub fn run_conversation(
       timestamp,
     )
 
+  // Index user message into vector store for semantic search
+  case env_flag_enabled("HERMES_ENABLE_SEMANTIC_SEARCH") {
+    True -> {
+      let store = vector_memory.new()
+      let _ =
+        vector_memory.add(store, user_prompt, state.session_id, state.api_key)
+      Nil
+    }
+    False -> Nil
+  }
+
   // Append user message to history
   let new_history = [user_message(user_prompt), ..state.history]
 
-  // Compression trigger
-  let max_history = 80
-  let compressed_history = case list.length(new_history) > max_history {
-    True -> {
-      // Keep newest 40, compress the rest
+  // Compaction: use token-based thresholds from compaction module
+  let compaction_config = compaction.config_from_env(fn(name) {
+    case constants.get_env(name) {
+      Some(v) -> Some(v)
+      None -> None
+    }
+  })
+  let history_tokens = compaction.estimate_messages_tokens(new_history)
+  let compaction_tier = compaction.check_threshold(compaction_config, history_tokens)
+
+  let compressed_history = case compaction_tier {
+    compaction.NoCompaction -> new_history
+    _ -> {
+      hermes_logger.event("INFO", state.session_id, "compaction_triggered", [
+        #("tier", case compaction_tier {
+          compaction.SoftTrigger(_) -> "soft"
+          compaction.HardTrigger(_) -> "hard"
+          _ -> "none"
+        }),
+        #("tokens", int.to_string(history_tokens)),
+        #("pct", int.to_string(compaction.context_usage_pct(compaction_config, history_tokens))),
+      ])
       let to_keep = list.take(new_history, 40)
       let to_compress = list.drop(new_history, 40)
       case compress_history(to_compress, state) {
@@ -1924,11 +2117,9 @@ pub fn run_conversation(
         Error(err) -> {
           io.println("Compression error: " <> err)
           to_keep
-          // Fallback to sliding window
         }
       }
     }
-    False -> new_history
   }
 
   let new_state = AgentState(..state, history: compressed_history)

@@ -87,6 +87,38 @@ pub fn core_tools() -> List(ToolDef) {
       ]),
       required: ["target_session_id", "handoff_context"],
     ),
+    ToolDef(
+      name: "create_worktree",
+      description: "Create an isolated git worktree for parallel agent work. Returns the worktree path and branch name.",
+      parameters: dict.from_list([
+        #("agent_id", ParamDef("string", "A unique identifier for this worktree (e.g. 'fix-auth', 'refactor-db').")),
+      ]),
+      required: ["agent_id"],
+    ),
+    ToolDef(
+      name: "diff_worktree",
+      description: "Show the diff of uncommitted changes in an agent's worktree.",
+      parameters: dict.from_list([
+        #("agent_id", ParamDef("string", "The agent ID of the worktree to diff.")),
+      ]),
+      required: ["agent_id"],
+    ),
+    ToolDef(
+      name: "browser_navigate",
+      description: "Navigate the browser to a URL and return the page content. Requires Chrome/Chromium installed.",
+      parameters: dict.from_list([
+        #("url", ParamDef("string", "The URL to navigate to.")),
+      ]),
+      required: ["url"],
+    ),
+    ToolDef(
+      name: "browser_screenshot",
+      description: "Take a screenshot of the current browser page.",
+      parameters: dict.from_list([
+        #("path", ParamDef("string", "The file path to save the screenshot to.")),
+      ]),
+      required: ["path"],
+    ),
   ]
 }
 
